@@ -1,0 +1,44 @@
+{
+  "host": {
+    "description": "WebSocket bind host used by the minecraft platform adapter.",
+    "type": "string",
+    "hint": "127.0.0.1",
+    "default": "127.0.0.1"
+  },
+  "port": {
+    "description": "WebSocket bind port used by the minecraft platform adapter.",
+    "type": "int",
+    "hint": "8765",
+    "default": 8765
+  },
+  "path": {
+    "description": "WebSocket path.",
+    "type": "string",
+    "hint": "/ws",
+    "default": "/ws"
+  },
+  "token": {
+    "description": "Bearer token required from the Minecraft mod.",
+    "type": "string",
+    "hint": "change-me",
+    "default": "change-me"
+  },
+  "group_id": {
+    "description": "AstrBot group id used for all Minecraft chat.",
+    "type": "string",
+    "hint": "minecraft",
+    "default": "minecraft"
+  },
+  "bot_display_name": {
+    "description": "Name displayed before bot replies in Minecraft.",
+    "type": "string",
+    "hint": "AstrBot",
+    "default": "AstrBot"
+  },
+  "max_message_length": {
+    "description": "Maximum inbound Minecraft chat length sent to AstrBot.",
+    "type": "int",
+    "hint": "1000",
+    "default": 1000
+  }
+}

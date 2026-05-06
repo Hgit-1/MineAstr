@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# AstrBot local/runtime state
+data/
+logs/
+*.log
+.env
+
+# Gradle / Java / NeoForge
+.gradle/
+**/.gradle/
+build/
+**/build/
+out/
+**/out/
+run/
+**/run/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store

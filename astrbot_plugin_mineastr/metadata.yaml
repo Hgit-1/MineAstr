@@ -1,0 +1,7 @@
+name: astrbot_plugin_mineastr
+display_name: MineAstr
+desc: Bridge Minecraft server chat into AstrBot as a group conversation.
+version: v0.1.0
+author: MineAstr
+repo: ""
+astrbot_version: ">=4.16,<5"
