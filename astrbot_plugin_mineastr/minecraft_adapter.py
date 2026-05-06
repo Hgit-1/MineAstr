@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -23,6 +24,7 @@ except ImportError:
 
 
 PROTOCOL_VERSION = 1
+LOGO_PATH = str(Path(__file__).resolve().with_name("logo.png"))
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
     "port": 8765,
@@ -36,57 +38,57 @@ DEFAULT_CONFIG = {
 }
 CONFIG_METADATA = {
     "host": {
-        "description": "WebSocket 监听地址。单机部署通常保持 127.0.0.1；跨机器连接时改为可被 MC 服务器访问的地址。",
+        "description": "WebSocket 监听地址",
         "type": "string",
-        "hint": "127.0.0.1",
+        "hint": "单机部署通常保持 127.0.0.1；跨机器连接时改为可被 MC 服务器访问的地址。",
         "default": "127.0.0.1",
     },
     "port": {
-        "description": "WebSocket 监听端口，需要与 MineAstr Mod 配置中的 websocketUrl 端口一致。",
+        "description": "WebSocket 监听端口",
         "type": "int",
-        "hint": "8765",
+        "hint": "需要与 MineAstr Mod 配置中的 websocketUrl 端口一致；端口被占用时可以换成其他未使用端口。",
         "default": 8765,
     },
     "path": {
-        "description": "WebSocket 路径，需要与 MineAstr Mod 配置中的 websocketUrl 路径一致。",
+        "description": "WebSocket 路径",
         "type": "string",
-        "hint": "/ws",
+        "hint": "需要与 MineAstr Mod 配置中的 websocketUrl 路径一致；不清楚如何修改时保持 /ws。",
         "default": "/ws",
     },
     "token": {
-        "description": "Minecraft Mod 连接时使用的 Bearer Token。建议改成较长的随机值。",
+        "description": "连接认证 Token",
         "type": "string",
-        "hint": "change-me",
+        "hint": "Minecraft Mod 连接 AstrBot 时使用，两端必须完全一致；建议把 change-me 改成较长的随机字符串。",
         "default": "change-me",
     },
     "group_id": {
-        "description": "所有 Minecraft 聊天进入 AstrBot 后使用的群组 ID。",
+        "description": "AstrBot 群组 ID",
         "type": "string",
-        "hint": "minecraft",
+        "hint": "所有 Minecraft 聊天都会进入这个虚拟群聊；一般保持 minecraft，改动后会被 AstrBot 视为另一个群。",
         "default": "minecraft",
     },
     "group_name": {
-        "description": "Minecraft 群聊在 AstrBot 中显示的群组名称。",
+        "description": "AstrBot 群组名称",
         "type": "string",
-        "hint": "Minecraft",
+        "hint": "用于显示这个虚拟 Minecraft 群聊的名称，只影响识别和展示。",
         "default": "Minecraft",
     },
     "bot_id": {
-        "description": "AstrBot 在该虚拟 Minecraft 平台中的机器人 ID。",
+        "description": "机器人 ID",
         "type": "string",
-        "hint": "astrbot",
+        "hint": "AstrBot 在 minecraft 虚拟平台中的机器人账号 ID；一般不需要修改。",
         "default": "astrbot",
     },
     "bot_display_name": {
-        "description": "AstrBot 回复广播到 Minecraft 时显示的名称。",
+        "description": "机器人显示名称",
         "type": "string",
-        "hint": "AstrBot",
+        "hint": "AstrBot 回复广播到 Minecraft 时方括号内显示的名称。",
         "default": "AstrBot",
     },
     "max_message_length": {
-        "description": "转发到 AstrBot 的单条 Minecraft 聊天最大长度，超出部分会被截断。",
+        "description": "最大聊天长度",
         "type": "int",
-        "hint": "1000",
+        "hint": "单条 Minecraft 消息转发到 AstrBot 前允许的最大长度；超出部分会被截断，建议保持默认。",
         "default": 1000,
     },
 }
@@ -202,6 +204,8 @@ class MinecraftPlatformEvent(AstrMessageEvent):
     "minecraft",
     "Minecraft 群聊桥接",
     default_config_tmpl=DEFAULT_CONFIG,
+    adapter_display_name="Minecraft 群聊桥接",
+    logo_path=LOGO_PATH,
     config_metadata=CONFIG_METADATA,
 )
 class MinecraftPlatformAdapter(Platform):

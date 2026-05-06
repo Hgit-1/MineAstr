@@ -6,6 +6,7 @@ license="${mod_license}"
 modId="${mod_id}"
 version="${mod_version}"
 displayName="${mod_name}"
+logoFile="logo.png"
 authors="MineAstr"
 description='''
 将 Minecraft 服务端聊天桥接为 AstrBot 中的同一个群聊会话。
