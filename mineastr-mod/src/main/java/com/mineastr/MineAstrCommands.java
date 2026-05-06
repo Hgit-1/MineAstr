@@ -19,23 +19,23 @@ public final class MineAstrCommands {
     }
 
     private static int status(CommandSourceStack source, MineAstrBridge bridge) {
-        String state;
+        String stateKey;
         if (!MineAstrConfig.ENABLED.getAsBoolean()) {
-            state = "disabled";
+            stateKey = "commands.mineastr.status.disabled";
         } else if (bridge.isConnected()) {
-            state = "connected";
+            stateKey = "commands.mineastr.status.connected";
         } else if (bridge.isConnecting()) {
-            state = "connecting";
+            stateKey = "commands.mineastr.status.connecting";
         } else {
-            state = "disconnected";
+            stateKey = "commands.mineastr.status.disconnected";
         }
-        source.sendSuccess(() -> Component.literal("MineAstr status: " + state), false);
+        source.sendSuccess(() -> Component.translatable("commands.mineastr.status", Component.translatable(stateKey)), false);
         return 1;
     }
 
     private static int reconnect(CommandSourceStack source, MineAstrBridge bridge) {
         bridge.reconnect();
-        source.sendSuccess(() -> Component.literal("MineAstr reconnect requested."), false);
+        source.sendSuccess(() -> Component.translatable("commands.mineastr.reconnect"), false);
         return 1;
     }
 }

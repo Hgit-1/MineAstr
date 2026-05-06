@@ -1,6 +1,6 @@
 name: astrbot_plugin_mineastr
-display_name: MineAstr
-desc: Bridge Minecraft server chat into AstrBot as a group conversation.
+display_name: MineAstr Minecraft 群聊桥接
+desc: 将 Minecraft 玩家聊天识别为 AstrBot 中的同一个群聊，并把 AstrBot 回复广播回游戏。
 version: v0.1.0
 author: MineAstr
 repo: ""

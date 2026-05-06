@@ -11,12 +11,15 @@ from astrbot.api.message_components import Plain
 from astrbot.api.platform import (
     AstrBotMessage,
     MessageMember,
-    MessageSesion,
     MessageType,
     Platform,
     PlatformMetadata,
     register_platform_adapter,
 )
+try:
+    from astrbot.core.platform.message_session import MessageSesion
+except ImportError:
+    from astrbot.core.platform.astr_message_event import MessageSesion
 
 
 PROTOCOL_VERSION = 1
@@ -30,6 +33,62 @@ DEFAULT_CONFIG = {
     "bot_id": "astrbot",
     "bot_display_name": "AstrBot",
     "max_message_length": 1000,
+}
+CONFIG_METADATA = {
+    "host": {
+        "description": "WebSocket 监听地址。单机部署通常保持 127.0.0.1；跨机器连接时改为可被 MC 服务器访问的地址。",
+        "type": "string",
+        "hint": "127.0.0.1",
+        "default": "127.0.0.1",
+    },
+    "port": {
+        "description": "WebSocket 监听端口，需要与 MineAstr Mod 配置中的 websocketUrl 端口一致。",
+        "type": "int",
+        "hint": "8765",
+        "default": 8765,
+    },
+    "path": {
+        "description": "WebSocket 路径，需要与 MineAstr Mod 配置中的 websocketUrl 路径一致。",
+        "type": "string",
+        "hint": "/ws",
+        "default": "/ws",
+    },
+    "token": {
+        "description": "Minecraft Mod 连接时使用的 Bearer Token。建议改成较长的随机值。",
+        "type": "string",
+        "hint": "change-me",
+        "default": "change-me",
+    },
+    "group_id": {
+        "description": "所有 Minecraft 聊天进入 AstrBot 后使用的群组 ID。",
+        "type": "string",
+        "hint": "minecraft",
+        "default": "minecraft",
+    },
+    "group_name": {
+        "description": "Minecraft 群聊在 AstrBot 中显示的群组名称。",
+        "type": "string",
+        "hint": "Minecraft",
+        "default": "Minecraft",
+    },
+    "bot_id": {
+        "description": "AstrBot 在该虚拟 Minecraft 平台中的机器人 ID。",
+        "type": "string",
+        "hint": "astrbot",
+        "default": "astrbot",
+    },
+    "bot_display_name": {
+        "description": "AstrBot 回复广播到 Minecraft 时显示的名称。",
+        "type": "string",
+        "hint": "AstrBot",
+        "default": "AstrBot",
+    },
+    "max_message_length": {
+        "description": "转发到 AstrBot 的单条 Minecraft 聊天最大长度，超出部分会被截断。",
+        "type": "int",
+        "hint": "1000",
+        "default": 1000,
+    },
 }
 
 
@@ -53,7 +112,7 @@ def _plain_text_from_chain(message: MessageChain) -> str:
         elif hasattr(item, "text"):
             parts.append(str(item.text))
         else:
-            logger.warning("MineAstr ignored unsupported outbound message segment: %s", type(item).__name__)
+            logger.warning("MineAstr 已忽略不支持的出站消息片段：%s", type(item).__name__)
     return "".join(parts).strip()
 
 
@@ -114,7 +173,7 @@ class MinecraftConnectionManager:
             try:
                 await ws.send_str(data)
             except Exception as exc:
-                logger.warning("MineAstr failed to send websocket payload: %s", exc)
+                logger.warning("MineAstr 发送 WebSocket 数据失败：%s", exc)
                 await self.unregister(ws)
 
 
@@ -141,12 +200,16 @@ class MinecraftPlatformEvent(AstrMessageEvent):
 
 @register_platform_adapter(
     "minecraft",
-    "Minecraft",
+    "Minecraft 群聊桥接",
     default_config_tmpl=DEFAULT_CONFIG,
+    config_metadata=CONFIG_METADATA,
 )
 class MinecraftPlatformAdapter(Platform):
     def __init__(self, platform_config: dict[str, Any], platform_settings: dict[str, Any], event_queue):
-        super().__init__(event_queue)
+        try:
+            super().__init__(platform_config or {}, event_queue)
+        except TypeError:
+            super().__init__(event_queue)
         self.config = {**DEFAULT_CONFIG, **(platform_config or {})}
         self.settings = platform_settings or {}
         self.host = str(_config_value(self.config, "host"))
@@ -166,7 +229,7 @@ class MinecraftPlatformAdapter(Platform):
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(
             name="minecraft",
-            description="Minecraft server chat over MineAstr websocket",
+            description="通过 MineAstr WebSocket 接入 Minecraft 聊天",
             id="minecraft",
         )
 
@@ -177,7 +240,7 @@ class MinecraftPlatformAdapter(Platform):
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
-        logger.info("MineAstr websocket listening on ws://%s:%s%s", self.host, self.port, self.path)
+        logger.info("MineAstr WebSocket 正在监听 ws://%s:%s%s", self.host, self.port, self.path)
 
         try:
             await asyncio.Event().wait()
@@ -194,21 +257,21 @@ class MinecraftPlatformAdapter(Platform):
 
     async def _handle_websocket(self, request: web.Request) -> web.StreamResponse:
         if not self._authorized(request):
-            return web.Response(status=401, text="unauthorized")
+            return web.Response(status=401, text="未授权")
 
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
-        logger.info("MineAstr websocket client connected from %s", request.remote)
+        logger.info("MineAstr WebSocket 客户端已连接：%s", request.remote)
 
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     await self._handle_text(ws, msg.data)
                 elif msg.type == WSMsgType.ERROR:
-                    logger.warning("MineAstr websocket error: %s", ws.exception())
+                    logger.warning("MineAstr WebSocket 出错：%s", ws.exception())
         finally:
             await self.connection_manager.unregister(ws)
-            logger.info("MineAstr websocket client disconnected")
+            logger.info("MineAstr WebSocket 客户端已断开")
         return ws
 
     def _authorized(self, request: web.Request) -> bool:
@@ -221,7 +284,7 @@ class MinecraftPlatformAdapter(Platform):
         try:
             payload = json.loads(data)
         except json.JSONDecodeError:
-            await self.connection_manager.send_error(ws, "invalid json")
+            await self.connection_manager.send_error(ws, "无效的 JSON")
             return
 
         payload_type = payload.get("type")
@@ -232,16 +295,16 @@ class MinecraftPlatformAdapter(Platform):
         elif payload_type == "ping":
             await self.connection_manager.send_pong(ws, payload.get("time_ms"))
         else:
-            await self.connection_manager.send_error(ws, f"unsupported message type: {payload_type}")
+            await self.connection_manager.send_error(ws, f"不支持的消息类型：{payload_type}")
 
     async def _handle_hello(self, ws: web.WebSocketResponse, payload: dict[str, Any]) -> None:
         protocol = int(payload.get("protocol", 0))
         if protocol != PROTOCOL_VERSION:
-            await self.connection_manager.send_error(ws, f"unsupported protocol: {protocol}")
+            await self.connection_manager.send_error(ws, f"不支持的协议版本：{protocol}")
             return
         await self.connection_manager.register(ws, payload)
         logger.info(
-            "MineAstr registered server %s (%s)",
+            "MineAstr 已注册服务器 %s（%s）",
             payload.get("server_id", "minecraft"),
             payload.get("server_name", "Minecraft Server"),
         )

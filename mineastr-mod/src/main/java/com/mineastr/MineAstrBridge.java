@@ -24,24 +24,21 @@ public final class MineAstrBridge implements WebSocket.Listener {
     private static final Gson GSON = new Gson();
     private static final int PROTOCOL_VERSION = 1;
 
-    private final ScheduledExecutorService reconnectExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread thread = new Thread(r, "MineAstr-Reconnect");
-        thread.setDaemon(true);
-        return thread;
-    });
     private final AtomicReference<WebSocket> webSocket = new AtomicReference<>();
     private final AtomicBoolean connecting = new AtomicBoolean(false);
     private final StringBuilder inboundBuffer = new StringBuilder();
 
     private volatile MinecraftServer server;
+    private volatile ScheduledExecutorService reconnectExecutor = createReconnectExecutor();
     private volatile ScheduledFuture<?> reconnectTask;
     private volatile boolean stopping;
 
     public void start(MinecraftServer server) {
         this.server = server;
         this.stopping = false;
+        ensureReconnectExecutor();
         if (!MineAstrConfig.ENABLED.getAsBoolean()) {
-            MineAstr.LOGGER.info("MineAstr is disabled by config.");
+            MineAstr.LOGGER.info("MineAstr 已被配置禁用。");
             return;
         }
         connectNow();
@@ -54,7 +51,12 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if (socket != null) {
             socket.sendClose(WebSocket.NORMAL_CLOSURE, "server stopping");
         }
-        reconnectExecutor.shutdownNow();
+        server = null;
+        ScheduledExecutorService executor = reconnectExecutor;
+        if (executor != null) {
+            executor.shutdownNow();
+        }
+        reconnectExecutor = null;
     }
 
     public boolean isConnected() {
@@ -81,7 +83,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         }
         WebSocket socket = webSocket.get();
         if (socket == null || socket.isOutputClosed()) {
-            MineAstr.LOGGER.debug("Dropping Minecraft chat because MineAstr is disconnected.");
+            MineAstr.LOGGER.debug("MineAstr 未连接，已丢弃本条 Minecraft 聊天。");
             return;
         }
         String content = trimContent(rawText, MineAstrConfig.MAX_MESSAGE_LENGTH.getAsInt());
@@ -109,7 +111,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
             uri = URI.create(MineAstrConfig.WEBSOCKET_URL.get());
         } catch (IllegalArgumentException exc) {
             connecting.set(false);
-            MineAstr.LOGGER.error("Invalid MineAstr websocketUrl: {}", MineAstrConfig.WEBSOCKET_URL.get(), exc);
+            MineAstr.LOGGER.error("MineAstr websocketUrl 无效：{}", MineAstrConfig.WEBSOCKET_URL.get(), exc);
             scheduleReconnect();
             return;
         }
@@ -122,13 +124,19 @@ public final class MineAstrBridge implements WebSocket.Listener {
                 .buildAsync(uri, this)
                 .whenComplete((socket, throwable) -> {
                     connecting.set(false);
+                    if (stopping) {
+                        if (socket != null) {
+                            socket.abort();
+                        }
+                        return;
+                    }
                     if (throwable != null) {
-                        MineAstr.LOGGER.warn("MineAstr failed to connect to AstrBot: {}", throwable.getMessage());
+                        MineAstr.LOGGER.warn("MineAstr 连接 AstrBot 失败：{}", throwable.getMessage());
                         scheduleReconnect();
                     } else {
                         webSocket.set(socket);
                         sendHello(socket);
-                        MineAstr.LOGGER.info("MineAstr connected to AstrBot at {}", uri);
+                        MineAstr.LOGGER.info("MineAstr 已连接到 AstrBot：{}", uri);
                     }
                 });
     }
@@ -148,8 +156,12 @@ public final class MineAstrBridge implements WebSocket.Listener {
             return;
         }
         cancelReconnect();
+        ScheduledExecutorService executor = reconnectExecutor;
+        if (executor == null || executor.isShutdown()) {
+            return;
+        }
         int seconds = MineAstrConfig.RECONNECT_SECONDS.getAsInt();
-        reconnectTask = reconnectExecutor.schedule(this::connectNow, seconds, TimeUnit.SECONDS);
+        reconnectTask = executor.schedule(this::connectNow, seconds, TimeUnit.SECONDS);
     }
 
     private void cancelReconnect() {
@@ -181,7 +193,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     @Override
     public CompletionStage<?> onClose(WebSocket socket, int statusCode, String reason) {
         webSocket.compareAndSet(socket, null);
-        MineAstr.LOGGER.info("MineAstr websocket closed: {} {}", statusCode, reason);
+        MineAstr.LOGGER.info("MineAstr WebSocket 已关闭：{} {}", statusCode, reason);
         scheduleReconnect();
         return CompletableFuture.completedFuture(null);
     }
@@ -189,7 +201,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     @Override
     public void onError(WebSocket socket, Throwable error) {
         webSocket.compareAndSet(socket, null);
-        MineAstr.LOGGER.warn("MineAstr websocket error: {}", error.getMessage());
+        MineAstr.LOGGER.warn("MineAstr WebSocket 出错：{}", error.getMessage());
         scheduleReconnect();
     }
 
@@ -198,7 +210,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         try {
             payload = JsonParser.parseString(message).getAsJsonObject();
         } catch (RuntimeException exc) {
-            MineAstr.LOGGER.warn("MineAstr ignored invalid JSON from AstrBot: {}", message);
+            MineAstr.LOGGER.warn("MineAstr 已忽略来自 AstrBot 的无效 JSON：{}", message);
             return;
         }
 
@@ -206,12 +218,27 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if ("chat".equals(type)) {
             handleChat(payload);
         } else if ("pong".equals(type)) {
-            MineAstr.LOGGER.debug("MineAstr received pong from AstrBot.");
+            MineAstr.LOGGER.debug("MineAstr 已收到 AstrBot 的 pong。");
         } else if ("error".equals(type)) {
             String error = payload.has("message") ? payload.get("message").getAsString() : "unknown";
-            MineAstr.LOGGER.warn("MineAstr received error from AstrBot: {}", error);
+            MineAstr.LOGGER.warn("MineAstr 收到 AstrBot 错误：{}", error);
         } else {
-            MineAstr.LOGGER.debug("MineAstr ignored unsupported AstrBot payload type: {}", type);
+            MineAstr.LOGGER.debug("MineAstr 已忽略不支持的 AstrBot 消息类型：{}", type);
+        }
+    }
+
+    private static ScheduledExecutorService createReconnectExecutor() {
+        return Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "MineAstr-Reconnect");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    private void ensureReconnectExecutor() {
+        ScheduledExecutorService executor = reconnectExecutor;
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            reconnectExecutor = createReconnectExecutor();
         }
     }
 

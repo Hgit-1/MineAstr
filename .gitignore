@@ -14,6 +14,7 @@ data/
 logs/
 *.log
 .env
+/astrbot_plugin_mineastr.zip
 
 # Gradle / Java / NeoForge
 .gradle/

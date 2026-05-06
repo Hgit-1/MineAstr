@@ -1,0 +1,8 @@
+{
+  "commands.mineastr.status": "MineAstr 状态：%s",
+  "commands.mineastr.status.disabled": "已禁用",
+  "commands.mineastr.status.connected": "已连接",
+  "commands.mineastr.status.connecting": "连接中",
+  "commands.mineastr.status.disconnected": "未连接",
+  "commands.mineastr.reconnect": "MineAstr 已请求重新连接。"
+}
