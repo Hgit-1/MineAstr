@@ -9,7 +9,7 @@ displayName="${mod_name}"
 logoFile="logo.png"
 authors="MineAstr"
 description='''
-将 Minecraft 服务端聊天桥接为 AstrBot 中的同一个群聊会话。
+将 Minecraft 聊天桥接为 AstrBot 群聊，并在安装客户端 Mod 时提供低清晰度截图工具。
 '''
 
 [[dependencies.${mod_id}]]
@@ -17,11 +17,11 @@ description='''
     type="required"
     versionRange="[${neo_version},)"
     ordering="NONE"
-    side="SERVER"
+    side="BOTH"
 
 [[dependencies.${mod_id}]]
     modId="minecraft"
     type="required"
     versionRange="${minecraft_version_range}"
     ordering="NONE"
-    side="SERVER"
+    side="BOTH"

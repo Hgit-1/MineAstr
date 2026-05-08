@@ -1,0 +1,19 @@
+# AstrBot 请求截图时客户端如何处理。
+# ASK：弹出确认界面，玩家同意后发送；AUTO：自动发送；DISABLED：始终拒绝发送。
+screenshotMode = "ASK"
+
+# 发送给 AstrBot 的截图最大宽度。
+# 数值越大越清晰，但会占用更多网络和模型上下文。
+screenshotMaxWidth = 240
+
+# 发送给 AstrBot 的截图最大高度。
+# 建议保持较低数值，避免暴露过多画面细节。
+screenshotMaxHeight = 135
+
+# 截图 JPEG 质量，范围 0.10 到 0.95。
+# 数值越高越清晰，文件也越大；默认 0.35 适合低清晰度问答。
+screenshotJpegQuality = 0.35
+
+# 单张截图编码后的最大字节数。
+# 超过限制时客户端会自动降低质量和尺寸后再发送。
+screenshotMaxBytes = 131072

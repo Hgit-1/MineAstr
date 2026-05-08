@@ -4,5 +4,14 @@
   "commands.mineastr.status.connected": "connected",
   "commands.mineastr.status.connecting": "connecting",
   "commands.mineastr.status.disconnected": "disconnected",
-  "commands.mineastr.reconnect": "MineAstr reconnect requested."
+  "commands.mineastr.reconnect": "MineAstr reconnect requested.",
+  "screen.mineastr.screenshot.title": "MineAstr Screenshot Request",
+  "screen.mineastr.screenshot.message": "AstrBot requests a low-resolution screenshot: %s",
+  "screen.mineastr.screenshot.allow": "Send Screenshot",
+  "screen.mineastr.screenshot.deny": "Deny",
+  "configuration.mineastr.screenshotMode": "Screenshot mode",
+  "configuration.mineastr.screenshotMaxWidth": "Screenshot max width",
+  "configuration.mineastr.screenshotMaxHeight": "Screenshot max height",
+  "configuration.mineastr.screenshotJpegQuality": "Screenshot JPEG quality",
+  "configuration.mineastr.screenshotMaxBytes": "Screenshot max bytes"
 }

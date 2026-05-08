@@ -24,6 +24,8 @@ except ImportError:
 
 
 PROTOCOL_VERSION = 1
+QUERY_TIMEOUT_SECONDS = 5.0
+SCREENSHOT_QUERY_TIMEOUT_SECONDS = 35.0
 LOGO_PATH = str(Path(__file__).resolve().with_name("logo.png"))
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
@@ -118,10 +120,17 @@ def _plain_text_from_chain(message: MessageChain) -> str:
     return "".join(parts).strip()
 
 
+def _query_error_message(exc: BaseException) -> str:
+    if isinstance(exc, asyncio.TimeoutError):
+        return "等待 Minecraft 服务器查询结果超时"
+    return str(exc) or exc.__class__.__name__
+
+
 class MinecraftConnectionManager:
     def __init__(self, bot_display_name: str):
         self._bot_display_name = bot_display_name
         self._connections: dict[web.WebSocketResponse, dict[str, Any]] = {}
+        self._pending_queries: dict[str, tuple[web.WebSocketResponse, asyncio.Future[dict[str, Any]]]] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -129,21 +138,42 @@ class MinecraftConnectionManager:
         return len(self._connections)
 
     async def register(self, ws: web.WebSocketResponse, hello: dict[str, Any]) -> None:
+        now = int(time.time() * 1000)
         async with self._lock:
             self._connections[ws] = {
                 "server_id": hello.get("server_id", "minecraft"),
                 "server_name": hello.get("server_name", "Minecraft Server"),
-                "connected_at": int(time.time() * 1000),
+                "mod_version": hello.get("mod_version", "unknown"),
+                "connected_at": now,
+                "last_seen_at": now,
             }
 
     async def unregister(self, ws: web.WebSocketResponse) -> None:
         async with self._lock:
             self._connections.pop(ws, None)
+            pending_ids = [
+                message_id
+                for message_id, (pending_ws, _) in self._pending_queries.items()
+                if pending_ws is ws
+            ]
+            for message_id in pending_ids:
+                _, future = self._pending_queries.pop(message_id)
+                if not future.done():
+                    future.set_exception(RuntimeError("Minecraft WebSocket 已断开"))
+
+    async def snapshot(self) -> list[dict[str, Any]]:
+        async with self._lock:
+            return [dict(meta) for meta in self._connections.values()]
 
     async def close(self) -> None:
         async with self._lock:
             connections = list(self._connections.keys())
+            pending = list(self._pending_queries.values())
             self._connections.clear()
+            self._pending_queries.clear()
+        for _, future in pending:
+            if not future.done():
+                future.set_exception(RuntimeError("MineAstr WebSocket 服务正在关闭"))
         for ws in connections:
             await ws.close()
 
@@ -164,6 +194,63 @@ class MinecraftConnectionManager:
     async def send_error(self, ws: web.WebSocketResponse, message: str) -> None:
         await ws.send_str(json.dumps({"type": "error", "message": message}))
 
+    async def mark_seen(self, ws: web.WebSocketResponse) -> None:
+        async with self._lock:
+            if ws in self._connections:
+                self._connections[ws]["last_seen_at"] = int(time.time() * 1000)
+
+    async def resolve_query(self, payload: dict[str, Any]) -> None:
+        message_id = str(payload.get("message_id") or "")
+        if not message_id:
+            return
+        async with self._lock:
+            pending = self._pending_queries.pop(message_id, None)
+        if not pending:
+            logger.debug("MineAstr 已忽略未知查询结果：%s", message_id)
+            return
+        _, future = pending
+        if not future.done():
+            future.set_result(payload)
+
+    async def query(
+        self,
+        query_type: str,
+        server_id: str | None = None,
+        params: dict[str, Any] | None = None,
+        timeout: float = QUERY_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        ws, _ = await self._select_connection(server_id)
+        return await self._query_ws(ws, query_type, params=params, timeout=timeout)
+
+    async def query_all(self, query_type: str) -> list[dict[str, Any]]:
+        async with self._lock:
+            targets = [
+                (ws, dict(meta))
+                for ws, meta in self._connections.items()
+                if not ws.closed
+            ]
+        if not targets:
+            return []
+
+        tasks = [self._query_ws(ws, query_type) for ws, _ in targets]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        normalized: list[dict[str, Any]] = []
+        for (_, meta), result in zip(targets, results):
+            if isinstance(result, Exception):
+                normalized.append(
+                    {
+                        "type": "query_result",
+                        "query": query_type,
+                        "ok": False,
+                        "server_id": meta.get("server_id", "minecraft"),
+                        "server_name": meta.get("server_name", "Minecraft Server"),
+                        "error": _query_error_message(result),
+                    }
+                )
+            else:
+                normalized.append(result)
+        return normalized
+
     async def _broadcast(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False)
         async with self._lock:
@@ -177,6 +264,50 @@ class MinecraftConnectionManager:
             except Exception as exc:
                 logger.warning("MineAstr 发送 WebSocket 数据失败：%s", exc)
                 await self.unregister(ws)
+
+    async def _select_connection(self, server_id: str | None) -> tuple[web.WebSocketResponse, dict[str, Any]]:
+        async with self._lock:
+            connections = [
+                (ws, dict(meta))
+                for ws, meta in self._connections.items()
+                if not ws.closed
+            ]
+        if not connections:
+            raise RuntimeError("当前没有已连接的 Minecraft 服务器")
+        if server_id:
+            for ws, meta in connections:
+                if str(meta.get("server_id")) == server_id:
+                    return ws, meta
+            raise RuntimeError(f"未找到 server_id={server_id} 的 Minecraft 服务器")
+        return connections[0]
+
+    async def _query_ws(
+        self,
+        ws: web.WebSocketResponse,
+        query_type: str,
+        params: dict[str, Any] | None = None,
+        timeout: float = QUERY_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        if ws.closed:
+            raise RuntimeError("Minecraft WebSocket 已关闭")
+        message_id = str(uuid.uuid4())
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        async with self._lock:
+            self._pending_queries[message_id] = (ws, future)
+        payload = {
+            "type": "query",
+            "message_id": message_id,
+            "query": query_type,
+            "time_ms": int(time.time() * 1000),
+        }
+        if params:
+            payload.update(params)
+        try:
+            await ws.send_str(json.dumps(payload, ensure_ascii=False))
+            return await asyncio.wait_for(future, timeout=timeout)
+        finally:
+            async with self._lock:
+                self._pending_queries.pop(message_id, None)
 
 
 class MinecraftPlatformEvent(AstrMessageEvent):
@@ -259,6 +390,57 @@ class MinecraftPlatformAdapter(Platform):
             return
         await self.connection_manager.send_chat(content, self.bot_display_name)
 
+    async def query_status(self, server_id: str | None = None) -> dict[str, Any]:
+        if server_id:
+            return await self.connection_manager.query("status", server_id)
+        return {
+            "type": "query_result",
+            "query": "status",
+            "ok": True,
+            "connected_count": self.connection_manager.connected_count,
+            "servers": await self.connection_manager.query_all("status"),
+        }
+
+    async def query_players(self, server_id: str | None = None) -> dict[str, Any]:
+        if server_id:
+            return await self.connection_manager.query("players", server_id)
+        return {
+            "type": "query_result",
+            "query": "players",
+            "ok": True,
+            "connected_count": self.connection_manager.connected_count,
+            "servers": await self.connection_manager.query_all("players"),
+        }
+
+    async def request_screenshot(
+        self,
+        server_id: str | None = None,
+        player_uuid: str = "",
+        player_name: str = "",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        params = {
+            "player_uuid": player_uuid.strip(),
+            "player_name": player_name.strip(),
+            "reason": reason.strip() or "AstrBot 请求查看当前 Minecraft 画面。",
+            "max_width": 240,
+            "max_height": 135,
+            "format": "jpeg",
+        }
+        return await self.connection_manager.query(
+            "screenshot",
+            server_id,
+            params=params,
+            timeout=SCREENSHOT_QUERY_TIMEOUT_SECONDS,
+        )
+
+    async def local_status(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "connected_count": self.connection_manager.connected_count,
+            "servers": await self.connection_manager.snapshot(),
+        }
+
     async def _handle_websocket(self, request: web.Request) -> web.StreamResponse:
         if not self._authorized(request):
             return web.Response(status=401, text="未授权")
@@ -290,19 +472,35 @@ class MinecraftPlatformAdapter(Platform):
         except json.JSONDecodeError:
             await self.connection_manager.send_error(ws, "无效的 JSON")
             return
+        if not isinstance(payload, dict):
+            await self.connection_manager.send_error(ws, "WebSocket 消息必须是 JSON 对象")
+            return
 
-        payload_type = payload.get("type")
-        if payload_type == "hello":
-            await self._handle_hello(ws, payload)
-        elif payload_type == "chat":
-            await self._handle_chat(payload)
-        elif payload_type == "ping":
-            await self.connection_manager.send_pong(ws, payload.get("time_ms"))
-        else:
-            await self.connection_manager.send_error(ws, f"不支持的消息类型：{payload_type}")
+        try:
+            payload_type = payload.get("type")
+            if payload_type == "hello":
+                await self._handle_hello(ws, payload)
+            elif payload_type == "chat":
+                await self.connection_manager.mark_seen(ws)
+                await self._handle_chat(payload)
+            elif payload_type == "ping":
+                await self.connection_manager.mark_seen(ws)
+                await self.connection_manager.send_pong(ws, payload.get("time_ms"))
+            elif payload_type == "query_result":
+                await self.connection_manager.mark_seen(ws)
+                await self.connection_manager.resolve_query(payload)
+            else:
+                await self.connection_manager.send_error(ws, f"不支持的消息类型：{payload_type}")
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("MineAstr 处理 WebSocket 消息失败：%s", exc)
+            await self.connection_manager.send_error(ws, str(exc))
 
     async def _handle_hello(self, ws: web.WebSocketResponse, payload: dict[str, Any]) -> None:
-        protocol = int(payload.get("protocol", 0))
+        try:
+            protocol = int(payload.get("protocol", 0))
+        except (TypeError, ValueError):
+            await self.connection_manager.send_error(ws, "协议版本必须是整数")
+            return
         if protocol != PROTOCOL_VERSION:
             await self.connection_manager.send_error(ws, f"不支持的协议版本：{protocol}")
             return
@@ -334,6 +532,8 @@ class MinecraftPlatformAdapter(Platform):
         player_name = str(payload.get("player_name") or player_uuid)
         message.type = MessageType.GROUP_MESSAGE
         message.group_id = self.group_id
+        if message.group:
+            message.group.group_name = self.group_name
         message.message_str = content
         message.message = [Plain(content)]
         message.raw_message = payload

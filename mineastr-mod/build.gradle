@@ -62,6 +62,10 @@ neoForge {
     }
 
     runs {
+        client {
+            client()
+        }
+
         server {
             server()
             programArgument '--nogui'

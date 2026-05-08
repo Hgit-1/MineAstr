@@ -1,6 +1,8 @@
 # MineAstr NeoForge Mod
 
-MineAstr 是一个服务端侧 NeoForge 1.21.1 Mod，用于把 Minecraft 聊天桥接到 AstrBot，并把 AstrBot 的文本回复广播回游戏。
+MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，并把 AstrBot 的文本回复广播回游戏。
+
+从 AstrBot 侧启用 MineAstr LLM 工具后，机器人还可以主动向 Mod 查询服务器状态、在线玩家列表，并在玩家客户端允许时请求低清晰度截图。
 
 ## 构建
 
@@ -14,7 +16,9 @@ MineAstr 是一个服务端侧 NeoForge 1.21.1 Mod，用于把 Minecraft 聊天�
 
 ## 安装与运行
 
-独立服务器使用时，只需要把构建出的 jar 放到 NeoForge 服务端的 `mods` 目录，客户端无需安装。
+独立服务器使用时，把构建出的 jar 放到 NeoForge 服务端的 `mods` 目录即可提供聊天桥接、状态查询和在线玩家查询。客户端没有安装 MineAstr 也可以加入服务器。
+
+如果希望使用截图工具，目标玩家的客户端也需要安装同一个 MineAstr jar。截图是附加功能，不影响未安装客户端 Mod 的玩家进入服务器。
 
 单人本地世界也可以使用：把 jar 放到 NeoForge 1.21.1 客户端的 `mods` 目录，进入单人世界后由集成服务器加载 MineAstr。
 
@@ -25,7 +29,11 @@ MineAstr 是一个服务端侧 NeoForge 1.21.1 Mod，用于把 Minecraft 聊天�
 - 独立服务端：`服务端目录/config/mineastr-common.toml`
 - 单人本地世界：`.minecraft/config/mineastr-common.toml`
 
-如果没有看到这个文件，请先确认服务端或客户端至少启动过一次，并且 MineAstr jar 已经放在正确的 `mods` 目录。
+客户端安装 MineAstr 后还会生成截图配置：
+
+- 客户端：`.minecraft/config/mineastr-client.toml`
+
+也可以在游戏主菜单的 Mod 列表中打开 MineAstr 的配置界面修改截图选项。如果没有看到配置文件，请先确认服务端或客户端至少启动过一次，并且 MineAstr jar 已经放在正确的 `mods` 目录。
 
 ## 最简单配置
 
@@ -84,6 +92,30 @@ reconnectSeconds = 5
 maxMessageLength = 1000
 ```
 
+## 客户端截图配置
+
+截图配置只在安装了客户端 Mod 的玩家电脑上生效。默认是 `ASK`，也就是 AstrBot 请求截图时先弹出确认窗口，玩家同意后才发送。
+
+仓库中提供了示例文件：[examples/mineastr-client.toml](examples/mineastr-client.toml)。
+
+```toml
+# AstrBot 请求截图时客户端如何处理。
+# ASK：弹出确认界面，玩家同意后发送；AUTO：自动发送；DISABLED：始终拒绝发送。
+screenshotMode = "ASK"
+
+# 发送给 AstrBot 的截图最大宽度。
+screenshotMaxWidth = 240
+
+# 发送给 AstrBot 的截图最大高度。
+screenshotMaxHeight = 135
+
+# 截图 JPEG 质量，范围 0.10 到 0.95。
+screenshotJpegQuality = 0.35
+
+# 单张截图编码后的最大字节数。
+screenshotMaxBytes = 131072
+```
+
 ## 跨机器部署
 
 如果 AstrBot 和 Minecraft 服务器不在同一台机器上：
@@ -103,6 +135,8 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 - `enabled` 只能写 `true` 或 `false`，不要加引号。
 - `reconnectSeconds` 和 `maxMessageLength` 是数字，不要加引号。
 - `websocketUrl`、`token`、`serverId`、`serverName`、`botDisplayName` 是字符串，必须保留英文双引号。
+- `screenshotMode` 是字符串，只能写 `"ASK"`、`"AUTO"` 或 `"DISABLED"`。
+- `screenshotJpegQuality` 是小数，不要加引号。
 - 不要删除 `=`，不要把中文说明文字写到 `=` 后面。
 - `websocketUrl` 的格式是 `ws://地址:端口/路径`，例如 `ws://127.0.0.1:8765/ws`。
 
@@ -113,9 +147,21 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 两个命令都需要权限等级 2。
 
+## AstrBot 主动查询
+
+Mod 支持 AstrBot 发来的 `query` 协议消息：
+
+- `status`：返回服务器名称、Minecraft 版本、MineAstr Mod 版本、在线人数、最大人数、运行时长和在线玩家名。
+- `players`：返回在线玩家数量、最大人数、在线玩家列表，以及每名玩家是否支持截图。
+- `screenshot`：向指定玩家客户端请求低清晰度截图。玩家未安装客户端 Mod、拒绝截图、禁用截图或超时时会返回失败原因。
+
+这些查询由 AstrBot 插件中的 LLM 工具触发。实际使用时，玩家可以在 Minecraft 中直接问“现在有谁在线”“服务器状态怎么样”或“能看看我现在画面吗”，AstrBot 会在模型支持工具调用时主动查询 Mod，然后再组织回复。
+
 ## 故障排查
 
 - 状态一直是 `未连接`：确认 AstrBot 已启动，`minecraft` 平台适配器已启用，`websocketUrl` 指向正确地址。
 - 日志中出现 `401` 或认证失败：检查两端 `token` 是否完全一致。
 - 玩家聊天没有进入 AstrBot：确认 `enabled = true`，并检查服务器日志中是否有连接失败或 JSON 错误。
 - 游戏里没有看到回复：AstrBot 是否回复由 AstrBot 自身的群聊规则、唤醒词和权限决定。
+- AstrBot 不会查询在线玩家：确认 AstrBot 当前模型支持工具调用，并且插件与 Mod 都已经更新到支持查询协议的版本。
+- AstrBot 请求截图失败：确认目标玩家客户端安装了 MineAstr，并且 `screenshotMode` 不是 `"DISABLED"`。默认 `"ASK"` 模式下，玩家需要在弹窗里点击“发送截图”。

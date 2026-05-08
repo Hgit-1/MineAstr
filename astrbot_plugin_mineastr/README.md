@@ -14,6 +14,8 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 [AstrBot] 回复内容
 ```
 
+在模型支持工具调用时，AstrBot 还能主动查询服务器状态、在线玩家，并向安装了 MineAstr 客户端 Mod 且允许截图的玩家请求低清晰度截图。
+
 ## 最简单配置
 
 如果 AstrBot 和 Minecraft 服务器都在同一台电脑上，只需要改一项：
@@ -76,10 +78,48 @@ pip install -r astrbot_plugin_mineastr/requirements.txt
 | `bot_display_name` | `AstrBot` | 回复广播到游戏内时显示在方括号里的名称。 |
 | `max_message_length` | `1000` | 转发到 AstrBot 的单条玩家消息最大长度，超出部分会被截断。 |
 
+## 机器人可调用工具
+
+插件会注册三个 AstrBot LLM 工具。只要当前模型提供商支持 function calling / tools，并且 AstrBot 中没有禁用这些工具，机器人在对话中可以主动查询 Minecraft 数据后再回答。
+
+| 工具 | 用途 |
+| --- | --- |
+| `mineastr_get_server_status` | 查询 Minecraft 服务器连接状态、服务器名称、MC 版本、Mod 版本、在线人数和运行时长。 |
+| `mineastr_get_online_players` | 查询当前在线玩家数量和玩家列表。 |
+| `mineastr_request_screenshot` | 请求指定玩家客户端发送低清晰度截图，并把截图保存到 AstrBot 工作目录。 |
+
+使用示例：
+
+- 玩家在 Minecraft 中问：“现在服务器有几个人？”
+- AstrBot 收到这条群聊消息。
+- 模型判断需要实时数据，调用 `mineastr_get_online_players`。
+- 工具向 MineAstr Mod 发起查询，Mod 返回在线玩家列表。
+- 模型根据工具结果回复玩家。
+
+截图示例：
+
+- 玩家在 Minecraft 中问：“能看看我现在画面吗？”
+- AstrBot 默认把截图目标设为当前发言玩家。
+- 如果该玩家安装了 MineAstr 客户端 Mod，客户端会按 `mineastr-client.toml` 中的 `screenshotMode` 处理。
+- 默认 `ASK` 模式下，玩家点击“发送截图”后，工具会把图片保存到 `data/mineastr/screenshots/`，并把文件路径、尺寸、玩家名和时间返回给模型。
+- 如果当前 AstrBot 工具链支持 MCP 图片结果，插件还会把截图作为图片内容返回给支持视觉理解的模型；不支持时仍返回文本摘要和文件路径。
+
+注意事项：
+
+- 需要使用支持工具调用的模型或提供商，否则模型只能按普通聊天回答，无法主动查询实时数据。
+- 如果 AstrBot WebUI 中有工具开关，请确认 `mineastr_get_server_status` 和 `mineastr_get_online_players` 处于启用状态。
+- 如果 AstrBot WebUI 中有工具开关，请确认 `mineastr_request_screenshot` 也处于启用状态。
+- 旧版 MineAstr Mod 只支持聊天转发，不支持实时查询和截图；更新插件后也需要重新构建并替换 Minecraft 侧 jar。
+- 接入多个 Minecraft 服务器时，工具可以传入 `server_id` 查询指定服务器；只有一个服务器时无需填写。
+- 截图功能需要目标玩家安装客户端 Mod；只安装服务端 Mod 时基础聊天和查询可用，但截图不可用。
+
 ## 故障排查
 
 - Mod 日志提示 `401` 或连接后立即断开：检查两端 `token` 是否完全一致。
 - Mod 一直显示 `未连接`：确认 AstrBot 插件已加载，`minecraft` 平台适配器已启用，端口没有被防火墙或其他程序占用。
 - AstrBot 收到消息但没有回复：这是 AstrBot 群聊规则、唤醒词或权限设置决定的，需要检查 AstrBot 的回复策略。
+- 机器人不会主动查询服务器数据：确认当前模型支持工具调用，并确认 MineAstr 的 LLM 工具没有被禁用。
+- 截图工具返回未安装客户端 Mod：目标玩家需要在自己的 NeoForge 客户端 `mods` 目录安装 MineAstr。
+- 截图工具返回拒绝或禁用：目标玩家需要在客户端弹窗中同意，或把 `mineastr-client.toml` 的 `screenshotMode` 改为 `"ASK"` / `"AUTO"`。
 
 插件级 `_conf_schema.json` 仅用于展示和发现配置。实际生效的 WebSocket 参数以 AstrBot WebUI 中 `minecraft` 平台适配器的配置为准。
