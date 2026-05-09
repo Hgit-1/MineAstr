@@ -54,11 +54,11 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 ## 安装
 
-1. 将 `astrbot_plugin_mineastr` 目录复制或软链接到 AstrBot 的插件目录。
+1. 将本分支仓库目录复制或软链接到 AstrBot 的插件目录，并确保目录名为 `astrbot_plugin_mineastr`。
 2. 如果 AstrBot 没有自动安装依赖，请在 AstrBot 环境中运行：
 
 ```bash
-pip install -r astrbot_plugin_mineastr/requirements.txt
+pip install -r requirements.txt
 ```
 
 3. 在 AstrBot WebUI 中启用 `minecraft` 平台适配器。
@@ -99,6 +99,7 @@ pip install -r astrbot_plugin_mineastr/requirements.txt
 截图示例：
 
 - 玩家在 Minecraft 中问：“能看看我现在画面吗？”
+- 或者玩家对机器人说：“我的建筑建好啦”“帮我看看这个建筑”“我这里好像不对”“这边怎么样”。
 - AstrBot 默认把截图目标设为当前发言玩家。
 - 如果该玩家安装了 MineAstr 客户端 Mod，客户端会按 `mineastr-client.toml` 中的 `screenshotMode` 处理。
 - 默认 `ASK` 模式下，玩家点击“发送截图”后，工具会把图片保存到 `data/mineastr/screenshots/`，并把文件路径、尺寸、玩家名和时间返回给模型。

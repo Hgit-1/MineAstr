@@ -20,8 +20,10 @@ except ImportError:
 MINEASTR_TOOL_HINT = (
     "如果用户询问 Minecraft 服务器状态、在线人数、在线玩家、版本或 MineAstr 连接情况，"
     "请先调用 mineastr_get_server_status 或 mineastr_get_online_players 获取实时数据，再根据工具结果回答。"
-    "如果用户请求查看当前画面、截图、屏幕、视角或“我这里是什么情况”，请先调用 "
-    "mineastr_request_screenshot 请求低清晰度截图；截图需要玩家客户端允许。"
+    "如果用户在 Minecraft 群聊中明确或隐含表达希望你看看、评价或判断当前画面，请主动先调用 "
+    "mineastr_request_screenshot 请求低清晰度截图，再基于截图回答；例如“能看看我现在画面吗”、"
+    "“我的建筑建好啦”、“帮我看看这个建筑”、“我这里好像不对”、“这边怎么样”。"
+    "截图需要玩家客户端允许，不要假装已经看见画面。"
 )
 MINEASTR_HINT_KEYWORDS = (
     "minecraft",
@@ -37,6 +39,16 @@ MINEASTR_HINT_KEYWORDS = (
     "屏幕",
     "视角",
     "看看",
+    "建筑",
+    "建好",
+    "作品",
+    "基地",
+    "房子",
+    "这里",
+    "这边",
+    "怎么样",
+    "展示",
+    "完成",
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 
@@ -45,7 +57,7 @@ SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
     "astrbot_plugin_mineastr",
     "MineAstr",
     "将 Minecraft 聊天桥接为 AstrBot 群聊会话，并提供服务器查询与低清晰度截图工具。",
-    "0.3.0",
+    "0.3.1",
 )
 class MineAstrPlugin(Star):
     def __init__(self, context: Context):

@@ -1,7 +1,7 @@
 name: astrbot_plugin_mineastr
 display_name: MineAstr Minecraft 群聊桥接
 desc: 将 Minecraft 玩家聊天识别为 AstrBot 中的同一个群聊，并提供服务器查询与低清晰度截图工具。
-version: v0.3.0
+version: v0.3.1
 author: MineAstr
 repo: ""
 astrbot_version: ">=4.16,<5"
