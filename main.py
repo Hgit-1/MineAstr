@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import re
@@ -25,30 +26,13 @@ MINEASTR_TOOL_HINT = (
     "“我的建筑建好啦”、“帮我看看这个建筑”、“我这里好像不对”、“这边怎么样”。"
     "截图需要玩家客户端允许，不要假装已经看见画面。"
 )
-MINEASTR_HINT_KEYWORDS = (
+MINEASTR_EXTERNAL_HINT_KEYWORDS = (
     "minecraft",
     "mineastr",
     "mc",
-    "服务器",
-    "服里",
-    "在线",
-    "玩家",
-    "状态",
-    "截图",
-    "画面",
-    "屏幕",
-    "视角",
-    "看看",
-    "建筑",
-    "建好",
-    "作品",
-    "基地",
-    "房子",
-    "这里",
-    "这边",
-    "怎么样",
-    "展示",
-    "完成",
+    "mc服务器",
+    "minecraft服务器",
+    "我的世界",
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 
@@ -62,6 +46,7 @@ SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 class MineAstrPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
+        self._screenshot_last_request_at: dict[tuple[str, str, str], float] = {}
         from .minecraft_adapter import MinecraftPlatformAdapter  # noqa: F401
 
     async def initialize(self):
@@ -77,7 +62,7 @@ class MineAstrPlugin(Star):
         get_platform_id = getattr(event, "get_platform_id", None)
         if callable(get_platform_id):
             platform_id = str(get_platform_id() or "")
-        if platform_id != "minecraft" and not any(keyword in text for keyword in MINEASTR_HINT_KEYWORDS):
+        if platform_id != "minecraft" and not any(keyword in text for keyword in MINEASTR_EXTERNAL_HINT_KEYWORDS):
             return
 
         current_prompt = getattr(request, "system_prompt", "") or ""
@@ -165,6 +150,39 @@ class MineAstrPlugin(Star):
         saved["data"] = saved_data
         return saved
 
+    @staticmethod
+    def _screenshot_cooldown_key(
+        server_id: str | None,
+        player_uuid: str,
+        player_name: str,
+    ) -> tuple[str, str, str]:
+        return (
+            server_id or "minecraft",
+            player_uuid or "",
+            (player_name or "").lower(),
+        )
+
+    def _mark_screenshot_cooldown(self, key: tuple[str, str, str], cooldown_seconds: float) -> float:
+        if cooldown_seconds <= 0:
+            return 0.0
+        now = time.monotonic()
+        last_request_at = self._screenshot_last_request_at.get(key)
+        if last_request_at is not None:
+            remaining = cooldown_seconds - (now - last_request_at)
+            if remaining > 0:
+                return remaining
+
+        self._screenshot_last_request_at[key] = now
+        expire_before = now - max(cooldown_seconds * 3, 60.0)
+        stale_keys = [
+            stale_key
+            for stale_key, requested_at in self._screenshot_last_request_at.items()
+            if requested_at < expire_before
+        ]
+        for stale_key in stale_keys:
+            self._screenshot_last_request_at.pop(stale_key, None)
+        return 0.0
+
     @filter.llm_tool(name="mineastr_get_server_status")
     async def mineastr_get_server_status(self, event: AstrMessageEvent, server_id: str = "") -> str:
         """查询 Minecraft 服务器状态，包括连接状态、服务器名称、版本和在线人数。
@@ -235,6 +253,23 @@ class MineAstrPlugin(Star):
         target_name = player_name.strip() or str(raw.get("player_name") or "").strip()
         target_server = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         request_reason = reason.strip() or "AstrBot 需要查看当前 Minecraft 画面以回答玩家问题。"
+        cooldown_seconds = float(getattr(adapter, "screenshot_cooldown_seconds", 10.0) or 0.0)
+        cooldown_key = self._screenshot_cooldown_key(target_server, target_uuid, target_name)
+        cooldown_remaining = self._mark_screenshot_cooldown(cooldown_key, cooldown_seconds)
+        if cooldown_remaining > 0:
+            wait_seconds = max(1, int(cooldown_remaining + 0.999))
+            return self._tool_json(
+                "Minecraft 低清晰度截图请求结果",
+                {
+                    "ok": False,
+                    "result": f"截图请求过于频繁，请等待 {wait_seconds} 秒后再试。",
+                    "error": "screenshot_cooldown",
+                    "retry_after_seconds": wait_seconds,
+                    "server_id": target_server,
+                    "player_uuid": target_uuid,
+                    "player_name": target_name,
+                },
+            )
 
         try:
             payload = await adapter.request_screenshot(
@@ -253,6 +288,16 @@ class MineAstrPlugin(Star):
                         image_base64 = maybe_image
                     mime_type = str(data.get("mime_type") or mime_type)
                 payload = self._save_screenshot_result(payload)
+        except asyncio.TimeoutError:
+            logger.warning("MineAstr 请求 Minecraft 截图超时。")
+            image_base64 = None
+            mime_type = "image/jpeg"
+            payload = {
+                "ok": False,
+                "result": "请求截图超时，客户端未响应。",
+                "error": "screenshot_timeout",
+                "local_status": await adapter.local_status(),
+            }
         except Exception as exc:
             logger.warning("MineAstr 请求 Minecraft 截图失败：%s", exc)
             image_base64 = None

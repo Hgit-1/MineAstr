@@ -52,5 +52,17 @@
     "type": "int",
     "hint": "单条 Minecraft 消息转发到 AstrBot 前允许的最大长度；超出部分会被截断，建议保持默认。",
     "default": 1000
+  },
+  "screenshot_cooldown_seconds": {
+    "description": "截图请求冷却秒数",
+    "type": "int",
+    "hint": "同一目标玩家在冷却时间内重复请求截图时，插件会直接拦截，避免连续弹窗和网络压力。",
+    "default": 10
+  },
+  "screenshot_timeout_seconds": {
+    "description": "截图请求超时秒数",
+    "type": "int",
+    "hint": "等待 Minecraft 客户端返回截图的最长时间；超时后会立即把失败原因返回给模型。",
+    "default": 30
   }
 }

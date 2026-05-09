@@ -77,6 +77,8 @@ pip install -r requirements.txt
 | `bot_id` | `astrbot` | 虚拟 Minecraft 平台中的机器人账号 ID。一般不需要修改。 |
 | `bot_display_name` | `AstrBot` | 回复广播到游戏内时显示在方括号里的名称。 |
 | `max_message_length` | `1000` | 转发到 AstrBot 的单条玩家消息最大长度，超出部分会被截断。 |
+| `screenshot_cooldown_seconds` | `10` | 同一目标玩家的截图请求冷却时间，防止模型连续触发截图弹窗。 |
+| `screenshot_timeout_seconds` | `30` | 等待 Minecraft 客户端返回截图的最长时间，超时后直接把失败原因返回给模型。 |
 
 ## 机器人可调用工具
 
@@ -104,6 +106,8 @@ pip install -r requirements.txt
 - 如果该玩家安装了 MineAstr 客户端 Mod，客户端会按 `mineastr-client.toml` 中的 `screenshotMode` 处理。
 - 默认 `ASK` 模式下，玩家点击“发送截图”后，工具会把图片保存到 `data/mineastr/screenshots/`，并把文件路径、尺寸、玩家名和时间返回给模型。
 - 如果当前 AstrBot 工具链支持 MCP 图片结果，插件还会把截图作为图片内容返回给支持视觉理解的模型；不支持时仍返回文本摘要和文件路径。
+- 插件会对同一目标玩家的截图请求做 10 秒冷却；冷却期内再次调用会直接返回“截图请求过于频繁”。
+- 截图请求全程使用异步 `await` 等待 Minecraft 返回结果，默认最多等待 30 秒；超时会返回“请求截图超时，客户端未响应”。
 
 注意事项：
 

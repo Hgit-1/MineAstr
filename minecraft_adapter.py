@@ -25,7 +25,7 @@ except ImportError:
 
 PROTOCOL_VERSION = 1
 QUERY_TIMEOUT_SECONDS = 5.0
-SCREENSHOT_QUERY_TIMEOUT_SECONDS = 35.0
+SCREENSHOT_QUERY_TIMEOUT_SECONDS = 30.0
 LOGO_PATH = str(Path(__file__).resolve().with_name("logo.png"))
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
@@ -37,6 +37,8 @@ DEFAULT_CONFIG = {
     "bot_id": "astrbot",
     "bot_display_name": "AstrBot",
     "max_message_length": 1000,
+    "screenshot_cooldown_seconds": 10,
+    "screenshot_timeout_seconds": 30,
 }
 CONFIG_METADATA = {
     "host": {
@@ -92,6 +94,18 @@ CONFIG_METADATA = {
         "type": "int",
         "hint": "单条 Minecraft 消息转发到 AstrBot 前允许的最大长度；超出部分会被截断，建议保持默认。",
         "default": 1000,
+    },
+    "screenshot_cooldown_seconds": {
+        "description": "截图请求冷却秒数",
+        "type": "int",
+        "hint": "同一目标玩家在冷却时间内重复请求截图时，插件会直接拦截，避免连续弹窗和网络压力。",
+        "default": 10,
+    },
+    "screenshot_timeout_seconds": {
+        "description": "截图请求超时秒数",
+        "type": "int",
+        "hint": "等待 Minecraft 客户端返回截图的最长时间；超时后会立即把失败原因返回给模型。",
+        "default": 30,
     },
 }
 
@@ -358,6 +372,8 @@ class MinecraftPlatformAdapter(Platform):
         self.bot_id = str(_config_value(self.config, "bot_id"))
         self.bot_display_name = str(_config_value(self.config, "bot_display_name"))
         self.max_message_length = int(_config_value(self.config, "max_message_length"))
+        self.screenshot_cooldown_seconds = max(0.0, float(_config_value(self.config, "screenshot_cooldown_seconds")))
+        self.screenshot_timeout_seconds = max(1.0, float(_config_value(self.config, "screenshot_timeout_seconds")))
         self.connection_manager = MinecraftConnectionManager(self.bot_display_name)
         self._runner: web.AppRunner | None = None
 
@@ -431,7 +447,7 @@ class MinecraftPlatformAdapter(Platform):
             "screenshot",
             server_id,
             params=params,
-            timeout=SCREENSHOT_QUERY_TIMEOUT_SECONDS,
+            timeout=self.screenshot_timeout_seconds,
         )
 
     async def local_status(self) -> dict[str, Any]:
