@@ -1,8 +1,27 @@
 # MineAstr NeoForge Mod
 
+![MineAstr 封面](cover.png)
+
 MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，并把 AstrBot 的文本回复广播回游戏。
 
 从 AstrBot 侧启用 MineAstr LLM 工具后，机器人还可以主动向 Mod 查询服务器状态、在线玩家列表，并在玩家客户端允许时请求低清晰度截图。
+
+## 功能简介
+
+- 把 Minecraft 里的普通聊天识别为 AstrBot 的同一个群聊。
+- AstrBot 触发回复后，以 `[AstrBot] 回复内容` 的形式广播给全服。
+- AstrBot 可以通过工具主动查询服务器状态、在线玩家列表和玩家截图。
+- 截图是可选客户端能力，默认会先询问玩家；玩家也可以改成自动发送或永不发送。
+- 服务端单独安装时，未安装客户端 Mod 的玩家仍可加入服务器，聊天和查询功能照常可用。
+
+## 界面与运行环境确认
+
+- **有配置界面**：安装在客户端后，可以在 NeoForge 的 Mod 列表中打开 MineAstr 配置界面，主要用于调整截图策略和截图大小/质量。
+- **服务端无 GUI 可运行**：独立 NeoForge 服务端只读取 `config/mineastr-common.toml`，不需要也不会打开图形界面；Gradle 的 `runServer` 任务也已按 `--nogui` 配置。
+- **服务端不强制客户端安装**：MineAstr 的客户端网络能力是可选的。没有安装客户端 Mod 的玩家可以进入服务器，但 AstrBot 对这些玩家请求截图时会返回“不支持截图”。
+- **单人模式可用**：客户端安装 Mod 后，进入单人世界时由集成服务器负责连接 AstrBot，因此聊天、查询和截图都可以在本地世界使用。
+
+NeoForge 的 Mod 列表只读取 `logoFile` 作为图标，并没有单独的“封面图”元数据字段。本仓库提供 `cover.png` 作为发布页/README 封面，同时也把同一张图打包到资源目录 `assets/mineastr/textures/gui/cover.png`。
 
 ## 构建
 

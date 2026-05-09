@@ -114,6 +114,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
         payload.addProperty("type", "chat");
         payload.addProperty("message_id", UUID.randomUUID().toString());
         payload.addProperty("time_ms", System.currentTimeMillis());
+        payload.addProperty("server_id", MineAstrConfig.SERVER_ID.get());
+        payload.addProperty("server_name", MineAstrConfig.SERVER_NAME.get());
         payload.addProperty("player_uuid", player.getUUID().toString());
         payload.addProperty("player_name", player.getGameProfile().getName());
         payload.addProperty("content", content);

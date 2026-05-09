@@ -221,7 +221,7 @@ class MineAstrPlugin(Star):
         raw = self._event_raw_message(event)
         target_uuid = player_uuid.strip() or str(raw.get("player_uuid") or "").strip()
         target_name = player_name.strip() or str(raw.get("player_name") or "").strip()
-        target_server = server_id.strip() or None
+        target_server = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         request_reason = reason.strip() or "AstrBot 需要查看当前 Minecraft 画面以回答玩家问题。"
 
         try:
