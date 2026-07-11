@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +28,9 @@ PROTOCOL_VERSION = 1
 QUERY_TIMEOUT_SECONDS = 5.0
 SCREENSHOT_QUERY_TIMEOUT_SECONDS = 30.0
 LOGO_PATH = str(Path(__file__).resolve().with_name("logo.png"))
+MINECRAFT_LEADING_MENTION_RE = re.compile(r"^\s*@(?P<target>[^\s@]+)(?P<body>(?:\s+.*)?)$")
+DEFAULT_MENTION_ALIASES = "AstrBot,Aria,astrbot"
+MAX_SENDER_NAME_LENGTH = 64
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
     "port": 8765,
@@ -36,7 +40,10 @@ DEFAULT_CONFIG = {
     "group_name": "Minecraft",
     "bot_id": "astrbot",
     "bot_display_name": "AstrBot",
+    "mention_aliases": DEFAULT_MENTION_ALIASES,
     "max_message_length": 1000,
+    "outbound_max_message_length": 2000,
+    "websocket_max_message_bytes": 2097152,
     "screenshot_cooldown_seconds": 10,
     "screenshot_timeout_seconds": 30,
 }
@@ -89,11 +96,29 @@ CONFIG_METADATA = {
         "hint": "AstrBot 回复广播到 Minecraft 时方括号内显示的名称。",
         "default": "AstrBot",
     },
+    "mention_aliases": {
+        "description": "Minecraft @ 唤醒别名",
+        "type": "string",
+        "hint": "玩家在 Minecraft 聊天开头使用这些名字 @ 机器人时，会被转换为 AstrBot 唤醒消息。多个别名用英文逗号分隔，例如 AstrBot,Aria。",
+        "default": DEFAULT_MENTION_ALIASES,
+    },
     "max_message_length": {
         "description": "最大聊天长度",
         "type": "int",
         "hint": "单条 Minecraft 消息转发到 AstrBot 前允许的最大长度；超出部分会被截断，建议保持默认。",
         "default": 1000,
+    },
+    "outbound_max_message_length": {
+        "description": "广播回游戏的最大长度",
+        "type": "int",
+        "hint": "AstrBot 回复广播到 Minecraft 前允许的最大长度；过长回复会被截断，避免刷屏或触发客户端显示问题。",
+        "default": 2000,
+    },
+    "websocket_max_message_bytes": {
+        "description": "WebSocket 单包大小上限",
+        "type": "int",
+        "hint": "MineAstr 插件接收 Mod WebSocket 消息的最大字节数；截图查询结果也会经过这里，建议保持默认。",
+        "default": 2097152,
     },
     "screenshot_cooldown_seconds": {
         "description": "截图请求冷却秒数",
@@ -121,6 +146,29 @@ def _trim_content(value: Any, max_len: int) -> str:
     return content
 
 
+def _trim_outbound_content(value: Any, max_len: int) -> str:
+    content = str(value or "").replace("\r", "").strip()
+    if max_len > 0 and len(content) > max_len:
+        return content[: max(0, max_len - 1)] + "…"
+    return content
+
+
+def _trim_sender_name(value: Any, fallback: str) -> str:
+    sender = str(value or fallback).replace("\r", "").replace("\n", " ").strip()
+    if len(sender) > MAX_SENDER_NAME_LENGTH:
+        return sender[:MAX_SENDER_NAME_LENGTH]
+    return sender or fallback
+
+
+def _parse_aliases(value: Any) -> set[str]:
+    aliases: set[str] = set()
+    for item in str(value or "").split(","):
+        alias = item.strip().casefold()
+        if alias:
+            aliases.add(alias)
+    return aliases
+
+
 def _plain_text_from_chain(message: MessageChain) -> str:
     parts: list[str] = []
     chain = getattr(message, "chain", message)
@@ -141,8 +189,9 @@ def _query_error_message(exc: BaseException) -> str:
 
 
 class MinecraftConnectionManager:
-    def __init__(self, bot_display_name: str):
+    def __init__(self, bot_display_name: str, outbound_max_message_length: int):
         self._bot_display_name = bot_display_name
+        self._outbound_max_message_length = max(1, outbound_max_message_length)
         self._connections: dict[web.WebSocketResponse, dict[str, Any]] = {}
         self._pending_queries: dict[str, tuple[web.WebSocketResponse, asyncio.Future[dict[str, Any]]]] = {}
         self._lock = asyncio.Lock()
@@ -192,12 +241,13 @@ class MinecraftConnectionManager:
             await ws.close()
 
     async def send_chat(self, content: str, sender_name: str | None = None) -> None:
+        content = _trim_outbound_content(content, self._outbound_max_message_length)
         if not content:
             return
         payload = {
             "type": "chat",
             "message_id": str(uuid.uuid4()),
-            "sender_name": sender_name or self._bot_display_name,
+            "sender_name": _trim_sender_name(sender_name, self._bot_display_name),
             "content": content,
         }
         await self._broadcast(payload)
@@ -371,11 +421,43 @@ class MinecraftPlatformAdapter(Platform):
         self.group_name = str(_config_value(self.config, "group_name"))
         self.bot_id = str(_config_value(self.config, "bot_id"))
         self.bot_display_name = str(_config_value(self.config, "bot_display_name"))
-        self.max_message_length = int(_config_value(self.config, "max_message_length"))
+        self.mention_aliases = _parse_aliases(_config_value(self.config, "mention_aliases"))
+        self.max_message_length = max(1, int(_config_value(self.config, "max_message_length")))
+        self.outbound_max_message_length = max(1, int(_config_value(self.config, "outbound_max_message_length")))
+        self.websocket_max_message_bytes = max(8192, int(_config_value(self.config, "websocket_max_message_bytes")))
         self.screenshot_cooldown_seconds = max(0.0, float(_config_value(self.config, "screenshot_cooldown_seconds")))
         self.screenshot_timeout_seconds = max(1.0, float(_config_value(self.config, "screenshot_timeout_seconds")))
-        self.connection_manager = MinecraftConnectionManager(self.bot_display_name)
+        self.connection_manager = MinecraftConnectionManager(self.bot_display_name, self.outbound_max_message_length)
         self._runner: web.AppRunner | None = None
+
+    def _bot_mention_aliases(self) -> set[str]:
+        aliases = {
+            str(self.bot_id or "").casefold(),
+            str(self.bot_display_name or "").casefold(),
+        }
+        aliases.update(self.mention_aliases)
+        aliases.discard("")
+        return aliases
+
+    def _parse_minecraft_message(self, content: str) -> tuple[list[Any], str, str | None]:
+        text = content.strip()
+        match = MINECRAFT_LEADING_MENTION_RE.match(text)
+        if not match:
+            return [Plain(text)], text, None
+
+        target = str(match.group("target") or "").strip().rstrip("，,。.!！？?；;:：")
+        body = str(match.group("body") or "").lstrip()
+        if target.casefold() not in self._bot_mention_aliases():
+            return [Plain(text)], text, None
+
+        # AstrBot 的唤醒阶段会优先看 wake_prefix。为了兼容不同环境里
+        # At 组件与 self_id 识别不一致的情况，这里把 Minecraft 里的
+        # "@xxx 内容" 转成一个内部唤醒消息，而不是完全依赖 At。
+        wake_body = body or ""
+        message_str = f"/{wake_body}" if not wake_body.startswith("/") else wake_body
+        chain: list[Any] = [Plain(wake_body)]
+        logger.debug("MineAstr 已识别 Minecraft 提及到机器人：%s", target)
+        return chain, message_str, target
 
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(
@@ -428,6 +510,103 @@ class MinecraftPlatformAdapter(Platform):
             "servers": await self.connection_manager.query_all("players"),
         }
 
+    async def query_player_state(
+        self,
+        server_id: str | None = None,
+        player_uuid: str = "",
+        player_name: str = "",
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "player_state",
+            server_id,
+            params={"player_uuid": player_uuid.strip(), "player_name": player_name.strip()},
+        )
+
+    async def query_inventory(
+        self,
+        server_id: str | None = None,
+        player_uuid: str = "",
+        player_name: str = "",
+        include_ender_chest: bool = False,
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "inventory",
+            server_id,
+            params={
+                "player_uuid": player_uuid.strip(),
+                "player_name": player_name.strip(),
+                "include_ender_chest": bool(include_ender_chest),
+            },
+        )
+
+    async def query_nearby_entities(
+        self,
+        server_id: str | None = None,
+        player_uuid: str = "",
+        player_name: str = "",
+        radius: float = 12.0,
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "nearby_entities",
+            server_id,
+            params={
+                "player_uuid": player_uuid.strip(),
+                "player_name": player_name.strip(),
+                "radius": max(1.0, min(32.0, float(radius))),
+            },
+        )
+
+    async def analyze_region(
+        self,
+        server_id: str | None = None,
+        player_uuid: str = "",
+        player_name: str = "",
+        horizontal_radius: int = 8,
+        vertical_radius: int = 6,
+        dimension: str = "",
+        x: int | None = None,
+        y: int | None = None,
+        z: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "player_uuid": player_uuid.strip(),
+            "player_name": player_name.strip(),
+            "horizontal_radius": max(1, min(24, int(horizontal_radius))),
+            "vertical_radius": max(1, min(16, int(vertical_radius))),
+        }
+        if x is not None and y is not None and z is not None:
+            params.update(
+                {
+                    "dimension": dimension.strip() or "minecraft:overworld",
+                    "x": int(x),
+                    "y": int(y),
+                    "z": int(z),
+                }
+            )
+        return await self.connection_manager.query("region_features", server_id, params=params, timeout=10.0)
+
+    async def run_server_command(
+        self,
+        server_id: str | None,
+        command: str,
+        requester_id: str,
+        requester_uuid: str,
+        requester_name: str,
+        requester_platform: str,
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "command",
+            server_id,
+            params={
+                "command": command.strip(),
+                "requester_id": requester_id.strip(),
+                "requester_uuid": requester_uuid.strip(),
+                "requester_name": requester_name.strip(),
+                "requester_platform": requester_platform.strip(),
+            },
+            timeout=10.0,
+        )
+
     async def request_screenshot(
         self,
         server_id: str | None = None,
@@ -461,7 +640,7 @@ class MinecraftPlatformAdapter(Platform):
         if not self._authorized(request):
             return web.Response(status=401, text="未授权")
 
-        ws = web.WebSocketResponse(heartbeat=30)
+        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=self.websocket_max_message_bytes)
         await ws.prepare(request)
         logger.info("MineAstr WebSocket 客户端已连接：%s", request.remote)
 
@@ -546,13 +725,18 @@ class MinecraftPlatformAdapter(Platform):
         message = AstrBotMessage()
         player_uuid = str(payload.get("player_uuid") or payload.get("player_name") or "unknown")
         player_name = str(payload.get("player_name") or player_uuid)
+        message_chain, message_str, mention_target = self._parse_minecraft_message(content)
         message.type = MessageType.GROUP_MESSAGE
         message.group_id = self.group_id
         if message.group:
             message.group.group_name = self.group_name
-        message.message_str = content
-        message.message = [Plain(content)]
-        message.raw_message = payload
+        message.message_str = message_str
+        message.message = message_chain
+        raw_message = dict(payload)
+        if mention_target:
+            raw_message["minecraft_mentioned_bot"] = True
+            raw_message["minecraft_mention_target"] = mention_target
+        message.raw_message = raw_message
         message.self_id = self.bot_id
         message.session_id = self.group_id
         message.message_id = str(payload.get("message_id") or uuid.uuid4())

@@ -47,11 +47,29 @@
     "hint": "AstrBot 回复广播到 Minecraft 时方括号内显示的名称。",
     "default": "AstrBot"
   },
+  "mention_aliases": {
+    "description": "Minecraft @ 唤醒别名",
+    "type": "string",
+    "hint": "玩家在 Minecraft 聊天开头使用这些名字 @ 机器人时，会被转换为 AstrBot 唤醒消息。多个别名用英文逗号分隔，例如 AstrBot,Aria。",
+    "default": "AstrBot,Aria,astrbot"
+  },
   "max_message_length": {
     "description": "最大聊天长度",
     "type": "int",
     "hint": "单条 Minecraft 消息转发到 AstrBot 前允许的最大长度；超出部分会被截断，建议保持默认。",
     "default": 1000
+  },
+  "outbound_max_message_length": {
+    "description": "广播回游戏的最大长度",
+    "type": "int",
+    "hint": "AstrBot 回复广播到 Minecraft 前允许的最大长度；过长回复会被截断，避免刷屏或触发客户端显示问题。",
+    "default": 2000
+  },
+  "websocket_max_message_bytes": {
+    "description": "WebSocket 单包大小上限",
+    "type": "int",
+    "hint": "MineAstr 插件接收 Mod WebSocket 消息的最大字节数；截图查询结果也会经过这里，建议保持默认。",
+    "default": 2097152
   },
   "screenshot_cooldown_seconds": {
     "description": "截图请求冷却秒数",

@@ -21,10 +21,14 @@ except ImportError:
 MINEASTR_TOOL_HINT = (
     "如果用户询问 Minecraft 服务器状态、在线人数、在线玩家、版本或 MineAstr 连接情况，"
     "请先调用 mineastr_get_server_status 或 mineastr_get_online_players 获取实时数据，再根据工具结果回答。"
-    "如果用户在 Minecraft 群聊中明确或隐含表达希望你看看、评价或判断当前画面，请主动先调用 "
-    "mineastr_request_screenshot 请求低清晰度截图，再基于截图回答；例如“能看看我现在画面吗”、"
-    "“我的建筑建好啦”、“帮我看看这个建筑”、“我这里好像不对”、“这边怎么样”。"
+    "如果用户在 Minecraft 群聊中明确或隐含表达希望你看看、评价、判断、确认或展示当前画面、建筑、基地、房子、作品、"
+    "视角或现场状态，请主动优先调用 mineastr_request_screenshot 请求低清晰度截图，再基于截图回答；"
+    "例如“能看看我现在画面吗”、“我的建筑建好啦”、“帮我看看这个建筑”、“我这里好像不对”、“这边怎么样”。"
+    "只要上下文带有明显的视觉意愿，就不要只用文字寒暄，优先申请截图。"
     "截图需要玩家客户端允许，不要假装已经看见画面。"
+    "玩家询问自己生命、位置、状态、背包物品或附近生物时，优先调用对应的 MineAstr 实时工具。"
+    "需要理解房屋、基地或红石装置的方块构成和粗略空间形状时，可调用 mineastr_analyze_region；它不等同于截图。"
+    "mineastr_run_server_command 是高风险工具：只有用户明确要求执行具体命令时才可调用，绝不能自行编造请求者身份或主动执行命令。"
 )
 MINEASTR_EXTERNAL_HINT_KEYWORDS = (
     "minecraft",
@@ -35,13 +39,14 @@ MINEASTR_EXTERNAL_HINT_KEYWORDS = (
     "我的世界",
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
+MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
 
 
 @register(
     "astrbot_plugin_mineastr",
     "MineAstr",
-    "将 Minecraft 聊天桥接为 AstrBot 群聊会话，并提供服务器查询与低清晰度截图工具。",
-    "0.3.1",
+    "将 Minecraft 聊天桥接为 AstrBot 群聊会话，并提供状态、背包、区域分析、受控命令与截图工具。",
+    "0.4.0",
 )
 class MineAstrPlugin(Star):
     def __init__(self, context: Context):
@@ -62,13 +67,19 @@ class MineAstrPlugin(Star):
         get_platform_id = getattr(event, "get_platform_id", None)
         if callable(get_platform_id):
             platform_id = str(get_platform_id() or "")
+        raw_message = self._event_raw_message(event)
         if platform_id != "minecraft" and not any(keyword in text for keyword in MINEASTR_EXTERNAL_HINT_KEYWORDS):
             return
 
         current_prompt = getattr(request, "system_prompt", "") or ""
-        if MINEASTR_TOOL_HINT in current_prompt:
-            return
-        request.system_prompt = f"{current_prompt}\n\n{MINEASTR_TOOL_HINT}".strip()
+        prompt_parts = [current_prompt] if current_prompt else []
+        if raw_message.get("minecraft_mentioned_bot"):
+            prompt_parts.append(
+                "这是 Minecraft 群聊里用户通过 @ 方式直接唤醒你的消息，请优先按“被点名回复”的方式直接接话，不要把它当成普通闲聊。"
+            )
+        if MINEASTR_TOOL_HINT not in current_prompt:
+            prompt_parts.append(MINEASTR_TOOL_HINT)
+        request.system_prompt = "\n\n".join(part for part in prompt_parts if part).strip()
 
     def _minecraft_adapter(self) -> Any | None:
         getter = getattr(self.context, "get_platform_inst", None)
@@ -80,6 +91,11 @@ class MineAstrPlugin(Star):
         if (
             not hasattr(adapter, "query_status")
             or not hasattr(adapter, "query_players")
+            or not hasattr(adapter, "query_player_state")
+            or not hasattr(adapter, "query_inventory")
+            or not hasattr(adapter, "query_nearby_entities")
+            or not hasattr(adapter, "analyze_region")
+            or not hasattr(adapter, "run_server_command")
             or not hasattr(adapter, "request_screenshot")
         ):
             return None
@@ -117,21 +133,62 @@ class MineAstrPlugin(Star):
         return raw if isinstance(raw, dict) else {}
 
     @staticmethod
+    def _event_value(event: AstrMessageEvent, method_name: str) -> str:
+        method = getattr(event, method_name, None)
+        if not callable(method):
+            return ""
+        try:
+            return str(method() or "").strip()
+        except Exception:
+            return ""
+
+    def _event_target(
+        self,
+        event: AstrMessageEvent,
+        server_id: str,
+        player_uuid: str,
+        player_name: str,
+    ) -> tuple[str | None, str, str]:
+        raw = self._event_raw_message(event)
+        target_server = server_id.strip() or str(raw.get("server_id") or "").strip() or None
+        target_uuid = player_uuid.strip() or str(raw.get("player_uuid") or "").strip()
+        target_name = player_name.strip() or str(raw.get("player_name") or "").strip()
+        return target_server, target_uuid, target_name
+
+    def _requester_identity(self, event: AstrMessageEvent) -> dict[str, str]:
+        raw = self._event_raw_message(event)
+        return {
+            "requester_id": str(raw.get("player_uuid") or self._event_value(event, "get_sender_id") or "").strip(),
+            "requester_uuid": str(raw.get("player_uuid") or "").strip(),
+            "requester_name": str(raw.get("player_name") or self._event_value(event, "get_sender_name") or "").strip(),
+            "requester_platform": self._event_value(event, "get_platform_id") or "unknown",
+        }
+
+    @staticmethod
     def _safe_filename(value: Any, fallback: str = "unknown") -> str:
         text = str(value or fallback)
         text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("._")
         return text or fallback
 
-    def _save_screenshot_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _save_screenshot_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(self._save_screenshot_result_sync, payload)
+
+    def _save_screenshot_result_sync(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = payload.get("data")
         if not isinstance(data, dict):
             return payload
         image_base64 = data.get("image_base64")
         if not isinstance(image_base64, str) or not image_base64:
             return payload
+        if len(image_base64) > MAX_SCREENSHOT_SAVE_BYTES * 2:
+            raise ValueError("截图 base64 数据超过插件允许的保存上限。")
 
         image_bytes = base64.b64decode(image_base64, validate=True)
+        if len(image_bytes) > MAX_SCREENSHOT_SAVE_BYTES:
+            raise ValueError("截图文件超过插件允许的保存上限。")
         mime_type = str(data.get("mime_type") or "image/jpeg")
+        if mime_type != "image/jpeg":
+            raise ValueError(f"不支持的截图 MIME 类型：{mime_type}")
         suffix = ".jpg" if mime_type == "image/jpeg" else ".bin"
         server_id = self._safe_filename(payload.get("server_id"), "minecraft")
         player_name = self._safe_filename(data.get("player_name"), "player")
@@ -227,6 +284,185 @@ class MineAstrPlugin(Star):
             }
         return self._tool_json("Minecraft 在线玩家查询结果", payload)
 
+    @filter.llm_tool(name="mineastr_get_player_state")
+    async def mineastr_get_player_state(
+        self,
+        event: AstrMessageEvent,
+        server_id: str = "",
+        player_name: str = "",
+        player_uuid: str = "",
+    ) -> str:
+        """查询在线玩家当前生命、饥饿、位置、维度、游戏模式、经验和状态效果。
+
+        Args:
+            server_id(str): 可选服务器 ID；单服时留空。
+            player_name(str): 可选玩家名；Minecraft 会话中留空默认当前发言玩家。
+            player_uuid(str): 可选玩家 UUID；优先级高于玩家名。
+        """
+        adapter = self._minecraft_adapter()
+        if adapter is None:
+            return "MineAstr 的 minecraft 平台适配器未启用或版本过旧。"
+        target_server, target_uuid, target_name = self._event_target(
+            event, server_id, player_uuid, player_name
+        )
+        try:
+            payload = await adapter.query_player_state(target_server, target_uuid, target_name)
+        except Exception as exc:
+            logger.warning("MineAstr 查询玩家状态失败：%s", exc)
+            payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        return self._tool_json("Minecraft 玩家实时状态", payload)
+
+    @filter.llm_tool(name="mineastr_get_player_inventory")
+    async def mineastr_get_player_inventory(
+        self,
+        event: AstrMessageEvent,
+        server_id: str = "",
+        player_name: str = "",
+        player_uuid: str = "",
+        include_ender_chest: bool = False,
+    ) -> str:
+        """查询在线玩家背包、快捷栏、护甲和副手的物品摘要，不返回完整 NBT。
+
+        Args:
+            server_id(str): 可选服务器 ID；单服时留空。
+            player_name(str): 可选玩家名；Minecraft 会话中留空默认当前发言玩家。
+            player_uuid(str): 可选玩家 UUID；优先级高于玩家名。
+            include_ender_chest(bool): 是否同时查询末影箱；仅在用户明确询问末影箱时设为 true。
+        """
+        adapter = self._minecraft_adapter()
+        if adapter is None:
+            return "MineAstr 的 minecraft 平台适配器未启用或版本过旧。"
+        target_server, target_uuid, target_name = self._event_target(
+            event, server_id, player_uuid, player_name
+        )
+        try:
+            payload = await adapter.query_inventory(
+                target_server, target_uuid, target_name, include_ender_chest
+            )
+        except Exception as exc:
+            logger.warning("MineAstr 查询玩家背包失败：%s", exc)
+            payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        return self._tool_json("Minecraft 玩家背包查询结果", payload)
+
+    @filter.llm_tool(name="mineastr_get_nearby_entities")
+    async def mineastr_get_nearby_entities(
+        self,
+        event: AstrMessageEvent,
+        server_id: str = "",
+        player_name: str = "",
+        player_uuid: str = "",
+        radius: float = 12.0,
+    ) -> str:
+        """查询玩家附近实体的种类、数量、距离与生命值摘要。
+
+        Args:
+            server_id(str): 可选服务器 ID；单服时留空。
+            player_name(str): 可选玩家名；Minecraft 会话中留空默认当前发言玩家。
+            player_uuid(str): 可选玩家 UUID；优先级高于玩家名。
+            radius(float): 查询半径，范围 1 到 32 格。
+        """
+        adapter = self._minecraft_adapter()
+        if adapter is None:
+            return "MineAstr 的 minecraft 平台适配器未启用或版本过旧。"
+        target_server, target_uuid, target_name = self._event_target(
+            event, server_id, player_uuid, player_name
+        )
+        try:
+            payload = await adapter.query_nearby_entities(
+                target_server, target_uuid, target_name, radius
+            )
+        except Exception as exc:
+            logger.warning("MineAstr 查询附近实体失败：%s", exc)
+            payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        return self._tool_json("Minecraft 附近实体查询结果", payload)
+
+    @filter.llm_tool(name="mineastr_analyze_region")
+    async def mineastr_analyze_region(
+        self,
+        event: AstrMessageEvent,
+        server_id: str = "",
+        player_name: str = "",
+        player_uuid: str = "",
+        horizontal_radius: int = 8,
+        vertical_radius: int = 6,
+        use_coordinates: bool = False,
+        dimension: str = "minecraft:overworld",
+        x: int = 0,
+        y: int = 64,
+        z: int = 0,
+    ) -> str:
+        """分析已加载区域的方块调色板、建筑部件、粗略三维占用形状和表面高度。
+
+        Args:
+            server_id(str): 可选服务器 ID；单服时留空。
+            player_name(str): 玩家中心点名称；Minecraft 会话中留空默认当前发言玩家。
+            player_uuid(str): 玩家中心点 UUID；优先级高于玩家名。
+            horizontal_radius(int): 水平半径，建议 4 到 12，服务端硬上限 24。
+            vertical_radius(int): 垂直半径，建议 4 到 10，服务端硬上限 16。
+            use_coordinates(bool): 仅在需要分析明确坐标而非玩家周围时设为 true。
+            dimension(str): 坐标模式的维度 ID，例如 minecraft:overworld。
+            x(int): 坐标模式中心 X。
+            y(int): 坐标模式中心 Y。
+            z(int): 坐标模式中心 Z。
+        """
+        adapter = self._minecraft_adapter()
+        if adapter is None:
+            return "MineAstr 的 minecraft 平台适配器未启用或版本过旧。"
+        target_server, target_uuid, target_name = self._event_target(
+            event, server_id, player_uuid, player_name
+        )
+        try:
+            payload = await adapter.analyze_region(
+                target_server,
+                target_uuid,
+                target_name,
+                horizontal_radius,
+                vertical_radius,
+                dimension,
+                x if use_coordinates else None,
+                y if use_coordinates else None,
+                z if use_coordinates else None,
+            )
+        except Exception as exc:
+            logger.warning("MineAstr 分析区域特征失败：%s", exc)
+            payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        return self._tool_json("Minecraft 区域建筑特征分析", payload)
+
+    @filter.llm_tool(name="mineastr_run_server_command")
+    async def mineastr_run_server_command(
+        self,
+        event: AstrMessageEvent,
+        command: str,
+        server_id: str = "",
+    ) -> str:
+        """代表当前真实请求者执行一条受控服务器命令；仅在用户明确要求时调用。
+
+        Mod 服务端会再次检查命令工具开关、请求者可信名单、命令精确白名单并记录审计日志。
+
+        Args:
+            command(str): 用户明确要求执行的完整命令，不要添加或改写额外命令。
+            server_id(str): 可选服务器 ID；单服时留空。
+        """
+        adapter = self._minecraft_adapter()
+        if adapter is None:
+            return "MineAstr 的 minecraft 平台适配器未启用或版本过旧。"
+        raw = self._event_raw_message(event)
+        target_server = server_id.strip() or str(raw.get("server_id") or "").strip() or None
+        requester = self._requester_identity(event)
+        try:
+            payload = await adapter.run_server_command(
+                target_server,
+                command,
+                requester["requester_id"],
+                requester["requester_uuid"],
+                requester["requester_name"],
+                requester["requester_platform"],
+            )
+        except Exception as exc:
+            logger.warning("MineAstr 执行受控服务器命令失败：%s", exc)
+            payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        return self._tool_json("Minecraft 受控服务器命令结果", payload)
+
     @filter.llm_tool(name="mineastr_request_screenshot")
     async def mineastr_request_screenshot(
         self,
@@ -287,7 +523,7 @@ class MineAstrPlugin(Star):
                     if isinstance(maybe_image, str):
                         image_base64 = maybe_image
                     mime_type = str(data.get("mime_type") or mime_type)
-                payload = self._save_screenshot_result(payload)
+                payload = await self._save_screenshot_result(payload)
         except asyncio.TimeoutError:
             logger.warning("MineAstr 请求 Minecraft 截图超时。")
             image_base64 = None

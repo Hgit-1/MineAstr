@@ -14,7 +14,7 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 [AstrBot] 回复内容
 ```
 
-在模型支持工具调用时，AstrBot 还能主动查询服务器状态、在线玩家，并向安装了 MineAstr 客户端 Mod 且允许截图的玩家请求低清晰度截图。
+在模型支持工具调用时，AstrBot 还能主动查询服务器/玩家状态、背包、附近实体和区域建筑特征，按服务端安全策略执行受控命令，并向允许截图的玩家请求低清晰度截图。
 
 ## 最简单配置
 
@@ -76,18 +76,26 @@ pip install -r requirements.txt
 | `group_name` | `Minecraft` | AstrBot 中显示的群组名称，只影响识别和展示。 |
 | `bot_id` | `astrbot` | 虚拟 Minecraft 平台中的机器人账号 ID。一般不需要修改。 |
 | `bot_display_name` | `AstrBot` | 回复广播到游戏内时显示在方括号里的名称。 |
+| `mention_aliases` | `AstrBot,Aria,astrbot` | Minecraft 聊天开头 `@这些名字` 时会被转换为 AstrBot 唤醒消息。多个别名用英文逗号分隔；不在列表中的玩家互相 @ 不会唤醒机器人。 |
 | `max_message_length` | `1000` | 转发到 AstrBot 的单条玩家消息最大长度，超出部分会被截断。 |
+| `outbound_max_message_length` | `2000` | AstrBot 回复广播回 Minecraft 前允许的最大长度，超出部分会被截断，避免刷屏或客户端显示异常。 |
+| `websocket_max_message_bytes` | `2097152` | 插件接收 MineAstr Mod WebSocket 消息的单包大小上限，截图查询结果也会经过这里。 |
 | `screenshot_cooldown_seconds` | `10` | 同一目标玩家的截图请求冷却时间，防止模型连续触发截图弹窗。 |
 | `screenshot_timeout_seconds` | `30` | 等待 Minecraft 客户端返回截图的最长时间，超时后直接把失败原因返回给模型。 |
 
 ## 机器人可调用工具
 
-插件会注册三个 AstrBot LLM 工具。只要当前模型提供商支持 function calling / tools，并且 AstrBot 中没有禁用这些工具，机器人在对话中可以主动查询 Minecraft 数据后再回答。
+插件会注册八个 AstrBot LLM 工具。只要当前模型提供商支持 function calling / tools，并且 AstrBot 中没有禁用这些工具，机器人在对话中可以主动查询 Minecraft 数据后再回答。
 
 | 工具 | 用途 |
 | --- | --- |
 | `mineastr_get_server_status` | 查询 Minecraft 服务器连接状态、服务器名称、MC 版本、Mod 版本、在线人数和运行时长。 |
 | `mineastr_get_online_players` | 查询当前在线玩家数量和玩家列表。 |
+| `mineastr_get_player_state` | 查询指定玩家的生命、饥饿、位置、维度、游戏模式、经验和状态效果。 |
+| `mineastr_get_player_inventory` | 查询快捷栏、背包、护甲、副手和可选末影箱的安全摘要。 |
+| `mineastr_get_nearby_entities` | 查询玩家附近实体的种类、数量、距离和生命摘要。 |
+| `mineastr_analyze_region` | 分析已加载区域的方块材料、建筑部件、表面高度和粗略三维形状。 |
+| `mineastr_run_server_command` | 代表真实请求者执行受控服务器命令；Mod 侧默认关闭并执行可信名单、命令白名单和审计检查。 |
 | `mineastr_request_screenshot` | 请求指定玩家客户端发送低清晰度截图，并把截图保存到 AstrBot 工作目录。 |
 
 使用示例：
@@ -97,6 +105,13 @@ pip install -r requirements.txt
 - 模型判断需要实时数据，调用 `mineastr_get_online_players`。
 - 工具向 MineAstr Mod 发起查询，Mod 返回在线玩家列表。
 - 模型根据工具结果回复玩家。
+
+其他示例：
+
+- “我背包里还有多少火把？”会调用 `mineastr_get_player_inventory`。
+- “附近有什么怪？”会调用 `mineastr_get_nearby_entities`。
+- “分析一下这栋房子的材料和结构”会调用 `mineastr_analyze_region`；区域工具只扫描已加载区块，不读取箱子内容、告示牌文字或方块实体 NBT。
+- “帮我执行 `/time query daytime`”可以调用 `mineastr_run_server_command`，但只有 Mod 配置明确启用、真实请求者在可信名单中且命令命中白名单时才会成功。
 
 截图示例：
 
@@ -112,18 +127,20 @@ pip install -r requirements.txt
 注意事项：
 
 - 需要使用支持工具调用的模型或提供商，否则模型只能按普通聊天回答，无法主动查询实时数据。
-- 如果 AstrBot WebUI 中有工具开关，请确认 `mineastr_get_server_status` 和 `mineastr_get_online_players` 处于启用状态。
+- 如果 AstrBot WebUI 中有工具开关，请确认需要使用的 `mineastr_*` 工具处于启用状态。
 - 如果 AstrBot WebUI 中有工具开关，请确认 `mineastr_request_screenshot` 也处于启用状态。
 - 旧版 MineAstr Mod 只支持聊天转发，不支持实时查询和截图；更新插件后也需要重新构建并替换 Minecraft 侧 jar。
 - 接入多个 Minecraft 服务器时，工具可以传入 `server_id` 查询指定服务器；只有一个服务器时无需填写。
 - 截图功能需要目标玩家安装客户端 Mod；只安装服务端 Mod 时基础聊天和查询可用，但截图不可用。
+- 命令工具的最终权限完全由 Minecraft Mod 的 `mineastr-common.toml` 决定。默认 `enableCommandTool = false`；不要为了省事把 `allowedCommandRules` 设为 `["*"]`。
 
 ## 故障排查
 
 - Mod 日志提示 `401` 或连接后立即断开：检查两端 `token` 是否完全一致。
 - Mod 一直显示 `未连接`：确认 AstrBot 插件已加载，`minecraft` 平台适配器已启用，端口没有被防火墙或其他程序占用。
-- AstrBot 收到消息但没有回复：这是 AstrBot 群聊规则、唤醒词或权限设置决定的，需要检查 AstrBot 的回复策略。
+- AstrBot 收到消息但没有回复：这是 AstrBot 群聊规则、唤醒词或权限设置决定的，需要检查 AstrBot 的回复策略。Minecraft 里如果你是用 `@Aria` 之类的方式叫它，请确认 `mention_aliases` 包含 `Aria`。
 - 机器人不会主动查询服务器数据：确认当前模型支持工具调用，并确认 MineAstr 的 LLM 工具没有被禁用。
+- 命令工具返回禁用、不可信或白名单外：检查 Mod 侧 `enableCommandTool`、`trustedCommandUsers` 和 `allowedCommandRules`，并查看服务端 WARN 审计日志。
 - 截图工具返回未安装客户端 Mod：目标玩家需要在自己的 NeoForge 客户端 `mods` 目录安装 MineAstr。
 - 截图工具返回拒绝或禁用：目标玩家需要在客户端弹窗中同意，或把 `mineastr-client.toml` 的 `screenshotMode` 改为 `"ASK"` / `"AUTO"`。
 
