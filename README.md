@@ -1,5 +1,10 @@
 # MineAstr AstrBot 插件
 
+[![AI Assisted](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](#ai-制作声明)
+
+> [!IMPORTANT]
+> **AI 制作声明：本插件采用生成式 AI 参与协议设计、编码、文档编写与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
+
 MineAstr 为 AstrBot 提供一个 `minecraft` 平台适配器。插件启动后会监听 WebSocket，等待 MineAstr NeoForge Mod 主动连接。
 
 Minecraft 玩家聊天会被转换为 AstrBot 中的同一个群聊会话：
@@ -133,6 +138,14 @@ pip install -r requirements.txt
 - 接入多个 Minecraft 服务器时，工具可以传入 `server_id` 查询指定服务器；只有一个服务器时无需填写。
 - 截图功能需要目标玩家安装客户端 Mod；只安装服务端 Mod 时基础聊天和查询可用，但截图不可用。
 - 命令工具的最终权限完全由 Minecraft Mod 的 `mineastr-common.toml` 决定。默认 `enableCommandTool = false`；不要为了省事把 `allowedCommandRules` 设为 `["*"]`。
+
+## AI 制作声明
+
+MineAstr AstrBot 插件在开发过程中使用了 OpenAI Codex 等生成式 AI 能力，涉及 Python 代码、LLM tools、WebSocket 协议、安全检查、配置说明与测试流程。
+
+AI 输出不代表天然正确或安全。提交到仓库的内容仍需由维护者人工审阅，并经过语法、协议兼容性和权限边界测试。
+
+英文声明：*This plugin was created with assistance from generative AI, including OpenAI Codex. AI-assisted changes remain subject to human review, testing, and maintainer responsibility.*
 
 ## 故障排查
 

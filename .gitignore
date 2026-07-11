@@ -38,3 +38,7 @@ run/
 # OS
 Thumbs.db
 .DS_Store
+template/helloworld-master/LICENSE
+template/helloworld-master/main.py
+template/helloworld-master/README.md
+template/helloworld-master/metadata.yaml
