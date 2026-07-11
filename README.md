@@ -1,5 +1,10 @@
 # MineAstr
 
+[![AI Assisted](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](#ai-制作声明)
+
+> [!IMPORTANT]
+> **AI 制作声明：MineAstr 采用生成式 AI 参与架构设计、编码、UI、文档与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
+
 MineAstr 已拆分为两个独立工程分支。请根据要开发或发布的目标切换到对应分支。
 
 ## 分支
@@ -31,5 +36,11 @@ git switch minecraft-mod
 
 ## 当前版本
 
-- AstrBot 插件：`0.3.1`
-- Minecraft Mod：`0.3.1`
+- AstrBot 插件：`0.4.0`
+- Minecraft Mod：`0.4.0`
+
+## AI 制作声明
+
+本项目使用了 OpenAI Codex 等生成式 AI 能力，参与 Java/Python 代码、LLM tools、客户端 UI、安全审查、README 与构建测试流程。AI 输出仍需经过人工审阅和实际测试。
+
+英文声明：*This project was created with assistance from generative AI, including OpenAI Codex. AI-assisted changes remain subject to human review, testing, and maintainer responsibility.*
