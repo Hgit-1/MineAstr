@@ -31,3 +31,33 @@ reconnectSeconds = 5
 # 转发到 AstrBot 的单条玩家聊天最大长度。
 # 超过这个长度的消息会被截断。
 maxMessageLength = 1000
+
+# 是否允许 AstrBot 查询玩家生命、位置、维度、经验和状态效果。
+enablePlayerStateTool = true
+
+# 是否允许 AstrBot 查询玩家背包、快捷栏、护甲和副手。
+enableInventoryTool = true
+
+# 是否允许 AstrBot 查询玩家附近实体摘要。
+enableNearbyEntitiesTool = true
+
+# 是否允许 AstrBot 分析已加载区域的方块、建筑部件和粗略三维形状。
+enableRegionTool = true
+
+# 单次区域分析最多扫描的方块数；不会强制加载新区块。
+regionMaxBlocks = 32768
+
+# 高风险：是否允许受控 LLM 服务器命令。默认必须保持 false，按需显式开启。
+enableCommandTool = false
+
+# 可信请求者的 Minecraft UUID、玩家名或 AstrBot 用户 ID，建议优先填写 UUID。
+trustedCommandUsers = []
+
+# 普通规则为精确匹配；以 " *" 结尾表示允许参数；单独 "*" 表示允许全部命令。
+allowedCommandRules = ["list", "seed", "time query day", "time query daytime", "time query gametime"]
+
+# 命令执行权限等级。白名单和可信用户检查始终优先。
+commandPermissionLevel = 4
+
+# 单条受控命令最大长度。
+commandMaxLength = 256

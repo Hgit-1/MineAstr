@@ -1,5 +1,6 @@
 package com.mineastr;
 
+import java.util.List;
 import net.neoforged.neoforge.common.ModConfigSpec;
 
 public final class MineAstrConfig {
@@ -55,8 +56,66 @@ public final class MineAstrConfig {
                     "超过这个长度的消息会被截断。")
             .defineInRange("maxMessageLength", 1000, 1, 4096);
 
+    public static final ModConfigSpec.BooleanValue ENABLE_PLAYER_STATE_TOOL = BUILDER
+            .comment("是否允许 AstrBot 查询在线玩家的生命、位置、维度、经验和状态效果。")
+            .define("enablePlayerStateTool", true);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_INVENTORY_TOOL = BUILDER
+            .comment(
+                    "是否允许 AstrBot 查询在线玩家的背包、快捷栏、护甲和副手。",
+                    "查询只返回物品 ID、显示名、数量和耐久，不返回完整 NBT。")
+            .define("enableInventoryTool", true);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_NEARBY_ENTITIES_TOOL = BUILDER
+            .comment("是否允许 AstrBot 查询玩家附近的实体摘要。")
+            .define("enableNearbyEntitiesTool", true);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_REGION_TOOL = BUILDER
+            .comment(
+                    "是否允许 AstrBot 分析已加载区域的方块与建筑特征。",
+                    "分析不会强制加载新区块，也不会读取容器内容或方块实体 NBT。")
+            .define("enableRegionTool", true);
+
+    public static final ModConfigSpec.IntValue REGION_MAX_BLOCKS = BUILDER
+            .comment("单次区域特征分析最多扫描多少个方块。")
+            .defineInRange("regionMaxBlocks", 32768, 4096, 131072);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_COMMAND_TOOL = BUILDER
+            .comment(
+                    "是否允许 AstrBot 请求执行服务器命令。默认关闭。",
+                    "即使启用，仍必须同时通过 trustedCommandUsers 与 allowedCommandRules 检查。")
+            .define("enableCommandTool", false);
+
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> TRUSTED_COMMAND_USERS = BUILDER
+            .comment(
+                    "允许通过 AstrBot 命令工具发起请求的可信用户 ID、Minecraft UUID 或玩家名。",
+                    "匹配不区分大小写；建议优先填写稳定 UUID。空列表表示没有任何可信人员。")
+            .defineListAllowEmpty("trustedCommandUsers", List.of(), MineAstrConfig::isNonBlankString);
+
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> ALLOWED_COMMAND_RULES = BUILDER
+            .comment(
+                    "命令工具允许执行的规则。普通条目只允许精确命令；以 ' *' 结尾表示允许该前缀及参数。",
+                    "例如 'time query daytime' 只允许这一条；'say *' 允许 say 的任意参数；'*' 明确允许所有命令。",
+                    "默认只开放少量只读命令。")
+            .defineListAllowEmpty(
+                    "allowedCommandRules",
+                    List.of("list", "seed", "time query day", "time query daytime", "time query gametime"),
+                    MineAstrConfig::isNonBlankString);
+
+    public static final ModConfigSpec.IntValue COMMAND_PERMISSION_LEVEL = BUILDER
+            .comment("命令工具执行命令时使用的权限等级。白名单检查始终优先执行。")
+            .defineInRange("commandPermissionLevel", 4, 0, 4);
+
+    public static final ModConfigSpec.IntValue COMMAND_MAX_LENGTH = BUILDER
+            .comment("命令工具允许的最大命令长度。")
+            .defineInRange("commandMaxLength", 256, 1, 1024);
+
     static final ModConfigSpec SPEC = BUILDER.build();
 
     private MineAstrConfig() {
+    }
+
+    private static boolean isNonBlankString(Object value) {
+        return value instanceof String text && !text.isBlank() && text.length() <= 256;
     }
 }

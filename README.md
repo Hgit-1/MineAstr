@@ -4,14 +4,16 @@
 
 MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，并把 AstrBot 的文本回复广播回游戏。
 
-从 AstrBot 侧启用 MineAstr LLM 工具后，机器人还可以主动向 Mod 查询服务器状态、在线玩家列表，并在玩家客户端允许时请求低清晰度截图。
+从 AstrBot 侧启用 MineAstr LLM 工具后，机器人还可以主动查询服务器状态、玩家状态、背包、附近实体和区域建筑特征，在严格鉴权后执行受控服务器命令，并在玩家客户端允许时请求低清晰度截图。
 
 ## 功能简介
 
 - 把 Minecraft 里的普通聊天识别为 AstrBot 的同一个群聊。
 - AstrBot 触发回复后，以 `[AstrBot] 回复内容` 的形式广播给全服。
-- AstrBot 可以通过工具主动查询服务器状态、在线玩家列表和玩家截图。
+- AstrBot 可以通过工具主动查询服务器状态、在线玩家、生命/位置、背包、附近实体和区域建筑特征。
+- 可选的服务器命令工具默认关闭，启用后仍要求请求者可信名单和命令白名单同时匹配，并写入审计日志。
 - 截图是可选客户端能力，默认会先询问玩家；玩家也可以改成自动发送或永不发送。
+- 客户端配置页和截图授权页使用 MineAstr 自定义原生界面，无需额外安装 Cloth Config 或 ModernUI。
 - 服务端单独安装时，未安装客户端 Mod 的玩家仍可加入服务器，聊天和查询功能照常可用。
 
 ## 界面与运行环境确认
@@ -52,7 +54,7 @@ NeoForge 的 Mod 列表只读取 `logoFile` 作为图标，并没有单独的“
 
 - 客户端：`.minecraft/config/mineastr-client.toml`
 
-也可以在游戏主菜单的 Mod 列表中打开 MineAstr 的配置界面修改截图选项。如果没有看到配置文件，请先确认服务端或客户端至少启动过一次，并且 MineAstr jar 已经放在正确的 `mods` 目录。
+也可以在游戏主菜单的 Mod 列表中打开 MineAstr 的自定义配置界面修改截图选项。如果没有看到配置文件，请先确认服务端或客户端至少启动过一次，并且 MineAstr jar 已经放在正确的 `mods` 目录。
 
 ## 最简单配置
 
@@ -109,6 +111,20 @@ reconnectSeconds = 5
 # 转发到 AstrBot 的单条玩家聊天最大长度。
 # 超过这个长度的消息会被截断。
 maxMessageLength = 1000
+
+# 玩家实时状态、背包、附近实体和区域建筑特征工具。
+enablePlayerStateTool = true
+enableInventoryTool = true
+enableNearbyEntitiesTool = true
+enableRegionTool = true
+regionMaxBlocks = 32768
+
+# 高风险命令工具默认关闭。
+enableCommandTool = false
+trustedCommandUsers = []
+allowedCommandRules = ["list", "seed", "time query day", "time query daytime", "time query gametime"]
+commandPermissionLevel = 4
+commandMaxLength = 256
 ```
 
 ## 客户端截图配置
@@ -170,11 +186,35 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 Mod 支持 AstrBot 发来的 `query` 协议消息：
 
-- `status`：返回服务器名称、Minecraft 版本、MineAstr Mod 版本、在线人数、最大人数、运行时长和在线玩家名。
+- `status`：返回服务器名称、Minecraft 版本、MineAstr Mod 版本、在线人数、最大人数、运行时长、世界出生点和在线玩家名。
 - `players`：返回在线玩家数量、最大人数、在线玩家列表，以及每名玩家是否支持截图。
+- `player_state`：返回指定在线玩家的生命、饥饿、护甲、位置、维度、游戏模式、经验和状态效果。
+- `inventory`：返回指定玩家的快捷栏、背包、护甲、副手和可选末影箱摘要，不返回完整 NBT。
+- `nearby_entities`：返回玩家附近实体的种类计数、距离、位置和生命摘要。
+- `region_features`：分析已加载区域的方块调色板、门窗/楼梯/照明/容器/红石等部件、表面高度和粗略三维占用模型；不会强制加载新区块，也不读取容器内容、告示牌文字或方块实体 NBT。
+- `command`：执行受控服务器命令。默认关闭；必须同时通过可信用户和命令规则检查，并记录请求者与命令审计日志。
 - `screenshot`：向指定玩家客户端请求低清晰度截图。玩家未安装客户端 Mod、拒绝截图、禁用截图或超时时会返回失败原因。
 
-这些查询由 AstrBot 插件中的 LLM 工具触发。实际使用时，玩家可以在 Minecraft 中直接问“现在有谁在线”“服务器状态怎么样”或“能看看我现在画面吗”，AstrBot 会在模型支持工具调用时主动查询 Mod，然后再组织回复。
+这些查询由 AstrBot 插件中的 LLM 工具触发。实际使用时，玩家可以直接问“我背包里还有多少火把”“附近有什么怪”“分析一下这栋房子的材料和结构”或“能看看我现在画面吗”，AstrBot 会在模型支持工具调用时主动查询 Mod，然后再组织回复。
+
+## 受控服务器命令
+
+命令工具采用拒绝优先设计，默认不可用。启用时至少完成下面三项：
+
+1. 把 `enableCommandTool` 改成 `true`。
+2. 确认两端 `token` 已从默认的 `change-me` 改成安全随机字符串；弱 token 下命令工具会拒绝执行。
+3. 在 `trustedCommandUsers` 填入可信人员的 Minecraft UUID、玩家名或 AstrBot 用户 ID；推荐 UUID。
+4. 在 `allowedCommandRules` 配置允许规则。普通条目只允许完全相同的命令；`"say *"` 允许 `say` 及其参数；单独 `"*"` 会允许所有命令，风险极高。
+
+例如只允许玩家 Alice 查询时间和执行带参数的 `say`：
+
+```toml
+enableCommandTool = true
+trustedCommandUsers = ["Alice", "00000000-0000-0000-0000-000000000000"]
+allowedCommandRules = ["time query daytime", "say *"]
+```
+
+所有通过工具执行的命令都会以 WARN 级别记录请求者和命令。LLM 无法从工具参数自行指定请求者身份；AstrBot 插件会从真实事件上下文附带身份，Mod 再做最终鉴权。
 
 ## 故障排查
 
