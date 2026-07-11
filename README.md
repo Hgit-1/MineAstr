@@ -1,5 +1,10 @@
 # MineAstr NeoForge Mod
 
+[![AI Assisted](https://img.shields.io/badge/AI-OpenAI%20Codex%20Assisted-10A37F?style=for-the-badge&logo=openai&logoColor=white)](#ai-制作声明)
+
+> [!IMPORTANT]
+> **AI 制作声明：本项目采用生成式 AI 参与设计、编码、UI 改进、文档编写与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
+
 ![MineAstr 封面](cover.png)
 
 MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，并把 AstrBot 的文本回复广播回游戏。
@@ -199,7 +204,7 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 
 ## 受控服务器命令
 
-命令工具采用拒绝优先设计，默认不可用。启用时至少完成下面三项：
+命令工具采用拒绝优先设计，默认不可用。启用时至少完成下面四项：
 
 1. 把 `enableCommandTool` 改成 `true`。
 2. 确认两端 `token` 已从默认的 `change-me` 改成安全随机字符串；弱 token 下命令工具会拒绝执行。
@@ -215,6 +220,20 @@ allowedCommandRules = ["time query daytime", "say *"]
 ```
 
 所有通过工具执行的命令都会以 WARN 级别记录请求者和命令。LLM 无法从工具参数自行指定请求者身份；AstrBot 插件会从真实事件上下文附带身份，Mod 再做最终鉴权。
+
+## AI 制作声明
+
+MineAstr 在开发过程中使用了 OpenAI Codex 等生成式 AI 能力，参与范围包括：
+
+- Java、Python 与配置代码的生成、修改和重构。
+- 客户端配置界面、截图授权界面及交互文案设计。
+- 崩溃风险、线程安全、网络边界与命令权限的辅助审查。
+- README、双语文本、配置示例和故障排查文档编写。
+- Gradle 构建、客户端/服务端启动及 WebSocket 协议测试流程。
+
+AI 输出不代表天然正确或安全。所有合并到仓库的内容均应由维护者人工审阅，并通过适当的编译、运行和安全测试后再用于生产服务器。
+
+英文声明：*This project was created with assistance from generative AI, including OpenAI Codex. AI-assisted changes remain subject to human review, testing, and maintainer responsibility.*
 
 ## 故障排查
 
