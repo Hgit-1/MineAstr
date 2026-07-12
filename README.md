@@ -18,7 +18,8 @@ MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接
 - AstrBot 可以通过工具主动查询服务器状态、在线玩家、生命/位置、背包、附近实体和区域建筑特征。
 - 可选的服务器命令工具默认关闭，启用后仍要求请求者可信名单和命令白名单同时匹配，并写入审计日志。
 - 截图是可选客户端能力，默认会先询问玩家；玩家也可以改成自动发送或永不发送。
-- 客户端配置页和截图授权页使用 MineAstr 自定义原生界面，无需额外安装 Cloth Config 或 ModernUI。
+- 客户端配置页、截图授权页和本地世界服务端页使用 MineAstr 自定义原生界面，无需额外安装 Cloth Config 或 ModernUI。
+- 单人世界的集成服务器桥接默认关闭，可在“本地服务端”页面通过 Switch 开关启用并配置地址、Token 和服务器标识。
 - 服务端单独安装时，未安装客户端 Mod 的玩家仍可加入服务器，聊天和查询功能照常可用。
 
 ## 界面与运行环境确认
@@ -26,7 +27,7 @@ MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接
 - **有配置界面**：安装在客户端后，可以在 NeoForge 的 Mod 列表中打开 MineAstr 配置界面，主要用于调整截图策略和截图大小/质量。
 - **服务端无 GUI 可运行**：独立 NeoForge 服务端只读取 `config/mineastr-common.toml`，不需要也不会打开图形界面；Gradle 的 `runServer` 任务也已按 `--nogui` 配置。
 - **服务端不强制客户端安装**：MineAstr 的客户端网络能力是可选的。没有安装客户端 Mod 的玩家可以进入服务器，但 AstrBot 对这些玩家请求截图时会返回“不支持截图”。
-- **单人模式可用**：客户端安装 Mod 后，进入单人世界时由集成服务器负责连接 AstrBot，因此聊天、查询和截图都可以在本地世界使用。
+- **单人模式可选启用**：客户端安装 Mod 后，可在 MineAstr 配置页进入“本地服务端”，打开默认关闭的 Switch。开启后，单人世界的集成服务器才会连接 AstrBot；独立服务器不受此选项影响。
 
 NeoForge 的 Mod 列表只读取 `logoFile` 作为图标，并没有单独的“封面图”元数据字段。本仓库提供 `cover.png` 作为发布页/README 封面，同时也把同一张图打包到资源目录 `assets/mineastr/textures/gui/cover.png`。
 
@@ -46,7 +47,7 @@ NeoForge 的 Mod 列表只读取 `logoFile` 作为图标，并没有单独的“
 
 如果希望使用截图工具，目标玩家的客户端也需要安装同一个 MineAstr jar。截图是附加功能，不影响未安装客户端 Mod 的玩家进入服务器。
 
-单人本地世界也可以使用：把 jar 放到 NeoForge 1.21.1 客户端的 `mods` 目录，进入单人世界后由集成服务器加载 MineAstr。
+单人本地世界也可以使用：把 jar 放到 NeoForge 1.21.1 客户端的 `mods` 目录，在 Mod 列表打开 MineAstr 配置页，进入“本地服务端”并开启 Switch。该功能默认为关闭状态。
 
 ## 配置文件位置
 
@@ -139,6 +140,9 @@ commandMaxLength = 256
 仓库中提供了示例文件：[examples/mineastr-client.toml](examples/mineastr-client.toml)。
 
 ```toml
+# 是否让本地单人世界的集成服务器连接 AstrBot；默认关闭。
+localWorldServerEnabled = false
+
 # AstrBot 请求截图时客户端如何处理。
 # ASK：弹出确认界面，玩家同意后发送；AUTO：自动发送；DISABLED：始终拒绝发送。
 screenshotMode = "ASK"
@@ -173,6 +177,7 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 ## 配置格式注意事项
 
 - `enabled` 只能写 `true` 或 `false`，不要加引号。
+- `localWorldServerEnabled` 只能写 `true` 或 `false`，默认是 `false`。
 - `reconnectSeconds` 和 `maxMessageLength` 是数字，不要加引号。
 - `websocketUrl`、`token`、`serverId`、`serverName`、`botDisplayName` 是字符串，必须保留英文双引号。
 - `screenshotMode` 是字符串，只能写 `"ASK"`、`"AUTO"` 或 `"DISABLED"`。
@@ -243,3 +248,4 @@ AI 输出不代表天然正确或安全。所有合并到仓库的内容均应�
 - 游戏里没有看到回复：AstrBot 是否回复由 AstrBot 自身的群聊规则、唤醒词和权限决定。
 - AstrBot 不会查询在线玩家：确认 AstrBot 当前模型支持工具调用，并且插件与 Mod 都已经更新到支持查询协议的版本。
 - AstrBot 请求截图失败：确认目标玩家客户端安装了 MineAstr，并且 `screenshotMode` 不是 `"DISABLED"`。默认 `"ASK"` 模式下，玩家需要在弹窗里点击“发送截图”。
+- 单人世界没有连接 AstrBot：打开 Mod 列表中的 MineAstr 配置页，进入“本地服务端”，确认 Switch 已开启且 WebSocket 地址和 Token 正确。

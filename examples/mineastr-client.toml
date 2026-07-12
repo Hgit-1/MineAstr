@@ -1,3 +1,7 @@
+# 是否在本地单人世界中启动 MineAstr 集成服务器桥接。
+# 默认关闭；独立服务器不受此客户端选项影响。
+localWorldServerEnabled = false
+
 # AstrBot 请求截图时客户端如何处理。
 # ASK：弹出确认界面，玩家同意后发送；AUTO：自动发送；DISABLED：始终拒绝发送。
 screenshotMode = "ASK"

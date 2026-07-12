@@ -60,6 +60,11 @@ public final class MineAstrScreenshotConsentScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        super.render(graphics, mouseX, mouseY, partialTick);
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fillGradient(0, 0, width, height, 0xDD07111F, 0xEE12243A);
         int panelWidth = Math.min(PANEL_WIDTH, width - 24);
         int left = (width - panelWidth) / 2;
@@ -83,7 +88,6 @@ public final class MineAstrScreenshotConsentScreen extends Screen {
         }
         long seconds = Math.max(0L, (deadline - System.currentTimeMillis() + 999L) / 1000L);
         graphics.drawString(font, Component.translatable("screen.mineastr.screenshot.timeout", seconds), left + 18, top + 133, 0xFF8EA0B9, false);
-        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override

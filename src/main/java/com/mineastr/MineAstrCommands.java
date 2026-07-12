@@ -22,6 +22,8 @@ public final class MineAstrCommands {
         String stateKey;
         if (!MineAstrConfig.ENABLED.getAsBoolean()) {
             stateKey = "commands.mineastr.status.disabled";
+        } else if (!bridge.isStarted()) {
+            stateKey = "commands.mineastr.status.inactive";
         } else if (bridge.isConnected()) {
             stateKey = "commands.mineastr.status.connected";
         } else if (bridge.isConnecting()) {
@@ -34,8 +36,11 @@ public final class MineAstrCommands {
     }
 
     private static int reconnect(CommandSourceStack source, MineAstrBridge bridge) {
-        bridge.reconnect();
-        source.sendSuccess(() -> Component.translatable("commands.mineastr.reconnect"), false);
-        return 1;
+        if (bridge.reconnect()) {
+            source.sendSuccess(() -> Component.translatable("commands.mineastr.reconnect"), false);
+            return 1;
+        }
+        source.sendFailure(Component.translatable("commands.mineastr.reconnect.unavailable"));
+        return 0;
     }
 }

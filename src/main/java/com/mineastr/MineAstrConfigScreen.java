@@ -78,15 +78,19 @@ public final class MineAstrConfigScreen extends Screen {
                 value -> (roundToStep((int) Math.round(value), 1024) / 1024) + " KiB"));
 
         int buttonY = top + PANEL_HEIGHT - 30;
-        int buttonWidth = Math.min(112, (panelWidth - 36) / 3);
+        int buttonGap = 6;
+        int buttonWidth = (panelWidth - 24 - buttonGap * 3) / 4;
         addRenderableWidget(Button.builder(Component.translatable("screen.mineastr.config.reset"), button -> {
             resetDefaults();
             rebuildWidgets();
         }).bounds(left + 12, buttonY, buttonWidth, 20).build());
+        addRenderableWidget(Button.builder(Component.translatable("screen.mineastr.config.local_server"), button ->
+                        minecraft.setScreen(new MineAstrLocalServerConfigScreen(this)))
+                .bounds(left + 12 + buttonWidth + buttonGap, buttonY, buttonWidth, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.cancel"), button -> onClose())
-                .bounds(left + panelWidth - 12 - buttonWidth * 2 - 8, buttonY, buttonWidth, 20).build());
+                .bounds(left + 12 + (buttonWidth + buttonGap) * 2, buttonY, buttonWidth, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("screen.mineastr.config.save"), button -> saveAndClose())
-                .bounds(left + panelWidth - 12 - buttonWidth, buttonY, buttonWidth, 20).build());
+                .bounds(left + 12 + (buttonWidth + buttonGap) * 3, buttonY, buttonWidth, 20).build());
     }
 
     private void resetDefaults() {
@@ -114,6 +118,11 @@ public final class MineAstrConfigScreen extends Screen {
 
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        super.render(graphics, mouseX, mouseY, partialTick);
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fillGradient(0, 0, width, height, 0xFF08111F, 0xFF101D31);
         int panelWidth = Math.min(PANEL_WIDTH, width - 24);
         int left = (width - panelWidth) / 2;
@@ -141,7 +150,6 @@ public final class MineAstrConfigScreen extends Screen {
             labelY += 28;
         }
         graphics.drawString(font, Component.translatable("screen.mineastr.config.privacy"), left + 16, top + PANEL_HEIGHT - 43, MUTED, false);
-        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override

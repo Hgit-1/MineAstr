@@ -103,13 +103,17 @@ public final class MineAstrBridge implements WebSocket.Listener {
         return socket != null && !socket.isInputClosed() && !socket.isOutputClosed();
     }
 
+    public boolean isStarted() {
+        return server != null && !stopping;
+    }
+
     public boolean isConnecting() {
         return connecting.get();
     }
 
-    public void reconnect() {
-        if (stopping || !MineAstrConfig.ENABLED.getAsBoolean()) {
-            return;
+    public boolean reconnect() {
+        if (server == null || stopping || !MineAstrConfig.ENABLED.getAsBoolean()) {
+            return false;
         }
         cancelReconnect();
         connectionGeneration.incrementAndGet();
@@ -119,10 +123,11 @@ public final class MineAstrBridge implements WebSocket.Listener {
             socket.abort();
         }
         connectNow();
+        return true;
     }
 
     public void forwardChat(ServerPlayer player, String rawText) {
-        if (!MineAstrConfig.ENABLED.getAsBoolean()) {
+        if (server == null || !MineAstrConfig.ENABLED.getAsBoolean()) {
             return;
         }
         WebSocket socket = webSocket.get();
@@ -171,7 +176,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     }
 
     private void connectNow() {
-        if (stopping || !MineAstrConfig.ENABLED.getAsBoolean() || isConnected() || !connecting.compareAndSet(false, true)) {
+        if (server == null || stopping || !MineAstrConfig.ENABLED.getAsBoolean() || isConnected() || !connecting.compareAndSet(false, true)) {
             return;
         }
 

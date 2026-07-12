@@ -11,6 +11,12 @@ public final class MineAstrClientConfig {
 
     private static final ModConfigSpec.Builder BUILDER = new ModConfigSpec.Builder();
 
+    public static final ModConfigSpec.BooleanValue LOCAL_WORLD_SERVER_ENABLED = BUILDER
+            .comment(
+                    "是否在本地单人世界中启动 MineAstr 集成服务器桥接。",
+                    "默认关闭；独立服务器不受此客户端选项影响。")
+            .define("localWorldServerEnabled", false);
+
     public static final ModConfigSpec.EnumValue<ScreenshotMode> SCREENSHOT_MODE = BUILDER
             .comment(
                     "AstrBot 请求截图时客户端如何处理。",

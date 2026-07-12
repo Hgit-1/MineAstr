@@ -64,6 +64,29 @@ public final class MineAstrClient {
         minecraft.execute(() -> handleScreenshotRequestOnClientThread(minecraft, request));
     }
 
+    public static void applyLocalWorldServerSettings(boolean enabled) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!minecraft.hasSingleplayerServer() || minecraft.getSingleplayerServer() == null) {
+            return;
+        }
+        var integratedServer = minecraft.getSingleplayerServer();
+        integratedServer.execute(() -> {
+            MineAstrBridge bridge = MineAstr.bridge();
+            if (!enabled) {
+                if (bridge.isStarted()) {
+                    bridge.stop();
+                }
+                return;
+            }
+            if (bridge.isStarted()) {
+                bridge.reconnect();
+            } else {
+                bridge.start(integratedServer);
+            }
+            minecraft.execute(() -> sendPayloadToServer(new MineAstrPayloads.ClientHello(MineAstr.MOD_VERSION, true)));
+        });
+    }
+
     private static void handleScreenshotRequestOnClientThread(Minecraft minecraft, MineAstrPayloads.ScreenshotRequest request) {
         if (minecraft.player == null || minecraft.getConnection() == null) {
             sendError(request.requestId(), "not_in_game", "客户端尚未进入游戏，无法截图。");

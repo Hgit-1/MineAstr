@@ -19,7 +19,7 @@ import org.slf4j.Logger;
 @Mod(MineAstr.MODID)
 public final class MineAstr {
     public static final String MODID = "mineastr";
-    public static final String MOD_VERSION = "0.4.0";
+    public static final String MOD_VERSION = "0.4.1";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     private static MineAstrBridge activeBridge;
@@ -56,6 +56,12 @@ public final class MineAstr {
 
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
+        if (!event.getServer().isDedicatedServer()
+                && FMLEnvironment.dist == Dist.CLIENT
+                && !MineAstrClientConfig.LOCAL_WORLD_SERVER_ENABLED.getAsBoolean()) {
+            LOGGER.info("MineAstr 本地世界服务端桥接默认关闭；可在客户端配置界面中启用。");
+            return;
+        }
         bridge.start(event.getServer());
     }
 
