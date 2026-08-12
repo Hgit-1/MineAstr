@@ -19,7 +19,9 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 [AstrBot] 回复内容
 ```
 
-在模型支持工具调用时，AstrBot 还能主动查询服务器/玩家状态、背包、附近实体和区域建筑特征，按服务端安全策略执行受控命令，并向允许截图的玩家请求低清晰度截图。
+在模型支持工具调用时，AstrBot 还能主动查询实时服务器数据，并按需检索服务器实际安装的 Mod、物品、方块、标签和配方。Mod 功能说明可通过 Modrinth、官方 Wiki 和源码 README 补充到 AstrBot 原生 RAG 知识库。
+
+0.6 还会按配置同步服务器官网和已降精度的活动地区摘要，在游戏公聊中征集地区简介并写入同一服务器专用 RAG。
 
 ## 最简单配置
 
@@ -87,10 +89,16 @@ pip install -r requirements.txt
 | `websocket_max_message_bytes` | `2097152` | 插件接收 MineAstr Mod WebSocket 消息的单包大小上限，截图查询结果也会经过这里。 |
 | `screenshot_cooldown_seconds` | `10` | 同一目标玩家的截图请求冷却时间，防止模型连续触发截图弹窗。 |
 | `screenshot_timeout_seconds` | `30` | 等待 Minecraft 客户端返回截图的最长时间，超时后直接把失败原因返回给模型。 |
+| `knowledge_sync_enabled` | `true` | 自动同步服务器 Mod、注册表、标签和配方快照。 |
+| `knowledge_embedding_provider_id` | 空 | AstrBot 中已配置的 Embedding Provider ID；填写后自动为每个 `server_id` 创建专用知识库。 |
+| `modrinth_enrichment_enabled` | `true` | 用 JAR SHA-512 匹配 Modrinth，并同步官方 Wiki 与 GitHub README。 |
+| `server_site_sync_enabled` | `true` | 是否读取 Mod 下发的独立服务器官网介绍地址并同步同源页面。 |
+| `activity_region_sync_enabled` | `true` | 是否同步活动地区、发起48小时公开征集并写入 RAG。 |
+| `knowledge_chat_provider_id` | 空 | 官网页面选择和地区简介整理使用的聊天模型；留空使用默认模型，失败时规则降级。 |
 
 ## 机器人可调用工具
 
-插件会注册八个 AstrBot LLM 工具。只要当前模型提供商支持 function calling / tools，并且 AstrBot 中没有禁用这些工具，机器人在对话中可以主动查询 Minecraft 数据后再回答。
+插件会注册十四个 AstrBot LLM 工具。只要当前模型提供商支持 function calling / tools，并且 AstrBot 中没有禁用这些工具，机器人在对话中可以主动查询 Minecraft 数据后再回答。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -102,6 +110,39 @@ pip install -r requirements.txt
 | `mineastr_analyze_region` | 分析已加载区域的方块材料、建筑部件、表面高度和粗略三维形状。 |
 | `mineastr_run_server_command` | 代表真实请求者执行受控服务器命令；Mod 侧默认关闭并执行可信名单、命令白名单和审计检查。 |
 | `mineastr_request_screenshot` | 请求指定玩家客户端发送低清晰度截图，并把截图保存到 AstrBot 工作目录。 |
+| `mineastr_list_server_mods` | 列出实际安装的 Mod，可按 ID 或名称过滤。 |
+| `mineastr_search_server_content` | 同时搜索结构化注册数据与对应服务器的 AstrBot 原生 RAG。 |
+| `mineastr_get_recipes` | 正向查询某物品如何制作，或反向查询它参与的配方。 |
+| `mineastr_list_regions` | 列出长期活动聚类地区、约64格精度位置和简介状态。 |
+| `mineastr_get_region` | 查询指定地区的环境摘要与确认简介。 |
+| `mineastr_submit_region_description` | 使用真实事件身份明确提交地区简介；管理员提交可覆盖。 |
+
+## Mod 知识同步
+
+1. 在 AstrBot 服务提供商页面配置一个 Embedding Provider，记下它的 ID。
+2. 把 Minecraft 平台适配器的 `knowledge_embedding_provider_id` 设为该 ID。
+3. 确保 Mod 侧 `enableKnowledgeScan = true`，然后重启服务器和适配器。
+
+插件会在 `data/mineastr/knowledge/<server_id>/snapshot.json` 原子替换本地快照，并自动维护 `MineAstr-<server_id>` 知识库。每 60 秒检查一次 manifest，只在内容哈希变化时重新拉取；Minecraft 断线后保留上一份快照与 RAG 文档。
+
+Modrinth 补充只抓取项目元数据、项目声明的 Wiki/docs 和 GitHub README。请求限制为 HTTPS 公网 443 端口，会检查 DNS/重定向、robots.txt、MIME、超时和 512 KiB 体积上限；联网失败不影响本地注册表与配方查询。
+
+服务器官网遵循同样的 SSRF/DNS/重定向防护，并额外限制为首页最终来源的同源页面。插件读取首页、robots.txt 和 sitemap 后让模型只从候选 URL 中选择，不能创造或跨域访问；默认每周刷新、最多12页、总计2 MiB。远程网页和玩家文本始终按不可信资料处理，其中的提示或命令不得改变系统规则。
+
+地区摘要由 Mod 每28天生成；AstrBot 不接收逐点轨迹、精确边界或明文贡献者 UUID。公开征集最多每天3次、持续48小时；贡献者和 AstrBot 管理员提交优先，其他玩家内容仍作为补充。没有回复时生成明确标记的 AI 未确认草稿。
+
+征集窗口内的候选回复会暂存在服务器专用 `snapshot.json`，综合完成后仅保留最终简介和候选数量，删除候选中的玩家标识与原始回复。
+
+## 隐私、安全与合规（服务器提供者必读）
+
+> [!WARNING]
+> MineAstr 不是法律合规服务。服务器提供者决定为何处理玩家数据、选择何种模型/Embedding服务、谁能访问知识库，并负责适用地区要求的告知、同意、未成年人保护、处理委托或跨境安排、玩家查阅/删除请求和安全事件处置。私人服或白名单服不当然免除这些责任。
+
+Minecraft Mod 提供 `enablePrivacyNotice`、`privacyNoticeText` 和 `privacyNoticeVersion` 作为可配置简要告知，并提供 `/mineastr privacy` 与活动统计退出/删除命令。服主应把完整政策放入服规或官网，至少说明：运营者联系方式、普通聊天会转发给 AstrBot、活动区块及地区简介的用途与期限、截图/背包/位置工具、实际 AI 和 Embedding 服务商及数据所在地、未成年人规则，以及查阅、更正、删除和撤回渠道。
+
+若无法确认第三方模型是否留存、用于训练或跨境处理数据，建议使用本地模型/Embedding，或关闭 `server_site_sync_enabled`、`activity_region_sync_enabled` 和相应 Mod 功能。应限制 `data/mineastr/knowledge/`、`data/mineastr/screenshots/` 及备份的访问权限，并为删除请求、备份清理和泄露通知建立实际流程。
+
+连接必须更换默认 Token。跨机器传输建议通过可信 TLS 反向代理提供 `wss://`；不要直接把无 TLS 的监听端口暴露到公网。
 
 使用示例：
 

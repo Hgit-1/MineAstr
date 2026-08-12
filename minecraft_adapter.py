@@ -46,6 +46,12 @@ DEFAULT_CONFIG = {
     "websocket_max_message_bytes": 2097152,
     "screenshot_cooldown_seconds": 10,
     "screenshot_timeout_seconds": 30,
+    "knowledge_sync_enabled": True,
+    "knowledge_embedding_provider_id": "",
+    "modrinth_enrichment_enabled": True,
+    "server_site_sync_enabled": True,
+    "activity_region_sync_enabled": True,
+    "knowledge_chat_provider_id": "",
 }
 CONFIG_METADATA = {
     "host": {
@@ -132,6 +138,42 @@ CONFIG_METADATA = {
         "hint": "等待 Minecraft 客户端返回截图的最长时间；超时后会立即把失败原因返回给模型。",
         "default": 30,
     },
+    "knowledge_sync_enabled": {
+        "description": "服务器 Mod 知识同步",
+        "type": "bool",
+        "hint": "自动同步 Mod、物品、方块、标签和配方快照。",
+        "default": True,
+    },
+    "knowledge_embedding_provider_id": {
+        "description": "AstrBot Embedding Provider ID",
+        "type": "string",
+        "hint": "用于自动创建每服务器原生 RAG 知识库；留空时仅使用结构化检索。",
+        "default": "",
+    },
+    "modrinth_enrichment_enabled": {
+        "description": "Modrinth 与官方文档补充",
+        "type": "bool",
+        "hint": "使用 JAR 哈希匹配 Modrinth，并安全抓取其 Wiki 和 GitHub README。",
+        "default": True,
+    },
+    "server_site_sync_enabled": {
+        "description": "服务器官网知识同步",
+        "type": "bool",
+        "hint": "读取 Minecraft 独立服务器配置下发的介绍地址；只抓取同源公网 HTTPS 页面。",
+        "default": True,
+    },
+    "activity_region_sync_enabled": {
+        "description": "活动地区知识同步",
+        "type": "bool",
+        "hint": "同步 Minecraft 服务端生成的降精度地区摘要，并发起地区简介征集。",
+        "default": True,
+    },
+    "knowledge_chat_provider_id": {
+        "description": "知识分析模型 Provider ID",
+        "type": "string",
+        "hint": "用于选择官网页面和整理地区简介；留空时使用 AstrBot 默认聊天模型，失败则安全降级为规则选择。",
+        "default": "",
+    },
 }
 
 
@@ -209,6 +251,8 @@ class MinecraftConnectionManager:
                 "mod_version": hello.get("mod_version", "unknown"),
                 "connected_at": now,
                 "last_seen_at": now,
+                "query_capabilities": list(hello.get("query_capabilities") or []),
+                "server_introduction_url": str(hello.get("server_introduction_url") or ""),
             }
 
     async def unregister(self, ws: web.WebSocketResponse) -> None:
@@ -251,6 +295,20 @@ class MinecraftConnectionManager:
             "content": content,
         }
         await self._broadcast(payload)
+
+    async def send_server_chat(
+        self, server_id: str, content: str, sender_name: str | None = None
+    ) -> None:
+        content = _trim_outbound_content(content, self._outbound_max_message_length)
+        if not content:
+            return
+        ws, _ = await self._select_connection(server_id)
+        await ws.send_str(json.dumps({
+            "type": "chat",
+            "message_id": str(uuid.uuid4()),
+            "sender_name": _trim_sender_name(sender_name, self._bot_display_name),
+            "content": content,
+        }, ensure_ascii=False))
 
     async def send_pong(self, ws: web.WebSocketResponse, time_ms: int | None = None) -> None:
         await ws.send_str(json.dumps({"type": "pong", "time_ms": time_ms or int(time.time() * 1000)}))
@@ -427,6 +485,12 @@ class MinecraftPlatformAdapter(Platform):
         self.websocket_max_message_bytes = max(8192, int(_config_value(self.config, "websocket_max_message_bytes")))
         self.screenshot_cooldown_seconds = max(0.0, float(_config_value(self.config, "screenshot_cooldown_seconds")))
         self.screenshot_timeout_seconds = max(1.0, float(_config_value(self.config, "screenshot_timeout_seconds")))
+        self.knowledge_sync_enabled = bool(_config_value(self.config, "knowledge_sync_enabled"))
+        self.knowledge_embedding_provider_id = str(_config_value(self.config, "knowledge_embedding_provider_id"))
+        self.modrinth_enrichment_enabled = bool(_config_value(self.config, "modrinth_enrichment_enabled"))
+        self.server_site_sync_enabled = bool(_config_value(self.config, "server_site_sync_enabled"))
+        self.activity_region_sync_enabled = bool(_config_value(self.config, "activity_region_sync_enabled"))
+        self.knowledge_chat_provider_id = str(_config_value(self.config, "knowledge_chat_provider_id"))
         self.connection_manager = MinecraftConnectionManager(self.bot_display_name, self.outbound_max_message_length)
         self._runner: web.AppRunner | None = None
 
@@ -509,6 +573,44 @@ class MinecraftPlatformAdapter(Platform):
             "connected_count": self.connection_manager.connected_count,
             "servers": await self.connection_manager.query_all("players"),
         }
+
+    async def query_knowledge_manifest(self, server_id: str) -> dict[str, Any]:
+        return await self.connection_manager.query("knowledge_manifest", server_id, timeout=15.0)
+
+    async def query_knowledge_page(
+        self,
+        server_id: str,
+        snapshot_id: str,
+        category: str,
+        cursor: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "knowledge_page",
+            server_id,
+            params={
+                "snapshot_id": snapshot_id,
+                "category": category,
+                "cursor": cursor,
+                "page_size": page_size,
+            },
+            timeout=15.0,
+        )
+
+    async def query_activity_regions_manifest(self, server_id: str) -> dict[str, Any]:
+        return await self.connection_manager.query("activity_regions_manifest", server_id, timeout=15.0)
+
+    async def query_activity_regions_page(
+        self, server_id: str, snapshot_id: str, cursor: int, page_size: int
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "activity_regions_page", server_id,
+            params={"snapshot_id": snapshot_id, "cursor": cursor, "page_size": page_size},
+            timeout=15.0,
+        )
+
+    async def send_server_chat(self, server_id: str, content: str) -> None:
+        await self.connection_manager.send_server_chat(server_id, content, self.bot_display_name)
 
     async def query_player_state(
         self,
@@ -700,6 +802,19 @@ class MinecraftPlatformAdapter(Platform):
             await self.connection_manager.send_error(ws, f"不支持的协议版本：{protocol}")
             return
         await self.connection_manager.register(ws, payload)
+        try:
+            from .knowledge import get_knowledge_coordinator
+
+            coordinator = get_knowledge_coordinator()
+            if coordinator is not None:
+                coordinator.server_connected(
+                    self,
+                    str(payload.get("server_id") or "minecraft"),
+                    [str(item) for item in payload.get("query_capabilities") or []],
+                    str(payload.get("server_introduction_url") or ""),
+                )
+        except Exception as exc:
+            logger.warning("MineAstr 无法启动服务器知识同步：%s", exc)
         logger.info(
             "MineAstr 已注册服务器 %s（%s）",
             payload.get("server_id", "minecraft"),
@@ -710,6 +825,20 @@ class MinecraftPlatformAdapter(Platform):
         content = _trim_content(payload.get("content"), self.max_message_length)
         if not content:
             return
+        try:
+            from .knowledge import get_knowledge_coordinator
+
+            coordinator = get_knowledge_coordinator()
+            if coordinator is not None:
+                await coordinator.receive_region_chat(
+                    str(payload.get("server_id") or "minecraft"),
+                    str(payload.get("player_uuid") or ""),
+                    str(payload.get("player_name") or ""),
+                    content,
+                    False,
+                )
+        except Exception as exc:
+            logger.warning("MineAstr 收集地区简介候选失败：%s", exc)
         message = self._convert_chat(payload, content)
         event = MinecraftPlatformEvent(
             message_str=message.message_str,

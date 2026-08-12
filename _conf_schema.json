@@ -82,5 +82,41 @@
     "type": "int",
     "hint": "等待 Minecraft 客户端返回截图的最长时间；超时后会立即把失败原因返回给模型。",
     "default": 30
+  },
+  "knowledge_sync_enabled": {
+    "description": "服务器 Mod 知识同步",
+    "type": "bool",
+    "hint": "自动同步 Mod、物品、方块、标签和配方快照。",
+    "default": true
+  },
+  "knowledge_embedding_provider_id": {
+    "description": "AstrBot Embedding Provider ID",
+    "type": "string",
+    "hint": "用于自动创建每服务器原生 RAG 知识库；留空时仅使用结构化检索。",
+    "default": ""
+  },
+  "modrinth_enrichment_enabled": {
+    "description": "Modrinth 与官方文档补充",
+    "type": "bool",
+    "hint": "使用 JAR 哈希匹配 Modrinth，并安全抓取其 Wiki 和 GitHub README。",
+    "default": true
+  },
+  "server_site_sync_enabled": {
+    "description": "服务器官网知识同步",
+    "type": "bool",
+    "hint": "读取 Minecraft 独立服务器配置下发的介绍地址；只抓取同源公网 HTTPS 页面。",
+    "default": true
+  },
+  "activity_region_sync_enabled": {
+    "description": "活动地区知识同步",
+    "type": "bool",
+    "hint": "同步 Minecraft 服务端生成的降精度地区摘要，并发起地区简介征集。",
+    "default": true
+  },
+  "knowledge_chat_provider_id": {
+    "description": "知识分析模型 Provider ID",
+    "type": "string",
+    "hint": "用于选择官网页面和整理地区简介；留空时使用 AstrBot 默认聊天模型，失败则安全降级为规则选择。",
+    "default": ""
   }
 }
