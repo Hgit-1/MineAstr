@@ -19,7 +19,7 @@ from astrbot.api import logger
 KNOWLEDGE_DIR = Path("data") / "mineastr" / "knowledge"
 KNOWLEDGE_CATEGORIES = ("mods", "items", "blocks", "entities", "fluids", "recipes")
 MODRINTH_API = "https://api.modrinth.com/v2"
-USER_AGENT = "MineAstr/0.7.1 (https://github.com/Hgit-1/MineAstr)"
+USER_AGENT = "MineAstr/0.7.2 (https://github.com/Hgit-1/MineAstr)"
 MAX_REMOTE_TEXT_BYTES = 512 * 1024
 MAX_SITE_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_SITE_PAGES = 12
@@ -52,6 +52,15 @@ def _sanitize_error(value: Any) -> str:
     text = re.sub(r"(?i)(token|password|secret|authorization)\s*[:=]\s*\S+", r"\1=[redacted]", text)
     text = re.sub(r"(?i)bearer\s+\S+", "Bearer [redacted]", text)
     return text[:300]
+
+
+def _version_at_least(value: Any, minimum: tuple[int, ...]) -> bool:
+    match = re.match(r"^v?(\d+(?:\.\d+)*)", str(value or "").strip(), flags=re.I)
+    if not match:
+        return False
+    current = tuple(int(part) for part in match.group(1).split("."))
+    width = max(len(current), len(minimum))
+    return current + (0,) * (width - len(current)) >= minimum + (0,) * (width - len(minimum))
 
 
 def _source_record(source_id: str, source_type: str, trust: str, status: str, updated_at_ms: int | None = None) -> dict[str, Any]:
@@ -364,6 +373,19 @@ class KnowledgeCoordinator:
             if server_id in self._server_info and current_task is not None and not current_task.done():
                 continue
             capabilities = [str(item) for item in meta.get("query_capabilities", [])]
+            if (
+                "query_capabilities" not in meta
+                and _version_at_least(meta.get("mod_version"), (0, 7))
+                and callable(getattr(getattr(adapter, "connection_manager", None), "query", None))
+            ):
+                capabilities.extend([
+                    "knowledge_manifest", "knowledge_page", "knowledge_status", "knowledge_rescan",
+                ])
+                logger.info(
+                    "MineAstr 服务器 %s 使用升级前的平台适配器实例；"
+                    "已根据 Mod %s 启用通用知识查询兼容层。",
+                    server_id, meta.get("mod_version"),
+                )
             self.server_connected(
                 adapter,
                 server_id,
@@ -520,7 +542,12 @@ class KnowledgeCoordinator:
 
     async def _wait_for_manifest(self, adapter: Any, server_id: str) -> dict[str, Any]:
         for attempt in range(5):
-            result = await adapter.query_knowledge_manifest(server_id)
+            method = getattr(adapter, "query_knowledge_manifest", None)
+            result = (
+                await method(server_id)
+                if callable(method)
+                else await self._legacy_adapter_query(adapter, "knowledge_manifest", server_id)
+            )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or "获取知识 manifest 失败"))
             data = result.get("data")
@@ -531,6 +558,25 @@ class KnowledgeCoordinator:
             if attempt < 4:
                 await asyncio.sleep(2)
         raise RuntimeError("服务器知识快照长时间未就绪")
+
+    @staticmethod
+    async def _legacy_adapter_query(
+        adapter: Any,
+        query_type: str,
+        server_id: str,
+        params: dict[str, Any] | None = None,
+        timeout: float = 15.0,
+    ) -> dict[str, Any]:
+        manager = getattr(adapter, "connection_manager", None)
+        query = getattr(manager, "query", None)
+        if not callable(query):
+            raise RuntimeError("当前 Minecraft 平台适配器实例过旧，请完整重启 AstrBot")
+        return await query(
+            query_type,
+            server_id,
+            params=params,
+            timeout=timeout,
+        )
 
     async def _pull_category(
         self,
@@ -543,8 +589,22 @@ class KnowledgeCoordinator:
         entries: list[dict[str, Any]] = []
         cursor = 0
         while cursor >= 0:
-            result = await adapter.query_knowledge_page(
-                server_id, snapshot_id, category, cursor, max(1, min(200, page_size))
+            bounded_page_size = max(1, min(200, page_size))
+            method = getattr(adapter, "query_knowledge_page", None)
+            result = (
+                await method(server_id, snapshot_id, category, cursor, bounded_page_size)
+                if callable(method)
+                else await self._legacy_adapter_query(
+                    adapter,
+                    "knowledge_page",
+                    server_id,
+                    params={
+                        "snapshot_id": snapshot_id,
+                        "category": category,
+                        "cursor": cursor,
+                        "page_size": bounded_page_size,
+                    },
+                )
             )
             if not result.get("ok"):
                 raise RuntimeError(str(result.get("error") or f"获取 {category} 分页失败"))
@@ -1592,7 +1652,12 @@ class KnowledgeCoordinator:
             remote_status: dict[str, Any] = {"available": False}
             if "knowledge_status" in capabilities:
                 try:
-                    result = await adapter.query_knowledge_status(selected)
+                    method = getattr(adapter, "query_knowledge_status", None)
+                    result = (
+                        await method(selected)
+                        if callable(method)
+                        else await self._legacy_adapter_query(adapter, "knowledge_status", selected)
+                    )
                     remote_status = {"available": True, "ok": bool(result.get("ok")), "data": result.get("data") if result.get("ok") else None}
                     if not result.get("ok"):
                         remote_status["error"] = _sanitize_error(result.get("error"))
@@ -1653,7 +1718,14 @@ class KnowledgeCoordinator:
             if scope in {"local", "all"}:
                 if "knowledge_rescan" not in capabilities:
                     raise RuntimeError("Minecraft Mod 不支持 knowledge_rescan，请升级到 0.7.0")
-                result = await adapter.query_knowledge_rescan(server_id, "local")
+                method = getattr(adapter, "query_knowledge_rescan", None)
+                result = (
+                    await method(server_id, "local")
+                    if callable(method)
+                    else await self._legacy_adapter_query(
+                        adapter, "knowledge_rescan", server_id, params={"scope": "local"}
+                    )
+                )
                 if not result.get("ok"):
                     raise RuntimeError(str(result.get("error") or "Minecraft 知识重扫失败"))
             snapshot = self._snapshots.get(server_id)

@@ -421,6 +421,71 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(["server-a"], restored)
 
+    async def test_legacy_adapter_instance_uses_generic_query_after_hot_upgrade(self):
+        self.coordinator._snapshots = {}
+
+        class ConnectionManager:
+            async def query(self, query_type, server_id, params=None, timeout=0):
+                self.last_call = (query_type, server_id, params, timeout)
+                if query_type == "knowledge_manifest":
+                    return {
+                        "ok": True,
+                        "server_name": "Legacy Adapter Test",
+                        "data": {
+                            "ready": True,
+                            "snapshot_id": "legacy-live",
+                            "page_size": 100,
+                            "generated_at_ms": 1,
+                        },
+                    }
+                if query_type == "knowledge_page":
+                    entries = (
+                        [{"id": "create:track", "namespace": "create", "name": "Train Track"}]
+                        if params["category"] == "items" else []
+                    )
+                    return {
+                        "ok": True,
+                        "data": {
+                            "snapshot_id": params["snapshot_id"],
+                            "category": params["category"],
+                            "entries": entries,
+                            "total": len(entries),
+                            "next_cursor": -1,
+                        },
+                    }
+                raise AssertionError(query_type)
+
+        class LegacyAdapter:
+            knowledge_sync_enabled = True
+            modrinth_enrichment_enabled = False
+            server_site_sync_enabled = False
+            activity_region_sync_enabled = False
+            knowledge_embedding_provider_id = ""
+
+            def __init__(self):
+                self.connection_manager = ConnectionManager()
+
+            async def local_status(self):
+                return {
+                    "ok": True,
+                    "servers": [{
+                        "server_id": "minecraft",
+                        "mod_version": "0.7.0",
+                    }],
+                }
+
+        await self.coordinator.ensure_snapshot(LegacyAdapter(), "minecraft", timeout_seconds=2)
+
+        info = self.coordinator._server_info["minecraft"]
+        self.assertIn("knowledge_manifest", info["capabilities"])
+        self.assertEqual(
+            "create:track",
+            self.coordinator._snapshots["minecraft"]["categories"]["items"][0]["id"],
+        )
+        task = self.coordinator._tasks["minecraft"]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     async def test_status_degrades_and_sanitizes_remote_error(self):
         class Adapter:
             async def local_status(self):

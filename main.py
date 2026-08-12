@@ -52,7 +52,7 @@ MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
     "astrbot_plugin_mineastr",
     "MineAstr",
     "将 Minecraft 聊天桥接为 AstrBot 群聊会话，并提供状态、背包、区域分析、受控命令与截图工具。",
-    "0.7.1",
+    "0.7.2",
 )
 class MineAstrPlugin(Star):
     def __init__(self, context: Context):
@@ -73,7 +73,7 @@ class MineAstrPlugin(Star):
         }
         inactive = sorted(name for name, active in registered.items() if not active)
         logger.info(
-            "MineAstr 0.7.1 已初始化；声明工具=%s；已注册=%s；已禁用=%s。人格过滤仍可按请求缩减工具集。",
+            "MineAstr 0.7.2 已初始化；声明工具=%s；已注册=%s；已禁用=%s。人格过滤仍可按请求缩减工具集。",
             names, sorted(registered), inactive,
         )
         adapter = self._minecraft_adapter()
