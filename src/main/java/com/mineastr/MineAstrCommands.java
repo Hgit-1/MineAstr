@@ -4,6 +4,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
 
 public final class MineAstrCommands {
     private MineAstrCommands() {
@@ -11,11 +12,25 @@ public final class MineAstrCommands {
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, MineAstrBridge bridge) {
         dispatcher.register(Commands.literal("mineastr")
-                .requires(source -> source.hasPermission(2))
                 .then(Commands.literal("status")
+                        .requires(source -> source.hasPermission(2))
                         .executes(context -> status(context.getSource(), bridge)))
                 .then(Commands.literal("reconnect")
-                        .executes(context -> reconnect(context.getSource(), bridge))));
+                        .requires(source -> source.hasPermission(2))
+                        .executes(context -> reconnect(context.getSource(), bridge)))
+                .then(Commands.literal("privacy")
+                        .executes(context -> privacy(context.getSource())))
+                .then(Commands.literal("tracking")
+                        .then(Commands.literal("status")
+                                .executes(context -> trackingStatus(context.getSource(), bridge)))
+                        .then(Commands.literal("optout")
+                                .executes(context -> tracking(context.getSource(), bridge, true)))
+                        .then(Commands.literal("optin")
+                                .executes(context -> tracking(context.getSource(), bridge, false))))
+                .then(Commands.literal("regions")
+                        .requires(source -> source.hasPermission(2))
+                        .then(Commands.literal("analyze-now")
+                                .executes(context -> analyzeNow(context.getSource(), bridge)))));
     }
 
     private static int status(CommandSourceStack source, MineAstrBridge bridge) {
@@ -42,5 +57,36 @@ public final class MineAstrCommands {
         }
         source.sendFailure(Component.translatable("commands.mineastr.reconnect.unavailable"));
         return 0;
+    }
+
+    private static int privacy(CommandSourceStack source) {
+        String notice = MineAstrConfig.renderPrivacyNotice();
+        if (notice.isEmpty()) notice = "服务器提供者未配置 MineAstr 简要数据告知，请联系管理员了解数据处理规则。";
+        for (String line : notice.split("\\n")) source.sendSuccess(() -> Component.literal("[MineAstr] " + line), false);
+        source.sendSuccess(() -> Component.literal("活动统计：" + (MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean() ? "已启用" : "已禁用")
+                + "；原始数据最长保留 " + MineAstrConfig.ACTIVITY_RETENTION_DAYS.getAsInt() + " 天。"), false);
+        return 1;
+    }
+
+    private static int trackingStatus(CommandSourceStack source, MineAstrBridge bridge) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        boolean active = MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean() && !bridge.isActivityOptedOut(player.getUUID());
+        source.sendSuccess(() -> Component.literal("MineAstr 活动统计：" + (active ? "正在采集" : "未采集") + "。"), false);
+        return 1;
+    }
+
+    private static int tracking(CommandSourceStack source, MineAstrBridge bridge, boolean optout) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        bridge.setActivityOptedOut(player.getUUID(), optout);
+        source.sendSuccess(() -> Component.literal(optout
+                ? "已退出 MineAstr 活动统计，并删除保留期内可归属于你的原始活动数据。"
+                : "已重新加入 MineAstr 活动统计；从现在开始记录。"), false);
+        return 1;
+    }
+
+    private static int analyzeNow(CommandSourceStack source, MineAstrBridge bridge) {
+        bridge.analyzeActivityNow();
+        source.sendSuccess(() -> Component.literal("MineAstr 已立即重新分析活动地区。"), false);
+        return 1;
     }
 }

@@ -38,6 +38,12 @@ public final class MineAstrConfig {
                     "用于日志和识别，可以写成你的服务器名称。")
             .define("serverName", "Minecraft 服务器");
 
+    public static final ModConfigSpec.ConfigValue<String> SERVER_INTRODUCTION_URL = BUILDER
+            .comment(
+                    "服务器官网或介绍页。仅独立服务器会把此地址交给 AstrBot 建立服务器介绍知识库。",
+                    "留空表示禁用；建议使用无登录信息的公网 HTTPS 地址。此项不会显示在单人模式配置界面。")
+            .define("serverIntroductionUrl", "");
+
     public static final ModConfigSpec.ConfigValue<String> BOT_DISPLAY_NAME = BUILDER
             .comment(
                     "AstrBot 消息广播到 Minecraft 时显示的名称。",
@@ -55,6 +61,12 @@ public final class MineAstrConfig {
                     "转发到 AstrBot 的单条玩家聊天最大长度。",
                     "超过这个长度的消息会被截断。")
             .defineInRange("maxMessageLength", 1000, 1, 4096);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_KNOWLEDGE_SCAN = BUILDER
+            .comment(
+                    "是否允许 MineAstr 扫描服务器 Mod、注册表、标签和运行时配方，供 AstrBot 按需检索。",
+                    "扫描结果只包含公开注册数据和配方，不读取世界存档、玩家数据或方块实体 NBT。")
+            .define("enableKnowledgeScan", true);
 
     public static final ModConfigSpec.BooleanValue ENABLE_PLAYER_STATE_TOOL = BUILDER
             .comment("是否允许 AstrBot 查询在线玩家的生命、位置、维度、经验和状态效果。")
@@ -79,6 +91,51 @@ public final class MineAstrConfig {
     public static final ModConfigSpec.IntValue REGION_MAX_BLOCKS = BUILDER
             .comment("单次区域特征分析最多扫描多少个方块。")
             .defineInRange("regionMaxBlocks", 32768, 4096, 131072);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_ACTIVITY_TRACKING = BUILDER
+            .comment(
+                    "是否统计玩家在各区块的活动时长，以周期性生成服务器地区摘要。",
+                    "服务器提供者负责提供适用的隐私与合规告知；玩家可用 /mineastr tracking optout 退出。")
+            .define("enableActivityTracking", true);
+
+    public static final ModConfigSpec.IntValue ACTIVITY_SAMPLE_SECONDS = BUILDER
+            .comment("玩家活动区块采样间隔（秒）。")
+            .defineInRange("activitySampleSeconds", 60, 10, 3600);
+
+    public static final ModConfigSpec.IntValue ENVIRONMENT_SAMPLE_MINUTES = BUILDER
+            .comment("活动区块环境摘要采样间隔（分钟）；不会强制加载区块。")
+            .defineInRange("environmentSampleMinutes", 30, 5, 1440);
+
+    public static final ModConfigSpec.IntValue ACTIVITY_ANALYSIS_DAYS = BUILDER
+            .comment("地区活动分析周期（天）。")
+            .defineInRange("activityAnalysisDays", 28, 1, 365);
+
+    public static final ModConfigSpec.IntValue ACTIVITY_RETENTION_DAYS = BUILDER
+            .comment("可归属于玩家的原始活动数据保存天数。")
+            .defineInRange("activityRetentionDays", 84, 7, 730);
+
+    public static final ModConfigSpec.IntValue MINIMUM_REGION_MINUTES = BUILDER
+            .comment("一个区块进入地区聚类所需的最少累计活动分钟数。")
+            .defineInRange("minimumRegionMinutes", 30, 1, 10080);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_PRIVACY_NOTICE = BUILDER
+            .comment(
+                    "是否在玩家首次加入以及告知版本变化时显示简要数据告知。",
+                    "关闭内置告知不免除服务器提供者自行履行适用规则的责任。")
+            .define("enablePrivacyNotice", true);
+
+    public static final ModConfigSpec.ConfigValue<String> PRIVACY_NOTICE_TEXT = BUILDER
+            .comment(
+                    "加入服务器时显示的简要告知；可使用 \\n 换行，最长 2000 字符。",
+                    "支持 {server_name} 和 {retention_days} 占位符。")
+            .define(
+                    "privacyNoticeText",
+                    "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天也会转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。",
+                    value -> value instanceof String text && text.length() <= 2000);
+
+    public static final ModConfigSpec.ConfigValue<String> PRIVACY_NOTICE_VERSION = BUILDER
+            .comment("简要告知版本。修改后，所有玩家下次加入时会重新看到告知。")
+            .define("privacyNoticeVersion", "1", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
 
     public static final ModConfigSpec.BooleanValue ENABLE_COMMAND_TOOL = BUILDER
             .comment(
@@ -113,6 +170,14 @@ public final class MineAstrConfig {
     static final ModConfigSpec SPEC = BUILDER.build();
 
     private MineAstrConfig() {
+    }
+
+    public static String renderPrivacyNotice() {
+        return PRIVACY_NOTICE_TEXT.get()
+                .replace("\\n", "\n")
+                .replace("{retention_days}", Integer.toString(ACTIVITY_RETENTION_DAYS.getAsInt()))
+                .replace("{server_name}", SERVER_NAME.get())
+                .strip();
     }
 
     private static boolean isNonBlankString(Object value) {

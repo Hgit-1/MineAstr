@@ -7,7 +7,9 @@
 
 ![MineAstr 封面](cover.png)
 
-MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，并把 AstrBot 的文本回复广播回游戏。
+MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，把 AstrBot 的回复广播回游戏，并让 AI 理解服务器实际安装的 Mod、方块、物品和配方。
+
+0.6 还可从独立服务器配置的官网建立服务器介绍知识，并按玩家长期活动把世界聚合为降精度地区，邀请玩家共同完善地区简介。
 
 从 AstrBot 侧启用 MineAstr LLM 工具后，机器人还可以主动查询服务器状态、玩家状态、背包、附近实体和区域建筑特征，在严格鉴权后执行受控服务器命令，并在玩家客户端允许时请求低清晰度截图。
 
@@ -16,6 +18,7 @@ MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接
 - 把 Minecraft 里的普通聊天识别为 AstrBot 的同一个群聊。
 - AstrBot 触发回复后，以 `[AstrBot] 回复内容` 的形式广播给全服。
 - AstrBot 可以通过工具主动查询服务器状态、在线玩家、生命/位置、背包、附近实体和区域建筑特征。
+- 服务器启动和数据包重载后会生成内容哈希快照，包含 Mod 元数据、注册物品/方块/实体/流体、标签与全部可枚举运行时配方。
 - 可选的服务器命令工具默认关闭，启用后仍要求请求者可信名单和命令白名单同时匹配，并写入审计日志。
 - 截图是可选客户端能力，默认会先询问玩家；玩家也可以改成自动发送或永不发送。
 - 客户端配置页、截图授权页和本地世界服务端页使用 MineAstr 自定义原生界面，无需额外安装 Cloth Config 或 ModernUI。
@@ -106,6 +109,10 @@ serverId = "minecraft"
 # 用于日志和识别，可以写成你的服务器名称。
 serverName = "Minecraft 服务器"
 
+# 独立服务器官网或介绍页；只允许 AstrBot 安全抓取公网 HTTPS 页面。
+# 单人集成服务器会忽略该配置，且单人模式配置界面不会显示它。
+serverIntroductionUrl = ""
+
 # AstrBot 消息广播到 Minecraft 时显示的名称。
 # 游戏内会显示为 [名称] 回复内容。
 botDisplayName = "AstrBot"
@@ -118,12 +125,28 @@ reconnectSeconds = 5
 # 超过这个长度的消息会被截断。
 maxMessageLength = 1000
 
+# 是否扫描服务器 Mod、注册表、标签和运行时配方。
+enableKnowledgeScan = true
+
 # 玩家实时状态、背包、附近实体和区域建筑特征工具。
 enablePlayerStateTool = true
 enableInventoryTool = true
 enableNearbyEntitiesTool = true
 enableRegionTool = true
 regionMaxBlocks = 32768
+
+# 玩家活动地区统计、分析和原始数据保存期限。
+enableActivityTracking = true
+activitySampleSeconds = 60
+environmentSampleMinutes = 30
+activityAnalysisDays = 28
+activityRetentionDays = 84
+minimumRegionMinutes = 30
+
+# 首次加入简要告知。关闭或改写不会转移服务器提供者的责任。
+enablePrivacyNotice = true
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天也会转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
+privacyNoticeVersion = "1"
 
 # 高风险命令工具默认关闭。
 enableCommandTool = false
@@ -189,8 +212,11 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 - `/mineastr status`：查看连接状态。
 - `/mineastr reconnect`：主动断开当前连接并立即重连。
+- `/mineastr privacy`：查看服务器提供者配置的简要数据告知和活动数据期限。
+- `/mineastr tracking status|optout|optin`：查看、退出或重新加入活动地区统计；退出时删除仍可归属于该玩家的原始活动贡献。
+- `/mineastr regions analyze-now`：管理员立即执行一次地区聚类分析。
 
-两个命令都需要权限等级 2。
+`status`、`reconnect` 和 `regions analyze-now` 需要权限等级 2；隐私和 tracking 命令可由普通玩家使用。
 
 ## AstrBot 主动查询
 
@@ -204,8 +230,40 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 - `region_features`：分析已加载区域的方块调色板、门窗/楼梯/照明/容器/红石等部件、表面高度和粗略三维占用模型；不会强制加载新区块，也不读取容器内容、告示牌文字或方块实体 NBT。
 - `command`：执行受控服务器命令。默认关闭；必须同时通过可信用户和命令规则检查，并记录请求者与命令审计日志。
 - `screenshot`：向指定玩家客户端请求低清晰度截图。玩家未安装客户端 Mod、拒绝截图、禁用截图或超时时会返回失败原因。
+- `knowledge_manifest`：返回当前知识快照 ID、生成时间和各分类记录数。
+- `knowledge_page`：按快照 ID、分类和游标分页返回知识条目；快照变更时会拒绝混合新旧数据。
+- `activity_regions_manifest` / `activity_regions_page`：返回按维度隔离、中心约 64 格精度的活动地区摘要。逐点轨迹、精确边界和明文玩家 UUID 不会进入 AstrBot RAG。
+
+扫描是只读的：不解析 Mod 私有代码，不读取玩家、世界存档、容器内容或方块实体 NBT。特殊或自定义配方若无法完整展开，会以 `opaque` 标记保留真实配方 ID 和类型。
 
 这些查询由 AstrBot 插件中的 LLM 工具触发。实际使用时，玩家可以直接问“我背包里还有多少火把”“附近有什么怪”“分析一下这栋房子的材料和结构”或“能看看我现在画面吗”，AstrBot 会在模型支持工具调用时主动查询 Mod，然后再组织回复。
+
+## 服务器官网与活动地区
+
+- `serverIntroductionUrl` 只在独立服务器握手时下发；为空则不联网抓取，单人集成服务器始终忽略。
+- AstrBot 首先读取首页、`robots.txt` 和 sitemap，再从同源候选中选择页面。默认每周刷新，最多 12 页、总计 2 MiB、单页 512 KiB。
+- 玩家位置每 60 秒按区块累计一次，环境每 30 分钟错峰取样；不会强制加载新区块，也不读取容器、告示牌或方块实体 NBT。
+- 原始数据按周存于主世界 `SavedData`，默认保留 84 天；每 28 天将同维度、相距不超过两个区块的活跃区块聚类。
+- AstrBot 最多每天公开征集 3 个新地区的简介，窗口为 48 小时。包含对应地区编号的回复会进入候选；贡献玩家或 AstrBot 管理员优先，其他玩家的不冲突内容仍会保留。无人回复时简介会明确标记为 AI 未确认草稿。
+
+## 隐私、安全与合规（服务器提供者必读）
+
+> [!WARNING]
+> MineAstr 只提供技术开关和告知模板，不判断你的服务器适用哪一国家或地区的法律，也不保证“开启告知”即可自动合规。服务器提供者决定采集目的、配置 AI 服务和访问权限，并对告知、同意、未成年人、数据处理委托/跨境、玩家权利响应及安全事件承担责任。私人或邀请制服务器不必然自动免除这些责任；如有疑问请咨询适用地区的专业人士。
+
+部署前至少完成以下事项：
+
+1. 根据实际情况修改 `privacyNoticeText`，写明服务器提供者及联系方式、收集的数据、用途、保存期限、AI/Embedding 服务商与所在地、玩家如何查阅/删除/撤回，以及未成年人规则。
+2. 决定是否开启 `enableActivityTracking`、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。关闭内置告知不会免除自行告知的责任。
+3. 若改变告知内容，递增 `privacyNoticeVersion`，使所有玩家下次加入时再次看到。完整政策应放在服规或官网，简要告知不能替代必要的完整说明。
+4. 确认你有权把官网页面、玩家明确提供的地区简介和其他内容放入知识库。官网中包含玩家名单、聊天记录或其他个人信息时，不应直接自动收录。
+5. 不清楚模型、Embedding 或 RAG 数据在哪里处理、是否留存或用于训练时，优先使用本地服务，或关闭对应同步功能。
+
+告知文本支持 `{server_name}`、`{retention_days}` 占位符和 `\n` 换行；这样修改实际保存期限后，简要告知可自动显示配置值。
+
+活动退出会删除保留期内仍可归属于该玩家的原始区块贡献；已经形成且无法反向识别个人的聚合地区不会重算。地区贡献者只以服务器特定 SHA-256 匹配键发送到 AstrBot，RAG 文本不含玩家 UUID、精确轨迹或精确边界。普通 Minecraft 聊天仍会按桥接功能转发给 AstrBot；服主必须在告知中说明其用途和可能留存方式。
+
+安全建议：两端使用长随机 Token；跨机器部署通过可信反向代理使用 `wss://`；限制世界存档、`data/mineastr/` 和备份的文件权限；只向必要管理员授予知识库、截图和玩家工具权限；制定备份恢复、删除请求和数据泄露响应流程。
 
 ## 受控服务器命令
 

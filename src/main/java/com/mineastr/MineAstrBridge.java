@@ -31,6 +31,7 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -61,6 +62,12 @@ public final class MineAstrBridge implements WebSocket.Listener {
     private final ConcurrentMap<String, PendingScreenshot> pendingScreenshots = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, String> pendingScreenshotByPlayer = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ScreenshotAssembly> screenshotAssemblies = new ConcurrentHashMap<>();
+    private final MineAstrKnowledgeSnapshot knowledgeSnapshot = new MineAstrKnowledgeSnapshot();
+
+    private volatile MineAstrActivityData activityData;
+    private volatile long nextActivitySampleMs;
+    private volatile long nextEnvironmentSampleMs;
+    private volatile int environmentPlayerCursor;
 
     private volatile MinecraftServer server;
     private volatile ScheduledExecutorService reconnectExecutor = createReconnectExecutor();
@@ -77,6 +84,13 @@ public final class MineAstrBridge implements WebSocket.Listener {
             MineAstr.LOGGER.info("MineAstr 已被配置禁用。");
             return;
         }
+        knowledgeSnapshot.refresh(server);
+        activityData = MineAstrActivityData.get(server);
+        nextActivitySampleMs = 0;
+        nextEnvironmentSampleMs = 0;
+        if (!MineAstrConfig.ENABLE_PRIVACY_NOTICE.getAsBoolean()) {
+            MineAstr.LOGGER.warn("MineAstr 内置玩家数据告知已关闭；服务器提供者仍需自行承担适用的隐私与合规责任。");
+        }
         connectNow();
     }
 
@@ -86,6 +100,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
         connecting.set(false);
         cancelReconnect();
         clearScreenshotState("Minecraft 服务器正在停止。");
+        knowledgeSnapshot.close();
+        activityData = null;
         WebSocket socket = webSocket.getAndSet(null);
         if (socket != null) {
             socket.sendClose(WebSocket.NORMAL_CLOSURE, "server stopping");
@@ -175,6 +191,56 @@ public final class MineAstrBridge implements WebSocket.Listener {
         });
     }
 
+    public void onPlayerLogin(ServerPlayer player) {
+        if (!MineAstrConfig.ENABLE_PRIVACY_NOTICE.getAsBoolean()) return;
+        String version = MineAstrConfig.PRIVACY_NOTICE_VERSION.get().strip();
+        String key = "mineastr_privacy_notice_version";
+        CompoundTag persistent = player.getPersistentData();
+        if (version.equals(persistent.getString(key))) return;
+        String notice = MineAstrConfig.renderPrivacyNotice();
+        if (!notice.isEmpty()) {
+            for (String line : notice.split("\\n")) player.sendSystemMessage(Component.literal("[MineAstr] " + line));
+        }
+        persistent.putString(key, version);
+    }
+
+    public void tickActivity(MinecraftServer currentServer) {
+        MineAstrActivityData data = activityData;
+        if (data == null || !MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) return;
+        long now = System.currentTimeMillis();
+        if (now >= nextActivitySampleMs) {
+            for (ServerPlayer player : currentServer.getPlayerList().getPlayers()) data.sample(player, now, false);
+            data.prune(now, MineAstrConfig.ACTIVITY_RETENTION_DAYS.getAsInt());
+            nextActivitySampleMs = now + MineAstrConfig.ACTIVITY_SAMPLE_SECONDS.getAsInt() * 1000L;
+        }
+        List<ServerPlayer> players = currentServer.getPlayerList().getPlayers();
+        if (now >= nextEnvironmentSampleMs && !players.isEmpty()) {
+            data.sampleEnvironment(players.get(Math.floorMod(environmentPlayerCursor++, players.size())), now);
+            if (environmentPlayerCursor >= players.size()) {
+                environmentPlayerCursor = 0;
+                nextEnvironmentSampleMs = now + MineAstrConfig.ENVIRONMENT_SAMPLE_MINUTES.getAsInt() * 60_000L;
+            }
+        }
+        if (data.analysisDue(now, MineAstrConfig.ACTIVITY_ANALYSIS_DAYS.getAsInt())) analyzeActivityNow();
+    }
+
+    public void analyzeActivityNow() {
+        MineAstrActivityData data = activityData;
+        if (data == null) return;
+        data.analyze(System.currentTimeMillis(), MineAstrConfig.ACTIVITY_ANALYSIS_DAYS.getAsInt(),
+                MineAstrConfig.ACTIVITY_SAMPLE_SECONDS.getAsInt(), MineAstrConfig.MINIMUM_REGION_MINUTES.getAsInt());
+    }
+
+    public boolean isActivityOptedOut(UUID playerUuid) {
+        MineAstrActivityData data = activityData;
+        return data != null && data.isOptedOut(playerUuid);
+    }
+
+    public void setActivityOptedOut(UUID playerUuid, boolean optedOut) {
+        MineAstrActivityData data = activityData;
+        if (data != null) data.setOptedOut(playerUuid, optedOut);
+    }
+
     private void connectNow() {
         if (server == null || stopping || !MineAstrConfig.ENABLED.getAsBoolean() || isConnected() || !connecting.compareAndSet(false, true)) {
             return;
@@ -229,6 +295,9 @@ public final class MineAstrBridge implements WebSocket.Listener {
         payload.addProperty("server_name", MineAstrConfig.SERVER_NAME.get());
         payload.addProperty("mod_version", MineAstr.MOD_VERSION);
         payload.addProperty("minecraft_version", SharedConstants.getCurrentVersion().getName());
+        String introductionUrl = server != null && server.isDedicatedServer()
+                ? trimFlatContent(MineAstrConfig.SERVER_INTRODUCTION_URL.get(), 2048) : "";
+        payload.addProperty("server_introduction_url", introductionUrl);
         JsonArray capabilities = new JsonArray();
         capabilities.add("status");
         capabilities.add("players");
@@ -238,6 +307,14 @@ public final class MineAstrBridge implements WebSocket.Listener {
         capabilities.add("region_features");
         capabilities.add("command");
         capabilities.add("screenshot");
+        if (MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
+            capabilities.add("knowledge_manifest");
+            capabilities.add("knowledge_page");
+        }
+        if (MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) {
+            capabilities.add("activity_regions_manifest");
+            capabilities.add("activity_regions_page");
+        }
         payload.add("query_capabilities", capabilities);
         sendJson(socket, payload);
     }
@@ -390,6 +467,10 @@ public final class MineAstrBridge implements WebSocket.Listener {
                     case "region_features" -> handleRegionQuery(socket, messageId, payload, currentServer);
                     case "command" -> handleCommandQuery(socket, messageId, payload, currentServer);
                     case "screenshot" -> handleScreenshotQuery(socket, messageId, payload, currentServer);
+                    case "knowledge_manifest" -> handleKnowledgeManifestQuery(socket, messageId);
+                    case "knowledge_page" -> handleKnowledgePageQuery(socket, messageId, payload);
+                    case "activity_regions_manifest" -> handleActivityRegionsManifest(socket, messageId);
+                    case "activity_regions_page" -> handleActivityRegionsPage(socket, messageId, payload);
                     default -> sendQueryError(socket, messageId, query, "不支持的查询类型：" + query);
                 }
             } catch (RuntimeException exc) {
@@ -397,6 +478,68 @@ public final class MineAstrBridge implements WebSocket.Listener {
                 sendQueryError(socket, messageId, query, "查询处理失败：" + safeErrorMessage(exc));
             }
         });
+    }
+
+    public void refreshKnowledgeSnapshot(MinecraftServer currentServer) {
+        knowledgeSnapshot.refresh(currentServer);
+    }
+
+    private void handleKnowledgeManifestQuery(WebSocket socket, String messageId) {
+        if (!MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
+            sendQueryError(socket, messageId, "knowledge_manifest", "服务端已禁用 Mod 知识扫描。");
+            return;
+        }
+        sendQueryResult(socket, messageId, "knowledge_manifest", knowledgeSnapshot.manifest());
+    }
+
+    private void handleKnowledgePageQuery(WebSocket socket, String messageId, JsonObject payload) {
+        if (!MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
+            sendQueryError(socket, messageId, "knowledge_page", "服务端已禁用 Mod 知识扫描。");
+            return;
+        }
+        String snapshotId = trimFlatContent(getString(payload, "snapshot_id", ""), 128);
+        String category = trimFlatContent(getString(payload, "category", ""), 32).toLowerCase(Locale.ROOT);
+        int cursor = getInt(payload, "cursor", 0, 0, Integer.MAX_VALUE);
+        int pageSize = getInt(
+                payload,
+                "page_size",
+                MineAstrKnowledgeSnapshot.DEFAULT_PAGE_SIZE,
+                1,
+                MineAstrKnowledgeSnapshot.MAX_PAGE_SIZE);
+        try {
+            sendQueryResult(
+                    socket,
+                    messageId,
+                    "knowledge_page",
+                    knowledgeSnapshot.page(snapshotId, category, cursor, pageSize));
+        } catch (IllegalArgumentException | IllegalStateException exc) {
+            sendQueryError(socket, messageId, "knowledge_page", exc.getMessage());
+        }
+    }
+
+    private void handleActivityRegionsManifest(WebSocket socket, String messageId) {
+        MineAstrActivityData data = activityData;
+        if (!MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean() || data == null) {
+            sendQueryError(socket, messageId, "activity_regions_manifest", "服务端已禁用玩家活动地区分析。");
+            return;
+        }
+        sendQueryResult(socket, messageId, "activity_regions_manifest", data.manifest());
+    }
+
+    private void handleActivityRegionsPage(WebSocket socket, String messageId, JsonObject payload) {
+        MineAstrActivityData data = activityData;
+        if (!MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean() || data == null) {
+            sendQueryError(socket, messageId, "activity_regions_page", "服务端已禁用玩家活动地区分析。");
+            return;
+        }
+        String snapshot = trimFlatContent(getString(payload, "snapshot_id", ""), 128);
+        int cursor = getInt(payload, "cursor", 0, 0, Integer.MAX_VALUE);
+        int pageSize = getInt(payload, "page_size", 50, 1, 100);
+        try {
+            sendQueryResult(socket, messageId, "activity_regions_page", data.page(snapshot, cursor, pageSize));
+        } catch (IllegalStateException exc) {
+            sendQueryError(socket, messageId, "activity_regions_page", exc.getMessage());
+        }
     }
 
     private void handlePlayerStateQuery(WebSocket socket, String messageId, JsonObject payload, MinecraftServer currentServer) {

@@ -10,16 +10,18 @@ import net.neoforged.fml.config.ModConfig;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.ServerChatEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.slf4j.Logger;
 
 @Mod(MineAstr.MODID)
 public final class MineAstr {
     public static final String MODID = "mineastr";
-    public static final String MOD_VERSION = "0.4.1";
+    public static final String MOD_VERSION = "0.6.0";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     private static MineAstrBridge activeBridge;
@@ -78,6 +80,25 @@ public final class MineAstr {
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         MineAstrCommands.register(event.getDispatcher(), bridge);
+    }
+
+    @SubscribeEvent
+    public void onDatapackSync(OnDatapackSyncEvent event) {
+        if (event.getPlayer() == null) {
+            bridge.refreshKnowledgeSnapshot(event.getPlayerList().getServer());
+        }
+    }
+
+    @SubscribeEvent
+    public void onServerTick(ServerTickEvent.Post event) {
+        bridge.tickActivity(event.getServer());
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
+            bridge.onPlayerLogin(player);
+        }
     }
 
     @SubscribeEvent

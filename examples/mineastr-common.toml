@@ -20,6 +20,9 @@ serverId = "minecraft"
 # 用于日志和识别，可以写成你的服务器名称。
 serverName = "Minecraft 服务器"
 
+# 独立服务器官网或介绍页；留空禁用。单人集成服务器会忽略此项。
+serverIntroductionUrl = ""
+
 # AstrBot 消息广播到 Minecraft 时显示的名称。
 # 游戏内会显示为 [名称] 回复内容。
 botDisplayName = "AstrBot"
@@ -31,6 +34,9 @@ reconnectSeconds = 5
 # 转发到 AstrBot 的单条玩家聊天最大长度。
 # 超过这个长度的消息会被截断。
 maxMessageLength = 1000
+
+# 是否扫描服务器 Mod、注册表、标签和运行时配方供 AstrBot 检索。
+enableKnowledgeScan = true
 
 # 是否允许 AstrBot 查询玩家生命、位置、维度、经验和状态效果。
 enablePlayerStateTool = true
@@ -46,6 +52,19 @@ enableRegionTool = true
 
 # 单次区域分析最多扫描的方块数；不会强制加载新区块。
 regionMaxBlocks = 32768
+
+# 玩家活动地区统计和环境摘要。玩家可通过 /mineastr tracking optout 退出。
+enableActivityTracking = true
+activitySampleSeconds = 60
+environmentSampleMinutes = 30
+activityAnalysisDays = 28
+activityRetentionDays = 84
+minimumRegionMinutes = 30
+
+# 可配置的首次加入简要告知。服务器提供者负责确认其满足实际适用规则。
+enablePrivacyNotice = true
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天也会转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
+privacyNoticeVersion = "1"
 
 # 高风险：是否允许受控 LLM 服务器命令。默认必须保持 false，按需显式开启。
 enableCommandTool = false
