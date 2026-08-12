@@ -240,14 +240,13 @@ public final class MineAstrTools {
                         fluid++;
                     }
 
-                    String path = blockKey == null ? blockId : blockKey.getPath();
-                    boolean constructed = isLikelyConstructed(path);
+                    boolean constructed = isLikelyConstructed(blockId);
                     if (constructed) {
                         likelyConstructed++;
                         gridConstructed[gridIndex]++;
                         constructedBounds.include(x, y, z);
                     }
-                    String feature = featureCategory(path);
+                    String feature = featureCategory(blockId);
                     if (feature != null) {
                         features.merge(feature, 1, Integer::sum);
                         JsonArray samples = featureSamples.computeIfAbsent(feature, ignored -> new JsonArray());
@@ -425,30 +424,38 @@ public final class MineAstrTools {
         return (gy * GRID_Z + gz) * GRID_X + gx;
     }
 
-    private static String featureCategory(String path) {
-        String id = path.toLowerCase(Locale.ROOT);
-        if (id.contains("door") && !id.contains("trapdoor")) return "doors";
-        if (id.contains("trapdoor")) return "trapdoors";
-        if (id.contains("stairs")) return "stairs";
-        if (id.contains("slab")) return "slabs";
-        if (id.contains("glass") || id.contains("pane")) return "windows_or_glass";
-        if (id.contains("fence") || id.endsWith("_wall")) return "fences_or_walls";
-        if (id.contains("torch") || id.contains("lantern") || id.contains("light") || id.contains("glowstone")) return "lighting";
-        if (id.contains("chest") || id.contains("barrel") || id.contains("shulker_box")) return "storage";
-        if (id.contains("furnace") || id.contains("smoker") || id.contains("blast_furnace")) return "furnaces";
-        if (id.contains("crafting_table") || id.contains("anvil") || id.contains("stonecutter") || id.contains("loom")) return "workstations";
-        if (id.contains("redstone") || id.contains("repeater") || id.contains("comparator") || id.contains("piston") || id.contains("observer")) return "redstone";
-        if (id.contains("rail")) return "rails";
-        if (id.contains("bed")) return "beds";
-        if (id.contains("sign")) return "signs";
-        if (id.contains("ladder") || id.contains("scaffolding")) return "vertical_access";
-        if (id.contains("crop") || id.contains("wheat") || id.contains("carrot") || id.contains("potato") || id.contains("farmland")) return "farming";
+    static String featureCategory(String blockId) {
+        String id = blockId.toLowerCase(Locale.ROOT);
+        String path = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
+        if (id.startsWith("create:")) {
+            if (containsAny(path, "shaft", "cogwheel", "gearbox", "clutch", "gearshift", "motor", "water_wheel", "windmill", "steam_engine", "flywheel")) return "create_power";
+            if (containsAny(path, "mechanical_press", "mixer", "crushing_wheel", "millstone", "basin", "deployer", "spout", "mechanical_saw", "encased_fan")) return "create_processing";
+            if (containsAny(path, "belt", "funnel", "chute", "tunnel")) return "create_belts";
+            if (containsAny(path, "track_station", "track_signal", "train_signal", "signal_box", "controls")) return "create_stations_signals";
+        }
+        if (path.contains("door") && !path.contains("trapdoor")) return "doors";
+        if (path.contains("trapdoor")) return "trapdoors";
+        if (path.contains("stairs")) return "stairs";
+        if (path.contains("slab")) return "slabs";
+        if (path.contains("glass") || path.contains("pane")) return "windows_or_glass";
+        if (path.contains("fence") || path.endsWith("_wall")) return "fences_or_walls";
+        if (path.contains("torch") || path.contains("lantern") || path.contains("light") || path.contains("glowstone")) return "lighting";
+        if (path.contains("chest") || path.contains("barrel") || path.contains("shulker_box")) return "storage";
+        if (path.contains("furnace") || path.contains("smoker") || path.contains("blast_furnace")) return "furnaces";
+        if (path.contains("crafting_table") || path.contains("anvil") || path.contains("stonecutter") || path.contains("loom")) return "workstations";
+        if (path.contains("redstone") || path.contains("repeater") || path.contains("comparator") || path.contains("piston") || path.contains("observer")) return "redstone";
+        if (path.contains("rail") || path.equals("track") || path.endsWith("_track")) return "rails";
+        if (path.contains("bed")) return "beds";
+        if (path.contains("sign")) return "signs";
+        if (path.contains("ladder") || path.contains("scaffolding")) return "vertical_access";
+        if (path.contains("crop") || path.contains("wheat") || path.contains("carrot") || path.contains("potato") || path.contains("farmland")) return "farming";
         return null;
     }
 
-    private static boolean isLikelyConstructed(String path) {
-        String id = path.toLowerCase(Locale.ROOT);
-        if (featureCategory(id) != null) {
+    static boolean isLikelyConstructed(String blockId) {
+        String id = blockId.toLowerCase(Locale.ROOT);
+        String path = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
+        if (featureCategory(blockId) != null) {
             return true;
         }
         String[] constructedMarkers = {
@@ -457,7 +464,7 @@ public final class MineAstrTools {
                 "copper", "bookshelf", "decorated_pot", "banner", "painting"
         };
         for (String marker : constructedMarkers) {
-            if (id.contains(marker)) {
+            if (path.contains(marker)) {
                 return true;
             }
         }
@@ -469,11 +476,16 @@ public final class MineAstrTools {
                 "kelp", "seagrass", "coral", "dripstone", "amethyst", "sculk", "tuff", "calcite"
         };
         for (String marker : naturalMarkers) {
-            if (id.contains(marker)) {
+            if (path.contains(marker)) {
                 return false;
             }
         }
         return true;
+    }
+
+    private static boolean containsAny(String value, String... markers) {
+        for (String marker : markers) if (value.contains(marker)) return true;
+        return false;
     }
 
     private static JsonObject positionObject(int x, int y, int z, String blockId) {

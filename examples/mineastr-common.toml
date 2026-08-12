@@ -62,14 +62,18 @@ regionMaxBlocks = 32768
 enableActivityTracking = true
 activitySampleSeconds = 60
 environmentSampleMinutes = 30
+enableAutomaticRegionFeatureScan = true
+automaticRegionScanHorizontalRadius = 8
+automaticRegionScanVerticalRadius = 6
 activityAnalysisDays = 28
 activityRetentionDays = 84
 minimumRegionMinutes = 30
+minimumRegionChunkMinutes = 2
 
 # 可配置的首次加入简要告知。服务器提供者负责确认其满足实际适用规则。
 enablePrivacyNotice = true
-privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
-privacyNoticeVersion = "2"
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
+privacyNoticeVersion = "3"
 
 # 高风险：是否允许受控 LLM 服务器命令。默认必须保持 false，按需显式开启。
 enableCommandTool = false

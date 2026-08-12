@@ -124,6 +124,20 @@ public final class MineAstrConfig {
             .comment("活动区块环境摘要采样间隔（分钟）；不会强制加载区块。")
             .defineInRange("environmentSampleMinutes", 30, 5, 1440);
 
+    public static final ModConfigSpec.BooleanValue ENABLE_AUTOMATIC_REGION_FEATURE_SCAN = BUILDER
+            .comment(
+                    "是否在环境摘要采样时统计玩家周边的建筑与机器特征。",
+                    "只扫描已加载区块，不读取容器、告示牌、方块实体 NBT 或精确建筑形状。")
+            .define("enableAutomaticRegionFeatureScan", true);
+
+    public static final ModConfigSpec.IntValue AUTOMATIC_REGION_SCAN_HORIZONTAL_RADIUS = BUILDER
+            .comment("自动地区特征采样的水平半径（格）。")
+            .defineInRange("automaticRegionScanHorizontalRadius", 8, 2, 24);
+
+    public static final ModConfigSpec.IntValue AUTOMATIC_REGION_SCAN_VERTICAL_RADIUS = BUILDER
+            .comment("自动地区特征采样的垂直半径（格）。")
+            .defineInRange("automaticRegionScanVerticalRadius", 6, 2, 16);
+
     public static final ModConfigSpec.IntValue ACTIVITY_ANALYSIS_DAYS = BUILDER
             .comment("地区活动分析周期（天）。")
             .defineInRange("activityAnalysisDays", 28, 1, 365);
@@ -133,8 +147,12 @@ public final class MineAstrConfig {
             .defineInRange("activityRetentionDays", 84, 7, 730);
 
     public static final ModConfigSpec.IntValue MINIMUM_REGION_MINUTES = BUILDER
-            .comment("一个区块进入地区聚类所需的最少累计活动分钟数。")
+            .comment("一组相连区块成为活动地区所需的最少累计活动分钟数。")
             .defineInRange("minimumRegionMinutes", 30, 1, 10080);
+
+    public static final ModConfigSpec.IntValue MINIMUM_REGION_CHUNK_MINUTES = BUILDER
+            .comment("单个区块进入地区聚类所需的最少累计活动分钟数。")
+            .defineInRange("minimumRegionChunkMinutes", 2, 1, 1440);
 
     public static final ModConfigSpec.BooleanValue ENABLE_PRIVACY_NOTICE = BUILDER
             .comment(
@@ -148,12 +166,12 @@ public final class MineAstrConfig {
                     "支持 {server_name} 和 {retention_days} 占位符。")
             .define(
                     "privacyNoticeText",
-                    "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。",
+                    "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。",
                     value -> value instanceof String text && text.length() <= 2000);
 
     public static final ModConfigSpec.ConfigValue<String> PRIVACY_NOTICE_VERSION = BUILDER
             .comment("简要告知版本。修改后，所有玩家下次加入时会重新看到告知。")
-            .define("privacyNoticeVersion", "2", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
+            .define("privacyNoticeVersion", "3", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
 
     public static final ModConfigSpec.BooleanValue ENABLE_COMMAND_TOOL = BUILDER
             .comment(
@@ -196,6 +214,16 @@ public final class MineAstrConfig {
                 .replace("{retention_days}", Integer.toString(ACTIVITY_RETENTION_DAYS.getAsInt()))
                 .replace("{server_name}", SERVER_NAME.get())
                 .strip();
+    }
+
+    public static void migrateDefaultPrivacyNotice() {
+        String oldText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。";
+        if ("2".equals(PRIVACY_NOTICE_VERSION.get()) && oldText.equals(PRIVACY_NOTICE_TEXT.get())) {
+            PRIVACY_NOTICE_TEXT.set(PRIVACY_NOTICE_TEXT.getDefault());
+            PRIVACY_NOTICE_VERSION.set("3");
+            SPEC.save();
+            MineAstr.LOGGER.info("MineAstr 已将未修改的默认数据告知升级为版本 3。");
+        }
     }
 
     private static boolean isNonBlankString(Object value) {

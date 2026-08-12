@@ -145,14 +145,18 @@ regionMaxBlocks = 32768
 enableActivityTracking = true
 activitySampleSeconds = 60
 environmentSampleMinutes = 30
+enableAutomaticRegionFeatureScan = true
+automaticRegionScanHorizontalRadius = 8
+automaticRegionScanVerticalRadius = 6
 activityAnalysisDays = 28
 activityRetentionDays = 84
 minimumRegionMinutes = 30
+minimumRegionChunkMinutes = 2
 
 # 首次加入简要告知。关闭或改写不会转移服务器提供者的责任。
 enablePrivacyNotice = true
-privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
-privacyNoticeVersion = "2"
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
+privacyNoticeVersion = "3"
 
 # 高风险命令工具默认关闭。
 enableCommandTool = false
@@ -243,11 +247,11 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 - `knowledge_page`：按快照 ID、分类和游标分页返回知识条目；快照变更时会拒绝混合新旧数据。
 - `knowledge_status`：返回扫描启用状态、任务 ID、开始/完成时间、分类数量与经脱敏的最近错误。
 - `knowledge_rescan`：提交 `local` 异步重扫；同时仅运行一个任务。
-- `activity_regions_manifest` / `activity_regions_page`：返回按维度隔离、中心约 64 格精度的活动地区摘要。逐点轨迹、精确边界和明文玩家 UUID 不会进入 AstrBot RAG。
+- `activity_regions_manifest` / `activity_regions_page`：返回按维度隔离、中心约 64 格精度的活动地区摘要，并可包含环境采样次数、疑似人工构造比例、建筑/机器特征计数和主要方块命名空间。逐点轨迹、精确边界和明文玩家 UUID 不会进入 AstrBot RAG。
 
 扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。
 
-WebSocket 协议仍为 1，新能力通过 `query_capabilities` 可选协商。MineAstr 0.4 客户端仍可连接 0.7 服务端；0.6 Mod 与 0.7 AstrBot 插件仍可使用旧功能，但不提供新的状态/重扫能力。
+WebSocket 协议仍为 1，新能力通过 `query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.9 服务端；旧 AstrBot 插件会忽略 0.9 的地区特征字段，仍可使用原有功能。
 
 MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`player_join`、`player_leave`、`player_death` 和 `player_advancement`。死亡和进度推送尊重 `showDeathMessages` 与 `announceAdvancements` 游戏规则；只推送会在游戏聊天中公开宣告的进度，不推送隐藏配方解锁。事件不含 IP 地址、精确坐标、背包或 NBT。
 
@@ -257,9 +261,11 @@ MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`pla
 
 - `serverIntroductionUrl` 只在独立服务器握手时下发；为空则不联网抓取，单人集成服务器始终忽略。
 - AstrBot 首先读取首页、`robots.txt` 和 sitemap，再从同源候选中选择页面。默认每周刷新，最多 12 页、总计 2 MiB、单页 512 KiB。
-- 玩家位置每 60 秒按区块累计一次，环境每 30 分钟错峰取样；不会强制加载新区块，也不读取容器、告示牌或方块实体 NBT。
-- 原始数据按周存于主世界 `SavedData`，默认保留 84 天；每 28 天将同维度、相距不超过两个区块的活跃区块聚类。
-- AstrBot 最多每天公开征集 3 个新地区的简介，窗口为 48 小时。包含对应地区编号的回复会进入候选；贡献玩家或 AstrBot 管理员优先，其他玩家的不冲突内容仍会保留。无人回复时简介会明确标记为 AI 未确认草稿。
+- 玩家位置每 60 秒按区块累计一次；默认每 30 分钟错峰选择一名在线玩家，在水平 8 格、垂直 6 格范围内采集方块调色板、人工构造比例与门窗、床、仓储、轨道、红石和 Create 机器等聚合特征。
+- 自动环境采样只读已加载区块，不会强制加载新区块；不读取容器内容、告示牌文字、方块实体 NBT、精确建筑形状或完整蓝图。可用 `enableAutomaticRegionFeatureScan=false` 单独关闭。
+- 原始数据按周存于主世界 `SavedData`，默认保留 84 天；每 28 天先保留活动至少 2 分钟的区块，再将同维度、相距不超过两个区块的候选聚类，聚类总活动至少 30 分钟才成为地区。
+- AstrBot 依据聚合特征给出最多 3 个带置信度的候选类型，并立即把明确标记的 AI 未确认草稿加入 RAG；每次同步最多调用模型辅助排序 10 个变更草稿，最终文本始终由可重现的确定性模板组合，避免模型增加证据外事实。
+- AstrBot 最多每天公开征集 3 个新地区的简介，窗口为 48 小时。包含对应地区编号的回复会进入候选；贡献玩家或 AstrBot 管理员优先，其他玩家的不冲突内容仍会保留。玩家或管理员已确认的简介不会被后续自动分析覆盖。
 
 ## 隐私、安全与合规（服务器提供者必读）
 
@@ -269,7 +275,7 @@ MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`pla
 部署前至少完成以下事项：
 
 1. 根据实际情况修改 `privacyNoticeText`，写明服务器提供者及联系方式、收集的数据、用途、保存期限、AI/Embedding 服务商与所在地、玩家如何查阅/删除/撤回，以及未成年人规则。
-2. 决定是否开启 `enableActivityTracking`、三类服务器事件推送、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。关闭内置告知不会免除自行告知的责任。
+2. 决定是否开启 `enableActivityTracking`、`enableAutomaticRegionFeatureScan`、三类服务器事件推送、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。关闭内置告知不会免除自行告知的责任。
 3. 若改变告知内容，递增 `privacyNoticeVersion`，使所有玩家下次加入时再次看到。完整政策应放在服规或官网，简要告知不能替代必要的完整说明。
 4. 确认你有权把官网页面、玩家明确提供的地区简介和其他内容放入知识库。官网中包含玩家名单、聊天记录或其他个人信息时，不应直接自动收录。
 5. 不清楚模型、Embedding 或 RAG 数据在哪里处理、是否留存或用于训练时，优先使用本地服务，或关闭对应同步功能。

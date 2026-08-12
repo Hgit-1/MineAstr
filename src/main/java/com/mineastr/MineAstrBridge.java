@@ -88,6 +88,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
             return;
         }
         knowledgeSnapshot.refresh(server);
+        MineAstrConfig.migrateDefaultPrivacyNotice();
         activityData = MineAstrActivityData.get(server);
         nextActivitySampleMs = 0;
         nextEnvironmentSampleMs = 0;
@@ -293,17 +294,18 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if (data == null || !MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) return;
         long now = System.currentTimeMillis();
         if (now >= nextActivitySampleMs) {
-            for (ServerPlayer player : currentServer.getPlayerList().getPlayers()) data.sample(player, now, false);
+            for (ServerPlayer player : currentServer.getPlayerList().getPlayers()) data.sample(player, now);
             data.prune(now, MineAstrConfig.ACTIVITY_RETENTION_DAYS.getAsInt());
             nextActivitySampleMs = now + MineAstrConfig.ACTIVITY_SAMPLE_SECONDS.getAsInt() * 1000L;
         }
         List<ServerPlayer> players = currentServer.getPlayerList().getPlayers();
-        if (now >= nextEnvironmentSampleMs && !players.isEmpty()) {
-            data.sampleEnvironment(players.get(Math.floorMod(environmentPlayerCursor++, players.size())), now);
-            if (environmentPlayerCursor >= players.size()) {
-                environmentPlayerCursor = 0;
-                nextEnvironmentSampleMs = now + MineAstrConfig.ENVIRONMENT_SAMPLE_MINUTES.getAsInt() * 60_000L;
-            }
+        if (MineAstrConfig.ENABLE_AUTOMATIC_REGION_FEATURE_SCAN.getAsBoolean()
+                && now >= nextEnvironmentSampleMs && !players.isEmpty()) {
+            data.sampleEnvironment(
+                    players.get(Math.floorMod(environmentPlayerCursor++, players.size())), now,
+                    MineAstrConfig.AUTOMATIC_REGION_SCAN_HORIZONTAL_RADIUS.getAsInt(),
+                    MineAstrConfig.AUTOMATIC_REGION_SCAN_VERTICAL_RADIUS.getAsInt());
+            nextEnvironmentSampleMs = now + MineAstrConfig.ENVIRONMENT_SAMPLE_MINUTES.getAsInt() * 60_000L;
         }
         if (data.analysisDue(now, MineAstrConfig.ACTIVITY_ANALYSIS_DAYS.getAsInt())) analyzeActivityNow();
     }
@@ -312,7 +314,9 @@ public final class MineAstrBridge implements WebSocket.Listener {
         MineAstrActivityData data = activityData;
         if (data == null) return;
         data.analyze(System.currentTimeMillis(), MineAstrConfig.ACTIVITY_ANALYSIS_DAYS.getAsInt(),
-                MineAstrConfig.ACTIVITY_SAMPLE_SECONDS.getAsInt(), MineAstrConfig.MINIMUM_REGION_MINUTES.getAsInt());
+                MineAstrConfig.ACTIVITY_SAMPLE_SECONDS.getAsInt(),
+                MineAstrConfig.MINIMUM_REGION_CHUNK_MINUTES.getAsInt(),
+                MineAstrConfig.MINIMUM_REGION_MINUTES.getAsInt());
     }
 
     public boolean isActivityOptedOut(UUID playerUuid) {
