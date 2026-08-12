@@ -84,6 +84,9 @@ class MainHelperTests(unittest.IsolatedAsyncioTestCase):
         plugin._knowledge = types.SimpleNamespace(
             manage_source=lambda *args: calls.append(args) or {"ok": True}
         )
+        async def ensure(_server_id):
+            return None
+        plugin._ensure_knowledge_snapshot = ensure
         event = types.SimpleNamespace(
             is_admin=lambda: True,
             message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
@@ -91,6 +94,33 @@ class MainHelperTests(unittest.IsolatedAsyncioTestCase):
         result = await plugin.mineastr_manage_knowledge_source(event, "exclude", source_id="site:x")
         self.assertTrue(json.loads(result.split("\n", 1)[1])["ok"])
         self.assertEqual("server-a", calls[0][0])
+
+    async def test_search_lazily_waits_for_snapshot_after_hot_reload(self):
+        calls = []
+
+        class Knowledge:
+            async def ensure_snapshot(self, adapter, server_id):
+                calls.append(("ensure", adapter, server_id))
+
+            async def search(self, server_id, query, category, limit):
+                calls.append(("search", server_id, query, category, limit))
+                return {"ok": True, "results": []}
+
+        adapter = object()
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin.context = types.SimpleNamespace(get_platform_inst=lambda _name: adapter)
+        plugin._knowledge = Knowledge()
+        plugin._minecraft_adapter = lambda: adapter
+        event = types.SimpleNamespace(
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "minecraft"}),
+        )
+
+        result = await plugin.mineastr_search_server_content(event, "track", category="items")
+
+        self.assertIn('"ok": true', result)
+        self.assertEqual("ensure", calls[0][0])
+        self.assertEqual("minecraft", calls[0][2])
+        self.assertEqual("search", calls[1][0])
 
 
 if __name__ == "__main__":

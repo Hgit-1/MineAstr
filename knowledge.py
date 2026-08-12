@@ -19,7 +19,7 @@ from astrbot.api import logger
 KNOWLEDGE_DIR = Path("data") / "mineastr" / "knowledge"
 KNOWLEDGE_CATEGORIES = ("mods", "items", "blocks", "entities", "fluids", "recipes")
 MODRINTH_API = "https://api.modrinth.com/v2"
-USER_AGENT = "MineAstr/0.7.0 (https://github.com/Hgit-1/MineAstr)"
+USER_AGENT = "MineAstr/0.7.1 (https://github.com/Hgit-1/MineAstr)"
 MAX_REMOTE_TEXT_BYTES = 512 * 1024
 MAX_SITE_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_SITE_PAGES = 12
@@ -347,6 +347,70 @@ class KnowledgeCoordinator:
             self._sync_loop(adapter, server_id),
             name=f"mineastr-knowledge-{_safe_name(server_id)}",
         )
+
+    async def restore_connected_servers(self, adapter: Any) -> list[str]:
+        """Restore knowledge synchronization after a plugin hot reload.
+
+        The platform adapter can outlive the plugin instance, so an already connected
+        Minecraft server will not send hello again merely because the plugin reloaded.
+        """
+        status = await adapter.local_status()
+        restored: list[str] = []
+        for meta in status.get("servers", []):
+            if not isinstance(meta, dict):
+                continue
+            server_id = str(meta.get("server_id") or "minecraft")
+            current_task = self._tasks.get(server_id)
+            if server_id in self._server_info and current_task is not None and not current_task.done():
+                continue
+            capabilities = [str(item) for item in meta.get("query_capabilities", [])]
+            self.server_connected(
+                adapter,
+                server_id,
+                capabilities,
+                str(meta.get("server_introduction_url") or ""),
+                {
+                    "mod_version": str(meta.get("mod_version") or "unknown"),
+                    "minecraft_version": str(meta.get("minecraft_version") or "unknown"),
+                },
+            )
+            restored.append(server_id)
+        if restored:
+            logger.info("MineAstr 已从现有 WebSocket 连接恢复知识同步：%s", restored)
+        return restored
+
+    async def ensure_snapshot(
+        self, adapter: Any, server_id: str | None, timeout_seconds: float = 30.0
+    ) -> None:
+        def ready() -> bool:
+            return server_id in self._snapshots if server_id else bool(self._snapshots)
+
+        needs_restore = server_id not in self._server_info if server_id else not self._server_info
+        if needs_restore:
+            await self.restore_connected_servers(adapter)
+        if ready():
+            return
+        if server_id and server_id not in self._server_info:
+            raise RuntimeError(f"未发现 server_id={server_id} 的 Minecraft WebSocket 连接")
+        if not server_id and not self._server_info:
+            raise RuntimeError("当前没有已连接的 Minecraft 服务器")
+        deadline = time.monotonic() + max(0.1, timeout_seconds)
+        while time.monotonic() < deadline:
+            if ready():
+                return
+            target_ids = [server_id] if server_id else list(self._tasks)
+            if target_ids and all(
+                (task := self._tasks.get(target)) is None or task.done()
+                for target in target_ids if target
+            ):
+                break
+            await asyncio.sleep(0.2)
+        target = server_id or "任一服务器"
+        health = self._health.get(server_id or "", {})
+        detail = str(health.get("last_error") or "").strip()
+        if detail:
+            raise RuntimeError(f"服务器 {target} 知识同步未就绪：{detail}")
+        raise RuntimeError(f"服务器 {target} 已连接，但知识快照尚未就绪")
 
     async def _sync_loop(self, adapter: Any, server_id: str) -> None:
         while True:

@@ -263,6 +263,7 @@ class MinecraftConnectionManager:
                 "server_id": hello.get("server_id", "minecraft"),
                 "server_name": hello.get("server_name", "Minecraft Server"),
                 "mod_version": hello.get("mod_version", "unknown"),
+                "minecraft_version": hello.get("minecraft_version", "unknown"),
                 "connected_at": now,
                 "last_seen_at": now,
                 "query_capabilities": list(hello.get("query_capabilities") or []),

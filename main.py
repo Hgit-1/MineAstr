@@ -52,7 +52,7 @@ MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
     "astrbot_plugin_mineastr",
     "MineAstr",
     "将 Minecraft 聊天桥接为 AstrBot 群聊会话，并提供状态、背包、区域分析、受控命令与截图工具。",
-    "0.7.0",
+    "0.7.1",
 )
 class MineAstrPlugin(Star):
     def __init__(self, context: Context):
@@ -73,9 +73,15 @@ class MineAstrPlugin(Star):
         }
         inactive = sorted(name for name, active in registered.items() if not active)
         logger.info(
-            "MineAstr 0.7.0 已初始化；声明工具=%s；已注册=%s；已禁用=%s。人格过滤仍可按请求缩减工具集。",
+            "MineAstr 0.7.1 已初始化；声明工具=%s；已注册=%s；已禁用=%s。人格过滤仍可按请求缩减工具集。",
             names, sorted(registered), inactive,
         )
+        adapter = self._minecraft_adapter()
+        if adapter is not None:
+            try:
+                await self._knowledge.restore_connected_servers(adapter)
+            except Exception as exc:
+                logger.warning("MineAstr 初始化时恢复现有服务器知识同步失败：%s", exc)
 
     async def terminate(self):
         await self._knowledge.close()
@@ -147,6 +153,12 @@ class MineAstrPlugin(Star):
             return None
         return adapter
 
+    async def _ensure_knowledge_snapshot(self, server_id: str | None) -> None:
+        adapter = self._minecraft_adapter()
+        if adapter is None:
+            return
+        await self._knowledge.ensure_snapshot(adapter, server_id)
+
     @staticmethod
     def _knowledge_error(title: str, exc: Exception) -> str:
         logger.warning("MineAstr %s 失败：%s", title, exc)
@@ -174,6 +186,7 @@ class MineAstrPlugin(Star):
         raw = self._event_raw_message(event)
         target = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = await self._knowledge.list_mods(target, query, limit)
         except Exception as exc:
             return self._knowledge_error("列出服务器 Mod", exc)
@@ -199,6 +212,7 @@ class MineAstrPlugin(Star):
         raw = self._event_raw_message(event)
         target = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = await self._knowledge.search(target, query, category.strip().lower(), limit)
         except Exception as exc:
             return self._knowledge_error("搜索服务器 Mod 内容", exc)
@@ -226,6 +240,7 @@ class MineAstrPlugin(Star):
         raw = self._event_raw_message(event)
         target = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = await self._knowledge.recipes(
                 target, item_id, direction.strip().lower(), recipe_type, limit
             )
@@ -246,6 +261,7 @@ class MineAstrPlugin(Star):
         raw = self._event_raw_message(event)
         target = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = self._knowledge.list_regions(target, limit)
         except Exception as exc:
             return self._knowledge_error("列出服务器地区", exc)
@@ -264,6 +280,7 @@ class MineAstrPlugin(Star):
         raw = self._event_raw_message(event)
         target = server_id.strip() or str(raw.get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = self._knowledge.get_region(target, region_id.strip())
         except Exception as exc:
             return self._knowledge_error("查询服务器地区", exc)
@@ -292,6 +309,7 @@ class MineAstrPlugin(Star):
         except Exception:
             is_admin = False
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = await self._knowledge.submit_region_description(
                 target, region_id.strip(), description.strip(),
                 identity["requester_uuid"] or identity["requester_id"],
@@ -312,6 +330,7 @@ class MineAstrPlugin(Star):
         """
         target = server_id.strip() or str(self._event_raw_message(event).get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             return self._tool_json("知识来源预览", self._knowledge.preview_sources(target))
         except Exception as exc:
             return self._knowledge_error("预览知识来源", exc)
@@ -334,6 +353,7 @@ class MineAstrPlugin(Star):
             return self._tool_json("知识来源管理", {"ok": False, "error": "仅 AstrBot 管理员可执行此操作"})
         target = server_id.strip() or str(self._event_raw_message(event).get("server_id") or "").strip() or None
         try:
+            await self._ensure_knowledge_snapshot(target)
             payload = self._knowledge.manage_source(target, action, source_id, resource_id, alias)
         except Exception as exc:
             return self._knowledge_error("管理知识来源", exc)
@@ -355,6 +375,7 @@ class MineAstrPlugin(Star):
             return self._tool_json("服务器话题背景", {"ok": False, "error": "minecraft 适配器未启用"})
         target = server_id.strip() or str(self._event_raw_message(event).get("server_id") or "").strip() or None
         try:
+            await self._knowledge.ensure_snapshot(adapter, target)
             payload = await self._knowledge.topic_context(adapter, target, since_minutes, limit)
         except Exception as exc:
             return self._knowledge_error("获取话题背景", exc)
@@ -373,6 +394,7 @@ class MineAstrPlugin(Star):
         if adapter is None:
             return self._tool_json("知识状态", {"ok": False, "error": "minecraft 适配器未启用"})
         try:
+            await self._knowledge.restore_connected_servers(adapter)
             payload = await self._knowledge.knowledge_status(adapter, server_id.strip() or None)
         except Exception as exc:
             return self._knowledge_error("查询知识状态", exc)
@@ -395,6 +417,7 @@ class MineAstrPlugin(Star):
             return self._tool_json("知识重扫", {"ok": False, "error": "minecraft 适配器未启用"})
         target = server_id.strip() or str(self._event_raw_message(event).get("server_id") or "").strip() or None
         try:
+            await self._knowledge.ensure_snapshot(adapter, target)
             payload = await self._knowledge.rescan(adapter, target, scope)
         except Exception as exc:
             return self._knowledge_error("重扫服务器知识", exc)

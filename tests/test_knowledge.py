@@ -133,6 +133,8 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.coordinator._server_info = {}
         self.coordinator._rescan_jobs = {}
         self.coordinator._locks = {}
+        self.coordinator._tasks = {}
+        self.coordinator._warned_missing_embedding = set()
 
     async def test_list_and_search_structured_content(self):
         mods = await self.coordinator.list_mods(None, "machine", 10)
@@ -328,6 +330,96 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(second["accepted"])
         gate.set()
         await self.coordinator._rescan_jobs["server-a"]
+
+    async def test_restores_knowledge_sync_from_connection_after_plugin_reload(self):
+        self.coordinator._snapshots = {}
+        restored_calls = []
+        self.coordinator.server_connected = lambda *args, **kwargs: restored_calls.append((args, kwargs))
+
+        class Adapter:
+            async def local_status(self):
+                return {
+                    "ok": True,
+                    "servers": [{
+                        "server_id": "minecraft", "mod_version": "0.7.0",
+                        "minecraft_version": "1.21.1",
+                        "query_capabilities": ["knowledge_manifest", "knowledge_page"],
+                        "server_introduction_url": "https://example.com/",
+                    }],
+                }
+
+        restored = await self.coordinator.restore_connected_servers(Adapter())
+
+        self.assertEqual(["minecraft"], restored)
+        self.assertEqual("minecraft", restored_calls[0][0][1])
+        self.assertIn("knowledge_manifest", restored_calls[0][0][2])
+        self.assertEqual("0.7.0", restored_calls[0][0][4]["mod_version"])
+
+    async def test_lazy_ensure_pulls_snapshot_from_existing_connection(self):
+        self.coordinator._snapshots = {}
+
+        class Adapter:
+            knowledge_sync_enabled = True
+            modrinth_enrichment_enabled = False
+            server_site_sync_enabled = False
+            activity_region_sync_enabled = False
+            knowledge_embedding_provider_id = ""
+
+            async def local_status(self):
+                return {
+                    "ok": True,
+                    "servers": [{
+                        "server_id": "minecraft", "mod_version": "0.7.0",
+                        "minecraft_version": "1.21.1",
+                        "query_capabilities": ["knowledge_manifest", "knowledge_page"],
+                    }],
+                }
+
+            async def query_knowledge_manifest(self, _server_id):
+                return {
+                    "ok": True, "server_name": "Test",
+                    "data": {"ready": True, "snapshot_id": "live", "page_size": 100, "generated_at_ms": 1},
+                }
+
+            async def query_knowledge_page(self, _server_id, snapshot_id, category, _cursor, _page_size):
+                entries = [{"id": "create:track", "namespace": "create", "name": "Train Track"}] if category == "items" else []
+                return {
+                    "ok": True,
+                    "data": {
+                        "snapshot_id": snapshot_id, "category": category, "entries": entries,
+                        "total": len(entries), "next_cursor": -1,
+                    },
+                }
+
+        await self.coordinator.ensure_snapshot(Adapter(), "minecraft", timeout_seconds=2)
+
+        self.assertEqual("live", self.coordinator._snapshots["minecraft"]["snapshot_id"])
+        self.assertEqual("create:track", self.coordinator._snapshots["minecraft"]["categories"]["items"][0]["id"])
+        task = self.coordinator._tasks["minecraft"]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def test_cached_snapshot_still_restores_background_sync(self):
+        restored = []
+        def record_connection(*args, **kwargs):
+            server_id = args[1]
+            restored.append(server_id)
+            self.coordinator._server_info[server_id] = {"capabilities": set(args[2])}
+        self.coordinator.server_connected = record_connection
+
+        class Adapter:
+            async def local_status(self):
+                return {
+                    "ok": True,
+                    "servers": [{
+                        "server_id": "server-a",
+                        "query_capabilities": ["knowledge_manifest", "knowledge_page"],
+                    }],
+                }
+
+        await self.coordinator.ensure_snapshot(Adapter(), "server-a")
+
+        self.assertEqual(["server-a"], restored)
 
     async def test_status_degrades_and_sanitizes_remote_error(self):
         class Adapter:
