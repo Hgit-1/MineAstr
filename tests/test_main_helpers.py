@@ -122,6 +122,22 @@ class MainHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("minecraft", calls[0][2])
         self.assertEqual("search", calls[1][0])
 
+    async def test_server_event_prompt_is_not_treated_as_player_quote(self):
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        event = types.SimpleNamespace(
+            message_str="Alex 达成了进度：[Stone Age]",
+            get_platform_id=lambda: "minecraft",
+            message_obj=types.SimpleNamespace(raw_message={
+                "message_kind": "server_event",
+                "event_type": "player_advancement",
+            }),
+        )
+        request = types.SimpleNamespace(system_prompt="", func_tool=None, tools=None)
+
+        await plugin.mineastr_on_llm_request(event, request)
+
+        self.assertIn("不是玩家发言", request.system_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -311,6 +311,26 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("position", rendered)
         self.assertNotIn("online_history", rendered)
 
+    async def test_server_events_enter_topic_history_without_player_uuid(self):
+        accepted = await self.coordinator.receive_server_event({
+            "server_id": "server-a",
+            "event_type": "player_advancement",
+            "time_ms": 123456,
+            "player_uuid": "private-player-uuid",
+            "player_name": "Alex",
+            "advancement_id": "minecraft:story/mine_stone",
+            "advancement_title": "Stone Age",
+            "advancement_type": "task",
+        }, "Alex 达成了进度：[Stone Age]")
+
+        self.assertTrue(accepted)
+        event = self.coordinator._snapshots["server-a"]["topic_events"][-1]
+        self.assertEqual("player_advancement", event["type"])
+        self.assertEqual("Alex", event["player_name"])
+        self.assertEqual("minecraft:story/mine_stone", event["advancement_id"])
+        self.assertNotIn("player_uuid", event)
+        self.assertNotIn("private-player-uuid", json.dumps(event))
+
     def test_topic_event_id_is_stable(self):
         first = self.coordinator._event("region_discovered", "region-a", 1234, "one")
         second = self.coordinator._event("region_discovered", "region-a", 1234, "two")

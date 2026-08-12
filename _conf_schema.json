@@ -65,6 +65,12 @@
     "hint": "AstrBot 回复广播到 Minecraft 前允许的最大长度；过长回复会被截断，避免刷屏或触发客户端显示问题。",
     "default": 2000
   },
+  "server_event_push_enabled": {
+    "description": "Minecraft 服务器事件推送",
+    "type": "bool",
+    "hint": "接收并投递 Mod 发来的玩家上下线、死亡和公开成就事件；Mod 侧仍可分类关闭。",
+    "default": true
+  },
   "websocket_max_message_bytes": {
     "description": "WebSocket 单包大小上限",
     "type": "int",

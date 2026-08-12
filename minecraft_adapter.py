@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "mention_aliases": DEFAULT_MENTION_ALIASES,
     "max_message_length": 1000,
     "outbound_max_message_length": 2000,
+    "server_event_push_enabled": True,
     "websocket_max_message_bytes": 2097152,
     "screenshot_cooldown_seconds": 10,
     "screenshot_timeout_seconds": 30,
@@ -121,6 +122,12 @@ CONFIG_METADATA = {
         "type": "int",
         "hint": "AstrBot 回复广播到 Minecraft 前允许的最大长度；过长回复会被截断，避免刷屏或触发客户端显示问题。",
         "default": 2000,
+    },
+    "server_event_push_enabled": {
+        "description": "Minecraft 服务器事件推送",
+        "type": "bool",
+        "hint": "接收并投递 Mod 发来的玩家上下线、死亡和公开成就事件；Mod 侧仍可分类关闭。",
+        "default": True,
     },
     "websocket_max_message_bytes": {
         "description": "WebSocket 单包大小上限",
@@ -497,6 +504,7 @@ class MinecraftPlatformAdapter(Platform):
         self.mention_aliases = _parse_aliases(_config_value(self.config, "mention_aliases"))
         self.max_message_length = max(1, int(_config_value(self.config, "max_message_length")))
         self.outbound_max_message_length = max(1, int(_config_value(self.config, "outbound_max_message_length")))
+        self.server_event_push_enabled = bool(_config_value(self.config, "server_event_push_enabled"))
         self.websocket_max_message_bytes = max(8192, int(_config_value(self.config, "websocket_max_message_bytes")))
         self.screenshot_cooldown_seconds = max(0.0, float(_config_value(self.config, "screenshot_cooldown_seconds")))
         self.screenshot_timeout_seconds = max(1.0, float(_config_value(self.config, "screenshot_timeout_seconds")))
@@ -854,18 +862,24 @@ class MinecraftPlatformAdapter(Platform):
         content = _trim_content(payload.get("content"), self.max_message_length)
         if not content:
             return
+        is_server_event = str(payload.get("message_kind") or "") == "server_event"
+        if is_server_event and not self.server_event_push_enabled:
+            return
         try:
             from .knowledge import get_knowledge_coordinator
 
             coordinator = get_knowledge_coordinator()
             if coordinator is not None:
-                await coordinator.receive_region_chat(
-                    str(payload.get("server_id") or "minecraft"),
-                    str(payload.get("player_uuid") or ""),
-                    str(payload.get("player_name") or ""),
-                    content,
-                    False,
-                )
+                if is_server_event:
+                    await coordinator.receive_server_event(payload, content)
+                else:
+                    await coordinator.receive_region_chat(
+                        str(payload.get("server_id") or "minecraft"),
+                        str(payload.get("player_uuid") or ""),
+                        str(payload.get("player_name") or ""),
+                        content,
+                        False,
+                    )
         except Exception as exc:
             logger.warning("MineAstr 收集地区简介候选失败：%s", exc)
         message = self._convert_chat(payload, content)
@@ -881,9 +895,16 @@ class MinecraftPlatformAdapter(Platform):
 
     def _convert_chat(self, payload: dict[str, Any], content: str) -> AstrBotMessage:
         message = AstrBotMessage()
-        player_uuid = str(payload.get("player_uuid") or payload.get("player_name") or "unknown")
-        player_name = str(payload.get("player_name") or player_uuid)
-        message_chain, message_str, mention_target = self._parse_minecraft_message(content)
+        is_server_event = str(payload.get("message_kind") or "") == "server_event"
+        if is_server_event:
+            server_id = str(payload.get("server_id") or "minecraft")
+            player_uuid = f"mineastr-server:{server_id}"
+            player_name = str(payload.get("server_name") or "Minecraft 服务器")
+            message_chain, message_str, mention_target = [Plain(content)], content, None
+        else:
+            player_uuid = str(payload.get("player_uuid") or payload.get("player_name") or "unknown")
+            player_name = str(payload.get("player_name") or player_uuid)
+            message_chain, message_str, mention_target = self._parse_minecraft_message(content)
         message.type = MessageType.GROUP_MESSAGE
         message.group_id = self.group_id
         if message.group:

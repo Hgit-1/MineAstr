@@ -86,6 +86,7 @@ pip install -r requirements.txt
 | `mention_aliases` | `AstrBot,Aria,astrbot` | Minecraft 聊天开头 `@这些名字` 时会被转换为 AstrBot 唤醒消息。多个别名用英文逗号分隔；不在列表中的玩家互相 @ 不会唤醒机器人。 |
 | `max_message_length` | `1000` | 转发到 AstrBot 的单条玩家消息最大长度，超出部分会被截断。 |
 | `outbound_max_message_length` | `2000` | AstrBot 回复广播回 Minecraft 前允许的最大长度，超出部分会被截断，避免刷屏或客户端显示异常。 |
+| `server_event_push_enabled` | `true` | 接收并投递 Mod 推送的玩家上下线、死亡和公开成就事件；Mod 侧仍可分类关闭。 |
 | `websocket_max_message_bytes` | `2097152` | 插件接收 MineAstr Mod WebSocket 消息的单包大小上限，截图查询结果也会经过这里。 |
 | `screenshot_cooldown_seconds` | `10` | 同一目标玩家的截图请求冷却时间，防止模型连续触发截图弹窗。 |
 | `screenshot_timeout_seconds` | `30` | 等待 Minecraft 客户端返回截图的最长时间，超时后直接把失败原因返回给模型。 |
@@ -97,6 +98,12 @@ pip install -r requirements.txt
 | `server_site_excluded_paths` | `/login*` 等 | 在 AI 选页前强制排除登录、账户、管理、API 和静态路径；每行一个 glob。 |
 | `activity_region_sync_enabled` | `true` | 是否同步活动地区、发起48小时公开征集并写入 RAG。 |
 | `knowledge_chat_provider_id` | 空 | 官网页面选择和地区简介整理使用的聊天模型；留空使用默认模型，失败时规则降级。 |
+
+## 服务器事件推送
+
+MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `player_advancement`。插件会把它们标记为 `message_kind=server_event`，以服务器名而不是玩家身份投递到同一 Minecraft 虚拟群，因此不会被当作玩家发言或地区简介投稿。AstrBot 是否对此自动回复，仍由当前人格、唤醒和群聊规则决定。
+
+事件还会作为最近服务器动态保留最多 30 天，供 `mineastr_get_topic_context` 和话题插件使用。该历史保留玩家名、公开事件文本和成就 ID，不保留玩家 UUID、IP 地址或坐标。可在 AstrBot 侧用 `server_event_push_enabled=false` 总关闭，或在 Mod 侧分别关闭上下线、死亡和成就推送。
 
 ## 机器人可调用工具
 
@@ -151,7 +158,7 @@ Modrinth 补充只抓取项目元数据、项目声明的 Wiki/docs 和 GitHub R
 > [!WARNING]
 > 服务器提供者决定为何处理玩家数据、选择何种模型/Embedding服务、谁能访问知识库，并负责适用地区要求的告知、同意、未成年人保护、处理委托或跨境安排、玩家查阅/删除请求和安全事件处置。私人服或白名单服不当然免除这些责任。
 
-Minecraft Mod 提供 `enablePrivacyNotice`、`privacyNoticeText` 和 `privacyNoticeVersion` 作为可配置简要告知，并提供 `/mineastr privacy` 与活动统计退出/删除命令。服主应把完整政策放入服规或官网，至少说明：运营者联系方式、普通聊天会转发给 AstrBot、活动区块及地区简介的用途与期限、截图/背包/位置工具、实际 AI 和 Embedding 服务商及数据所在地、未成年人规则，以及查阅、更正、删除和撤回渠道。
+Minecraft Mod 提供 `enablePrivacyNotice`、`privacyNoticeText` 和 `privacyNoticeVersion` 作为可配置简要告知，并提供 `/mineastr privacy` 与活动统计退出/删除命令。服主应把完整政策放入服规或官网，至少说明：运营者联系方式、普通聊天与已开启的上下线/死亡/公开成就事件会转发给 AstrBot、活动区块及地区简介的用途与期限、截图/背包/位置工具、实际 AI 和 Embedding 服务商及数据所在地、未成年人规则，以及查阅、更正、删除和撤回渠道。
 
 若无法确认第三方模型是否留存、用于训练或跨境处理数据，建议使用本地模型/Embedding，或关闭 `server_site_sync_enabled`、`activity_region_sync_enabled` 和相应 Mod 功能。应限制 `data/mineastr/knowledge/`、`data/mineastr/screenshots/` 及备份的访问权限，并为删除请求、备份清理和泄露通知建立实际流程。
 

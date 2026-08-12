@@ -19,7 +19,7 @@ from astrbot.api import logger
 KNOWLEDGE_DIR = Path("data") / "mineastr" / "knowledge"
 KNOWLEDGE_CATEGORIES = ("mods", "items", "blocks", "entities", "fluids", "recipes")
 MODRINTH_API = "https://api.modrinth.com/v2"
-USER_AGENT = "MineAstr/0.7.2 (https://github.com/Hgit-1/MineAstr)"
+USER_AGENT = "MineAstr/0.8.0 (https://github.com/Hgit-1/MineAstr)"
 MAX_REMOTE_TEXT_BYTES = 512 * 1024
 MAX_SITE_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_SITE_PAGES = 12
@@ -937,6 +937,47 @@ class KnowledgeCoordinator:
         if matched:
             self._save_snapshot(server_id, snapshot)
         return matched
+
+    async def receive_server_event(self, payload: dict[str, Any], content: str) -> bool:
+        server_id = str(payload.get("server_id") or "minecraft")
+        snapshot = self._snapshots.get(server_id)
+        event_type = str(payload.get("event_type") or "")
+        if snapshot is None or event_type not in {
+            "player_join", "player_leave", "player_death", "player_advancement",
+        }:
+            return False
+        now_ms = int(time.time() * 1000)
+        try:
+            occurred_at_ms = int(payload.get("time_ms") or now_ms)
+        except (TypeError, ValueError):
+            occurred_at_ms = now_ms
+        if abs(occurred_at_ms - now_ms) > EVENT_RETENTION_SECONDS * 1000:
+            occurred_at_ms = now_ms
+        player_name = str(payload.get("player_name") or "").strip()[:64]
+        entity_id = (
+            str(payload.get("advancement_id") or "").strip()[:256]
+            if event_type == "player_advancement" else player_name
+        )
+        item = self._event(event_type, entity_id, occurred_at_ms, content)
+        item.update({
+            "player_name": player_name,
+            "advancement_id": str(payload.get("advancement_id") or "").strip()[:256] or None,
+            "advancement_title": str(payload.get("advancement_title") or "").strip()[:256] or None,
+            "advancement_type": str(payload.get("advancement_type") or "").strip()[:32] or None,
+        })
+        item = {key: value for key, value in item.items() if value is not None}
+        existing = {
+            str(event.get("event_id") or ""): event
+            for event in snapshot.get("topic_events", [])
+            if isinstance(event, dict)
+            and now_ms - int(event.get("occurred_at_ms") or 0) <= EVENT_RETENTION_SECONDS * 1000
+        }
+        existing[item["event_id"]] = item
+        snapshot["topic_events"] = sorted(
+            existing.values(), key=lambda event: int(event.get("occurred_at_ms") or 0)
+        )[-500:]
+        self._save_snapshot(server_id, snapshot)
+        return True
 
     async def submit_region_description(
         self, server_id: str | None, region_id: str, content: str,
