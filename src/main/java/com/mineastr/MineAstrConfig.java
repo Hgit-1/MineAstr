@@ -62,6 +62,24 @@ public final class MineAstrConfig {
                     "超过这个长度的消息会被截断。")
             .defineInRange("maxMessageLength", 1000, 1, 4096);
 
+    public static final ModConfigSpec.BooleanValue ENABLE_PLAYER_PRESENCE_PUSH = BUILDER
+            .comment(
+                    "是否把玩家加入和离开服务器的公开事件推送给 AstrBot。",
+                    "推送包含玩家名和 UUID，但不包含 IP 地址或精确位置。")
+            .define("enablePlayerPresencePush", true);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_PLAYER_DEATH_PUSH = BUILDER
+            .comment(
+                    "是否把玩家死亡消息推送给 AstrBot。",
+                    "推送的是服务器已经生成的公开死亡消息，不额外发送坐标。")
+            .define("enablePlayerDeathPush", true);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_ADVANCEMENT_PUSH = BUILDER
+            .comment(
+                    "是否把玩家完成的公开进度、目标和挑战推送给 AstrBot。",
+                    "隐藏的配方解锁等技术进度不会推送。")
+            .define("enableAdvancementPush", true);
+
     public static final ModConfigSpec.BooleanValue ENABLE_KNOWLEDGE_SCAN = BUILDER
             .comment(
                     "是否允许 MineAstr 扫描服务器 Mod、注册表、标签和运行时配方，供 AstrBot 按需检索。",
@@ -130,12 +148,12 @@ public final class MineAstrConfig {
                     "支持 {server_name} 和 {retention_days} 占位符。")
             .define(
                     "privacyNoticeText",
-                    "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天也会转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。",
+                    "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。",
                     value -> value instanceof String text && text.length() <= 2000);
 
     public static final ModConfigSpec.ConfigValue<String> PRIVACY_NOTICE_VERSION = BUILDER
             .comment("简要告知版本。修改后，所有玩家下次加入时会重新看到告知。")
-            .define("privacyNoticeVersion", "1", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
+            .define("privacyNoticeVersion", "2", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
 
     public static final ModConfigSpec.BooleanValue ENABLE_COMMAND_TOOL = BUILDER
             .comment(

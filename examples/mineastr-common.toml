@@ -35,6 +35,11 @@ reconnectSeconds = 5
 # 超过这个长度的消息会被截断。
 maxMessageLength = 1000
 
+# 是否推送玩家上下线、死亡和公开成就事件。
+enablePlayerPresencePush = true
+enablePlayerDeathPush = true
+enableAdvancementPush = true
+
 # 是否扫描服务器 Mod、注册表、标签和运行时配方供 AstrBot 检索。
 enableKnowledgeScan = true
 
@@ -63,8 +68,8 @@ minimumRegionMinutes = 30
 
 # 可配置的首次加入简要告知。服务器提供者负责确认其满足实际适用规则。
 enablePrivacyNotice = true
-privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天也会转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
-privacyNoticeVersion = "1"
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
+privacyNoticeVersion = "2"
 
 # 高风险：是否允许受控 LLM 服务器命令。默认必须保持 false，按需显式开启。
 enableCommandTool = false

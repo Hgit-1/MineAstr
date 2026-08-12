@@ -25,6 +25,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.DisplayInfo;
 import net.minecraft.SharedConstants;
 import net.minecraft.commands.CommandSource;
 import net.minecraft.commands.CommandSourceStack;
@@ -38,6 +40,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.GameRules;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.network.PacketDistributor;
 
@@ -165,6 +168,87 @@ public final class MineAstrBridge implements WebSocket.Listener {
         payload.addProperty("player_uuid", player.getUUID().toString());
         payload.addProperty("player_name", player.getGameProfile().getName());
         payload.addProperty("content", content);
+        sendJson(socket, payload);
+    }
+
+    public void forwardPlayerPresence(ServerPlayer player, boolean joined) {
+        if (!MineAstrConfig.ENABLE_PLAYER_PRESENCE_PUSH.getAsBoolean()) {
+            return;
+        }
+        String playerName = player.getGameProfile().getName();
+        JsonObject details = new JsonObject();
+        details.addProperty("online", joined);
+        forwardServerEvent(
+                player,
+                joined ? "player_join" : "player_leave",
+                playerName + (joined ? " 加入了服务器。" : " 离开了服务器。"),
+                details);
+    }
+
+    public void forwardPlayerDeath(ServerPlayer player, Component deathMessage) {
+        if (!MineAstrConfig.ENABLE_PLAYER_DEATH_PUSH.getAsBoolean()
+                || !player.level().getGameRules().getBoolean(GameRules.RULE_SHOWDEATHMESSAGES)) {
+            return;
+        }
+        JsonObject details = new JsonObject();
+        details.addProperty("death_message", trimFlatContent(deathMessage.getString(), MineAstrConfig.MAX_MESSAGE_LENGTH.getAsInt()));
+        forwardServerEvent(player, "player_death", deathMessage.getString(), details);
+    }
+
+    public void forwardPlayerAdvancement(ServerPlayer player, AdvancementHolder advancement) {
+        if (!MineAstrConfig.ENABLE_ADVANCEMENT_PUSH.getAsBoolean()) {
+            return;
+        }
+        DisplayInfo display = advancement.value().display().orElse(null);
+        if (display == null
+                || !display.shouldAnnounceChat()
+                || !player.level().getGameRules().getBoolean(GameRules.RULE_ANNOUNCE_ADVANCEMENTS)) {
+            return;
+        }
+        String playerName = player.getGameProfile().getName();
+        String title = display.getTitle().getString();
+        String advancementType = display.getType().getSerializedName();
+        String typeName = switch (advancementType) {
+            case "challenge" -> "挑战";
+            case "goal" -> "目标";
+            default -> "进度";
+        };
+        JsonObject details = new JsonObject();
+        details.addProperty("advancement_id", advancement.id().toString());
+        details.addProperty("advancement_title", trimFlatContent(title, 256));
+        details.addProperty("advancement_description", trimFlatContent(display.getDescription().getString(), 1000));
+        details.addProperty("advancement_type", advancementType);
+        forwardServerEvent(player, "player_advancement", playerName + " 达成了" + typeName + "：[" + title + "]", details);
+    }
+
+    private void forwardServerEvent(
+            ServerPlayer player, String eventType, String rawContent, JsonObject details) {
+        if (server == null || !MineAstrConfig.ENABLED.getAsBoolean()) {
+            return;
+        }
+        WebSocket socket = webSocket.get();
+        if (socket == null || socket.isOutputClosed()) {
+            MineAstr.LOGGER.debug("MineAstr 未连接，已丢弃服务器事件 {}。", eventType);
+            return;
+        }
+        String content = trimFlatContent(rawContent, MineAstrConfig.MAX_MESSAGE_LENGTH.getAsInt());
+        if (content.isEmpty()) {
+            return;
+        }
+        JsonObject payload = new JsonObject();
+        payload.addProperty("type", "chat");
+        payload.addProperty("message_kind", "server_event");
+        payload.addProperty("event_type", eventType);
+        payload.addProperty("message_id", UUID.randomUUID().toString());
+        payload.addProperty("time_ms", System.currentTimeMillis());
+        payload.addProperty("server_id", MineAstrConfig.SERVER_ID.get());
+        payload.addProperty("server_name", MineAstrConfig.SERVER_NAME.get());
+        payload.addProperty("player_uuid", player.getUUID().toString());
+        payload.addProperty("player_name", player.getGameProfile().getName());
+        payload.addProperty("content", content);
+        for (var entry : details.entrySet()) {
+            payload.add(entry.getKey(), entry.getValue());
+        }
         sendJson(socket, payload);
     }
 
@@ -307,6 +391,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         capabilities.add("region_features");
         capabilities.add("command");
         capabilities.add("screenshot");
+        capabilities.add("server_events");
         if (MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
             capabilities.add("knowledge_manifest");
             capabilities.add("knowledge_page");

@@ -125,6 +125,12 @@ reconnectSeconds = 5
 # 超过这个长度的消息会被截断。
 maxMessageLength = 1000
 
+# 服务器公开事件推送；可分类关闭。
+# 上下线包含玩家名和 UUID，死亡与成就不额外发送坐标。
+enablePlayerPresencePush = true
+enablePlayerDeathPush = true
+enableAdvancementPush = true
+
 # 是否扫描服务器 Mod、注册表、标签和运行时配方。
 enableKnowledgeScan = true
 
@@ -145,8 +151,8 @@ minimumRegionMinutes = 30
 
 # 首次加入简要告知。关闭或改写不会转移服务器提供者的责任。
 enablePrivacyNotice = true
-privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天也会转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
-privacyNoticeVersion = "1"
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
+privacyNoticeVersion = "2"
 
 # 高风险命令工具默认关闭。
 enableCommandTool = false
@@ -243,6 +249,8 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 
 WebSocket 协议仍为 1，新能力通过 `query_capabilities` 可选协商。MineAstr 0.4 客户端仍可连接 0.7 服务端；0.6 Mod 与 0.7 AstrBot 插件仍可使用旧功能，但不提供新的状态/重扫能力。
 
+MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`player_join`、`player_leave`、`player_death` 和 `player_advancement`。死亡和进度推送尊重 `showDeathMessages` 与 `announceAdvancements` 游戏规则；只推送会在游戏聊天中公开宣告的进度，不推送隐藏配方解锁。事件不含 IP 地址、精确坐标、背包或 NBT。
+
 这些查询由 AstrBot 插件中的 LLM 工具触发。实际使用时，玩家可以直接问“我背包里还有多少火把”“附近有什么怪”“分析一下这栋房子的材料和结构”或“能看看我现在画面吗”，AstrBot 会在模型支持工具调用时主动查询 Mod，然后再组织回复。
 
 ## 服务器官网与活动地区
@@ -261,14 +269,14 @@ WebSocket 协议仍为 1，新能力通过 `query_capabilities` 可选协商。M
 部署前至少完成以下事项：
 
 1. 根据实际情况修改 `privacyNoticeText`，写明服务器提供者及联系方式、收集的数据、用途、保存期限、AI/Embedding 服务商与所在地、玩家如何查阅/删除/撤回，以及未成年人规则。
-2. 决定是否开启 `enableActivityTracking`、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。关闭内置告知不会免除自行告知的责任。
+2. 决定是否开启 `enableActivityTracking`、三类服务器事件推送、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。关闭内置告知不会免除自行告知的责任。
 3. 若改变告知内容，递增 `privacyNoticeVersion`，使所有玩家下次加入时再次看到。完整政策应放在服规或官网，简要告知不能替代必要的完整说明。
 4. 确认你有权把官网页面、玩家明确提供的地区简介和其他内容放入知识库。官网中包含玩家名单、聊天记录或其他个人信息时，不应直接自动收录。
 5. 不清楚模型、Embedding 或 RAG 数据在哪里处理、是否留存或用于训练时，优先使用本地服务，或关闭对应同步功能。
 
 告知文本支持 `{server_name}`、`{retention_days}` 占位符和 `\n` 换行；这样修改实际保存期限后，简要告知可自动显示配置值。
 
-活动退出会删除保留期内仍可归属于该玩家的原始区块贡献；已经形成且无法反向识别个人的聚合地区不会重算。地区贡献者只以服务器特定 SHA-256 匹配键发送到 AstrBot，RAG 文本不含玩家 UUID、精确轨迹或精确边界。普通 Minecraft 聊天仍会按桥接功能转发给 AstrBot；服主必须在告知中说明其用途和可能留存方式。
+活动退出会删除保留期内仍可归属于该玩家的原始区块贡献；已经形成且无法反向识别个人的聚合地区不会重算。地区贡献者只以服务器特定 SHA-256 匹配键发送到 AstrBot，RAG 文本不含玩家 UUID、精确轨迹或精确边界。普通 Minecraft 聊天以及已开启的上下线、死亡和公开成就事件会转发给 AstrBot；服主必须在告知中说明其用途和可能留存方式。`tracking optout` 只退出活动区块统计，不会隐藏这些公开服务器事件。
 
 安全建议：两端使用长随机 Token；跨机器部署通过可信反向代理使用 `wss://`；限制世界存档、`data/mineastr/` 和备份的文件权限；只向必要管理员授予知识库、截图和玩家工具权限；制定备份恢复、删除请求和数据泄露响应流程。
 
@@ -310,6 +318,7 @@ AI 输出不代表天然正确或安全。所有合并到仓库的内容均应�
 - 状态一直是 `未连接`：确认 AstrBot 已启动，`minecraft` 平台适配器已启用，`websocketUrl` 指向正确地址。
 - 日志中出现 `401` 或认证失败：检查两端 `token` 是否完全一致。
 - 玩家聊天没有进入 AstrBot：确认 `enabled = true`，并检查服务器日志中是否有连接失败或 JSON 错误。
+- 玩家上下线、死亡或成就没有进入 AstrBot：确认对应的 `enable*Push` 开关和 AstrBot 侧 `server_event_push_enabled` 已开启。
 - 游戏里没有看到回复：AstrBot 是否回复由 AstrBot 自身的群聊规则、唤醒词和权限决定。
 - AstrBot 不会查询在线玩家：确认 AstrBot 当前模型支持工具调用，并且插件与 Mod 都已经更新到支持查询协议的版本。
 - AstrBot 请求截图失败：确认目标玩家客户端安装了 MineAstr，并且 `screenshotMode` 不是 `"DISABLED"`。默认 `"ASK"` 模式下，玩家需要在弹窗里点击“发送截图”。
