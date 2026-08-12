@@ -246,7 +246,107 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         await self.coordinator._finalize_region(types.SimpleNamespace(), snapshot, "region-demo", survey)
         region = snapshot["activity_regions"]["regions"][0]
         self.assertEqual(region["description"]["status"], "ai_unconfirmed")
-        self.assertIn("AI 自动草稿", region["description"]["text"])
+        self.assertIn("AI 未确认草稿", region["description"]["text"])
+
+    def test_region_classifier_uses_create_and_transport_signatures(self):
+        region = {
+            "feature_counts": {
+                "create_processing": 16, "create_power": 16, "create_belts": 8,
+                "rails": 16, "create_stations_signals": 8, "storage": 4,
+            },
+            "likely_constructed_ratio": 0.6,
+        }
+        candidates = self.coordinator._classify_region(region)
+        types_found = {item["type"] for item in candidates}
+        self.assertIn("create_factory", types_found)
+        self.assertIn("station_transport", types_found)
+        self.assertTrue(all(item["confidence"] <= 0.95 for item in candidates))
+
+    def test_region_classifier_requires_signature_and_returns_unknown(self):
+        candidates = self.coordinator._classify_region({
+            "feature_counts": {}, "likely_constructed_ratio": 0.9,
+        })
+        self.assertEqual("unknown", candidates[0]["type"])
+
+    def test_confirmed_region_description_is_not_replaced_by_ai_draft(self):
+        region = self.coordinator._snapshots["server-a"]["activity_regions"]["regions"][0]
+        region["description"] = {
+            "text": "玩家已确认的车站", "status": "player_confirmed",
+            "source_trust": "verified",
+        }
+        candidates = self.coordinator._classify_region(region)
+        if region["description"]["status"] not in {"admin_confirmed", "player_confirmed"}:
+            region["description"] = self.coordinator._deterministic_region_draft(region, candidates, "new")
+        self.assertEqual("玩家已确认的车站", region["description"]["text"])
+
+    async def test_region_sync_creates_immediate_draft_and_preserves_confirmation(self):
+        snapshot = self.coordinator._snapshots["server-a"]
+        snapshot["activity_regions"]["regions"][0]["description"] = {
+            "text": "玩家确认的主站", "status": "player_confirmed", "source_trust": "verified",
+        }
+
+        class Adapter:
+            def __init__(self):
+                self.messages = []
+
+            async def query_activity_regions_manifest(self, _server_id):
+                return {"ok": True, "data": {
+                    "snapshot_id": "regions-2", "generated_at_ms": 2,
+                }}
+
+            async def query_activity_regions_page(self, _server_id, snapshot_id, _cursor, _limit):
+                return {"ok": True, "data": {
+                    "snapshot_id": snapshot_id, "done": True, "next_cursor": 2,
+                    "items": [
+                        {
+                            "region_id": "region-demo", "dimension": "minecraft:overworld",
+                            "center_x_approx": 64, "center_z_approx": -64,
+                            "feature_counts": {"rails": 16}, "likely_constructed_ratio": 0.5,
+                        },
+                        {
+                            "region_id": "region-new", "dimension": "minecraft:overworld",
+                            "center_x_approx": 128, "center_z_approx": 128,
+                            "feature_counts": {"create_processing": 16, "create_power": 16},
+                            "likely_constructed_ratio": 0.7, "environment_sample_count": 3,
+                        },
+                    ],
+                }}
+
+            async def send_server_chat(self, server_id, content):
+                self.messages.append((server_id, content))
+
+        adapter = Adapter()
+        await self.coordinator._sync_regions(adapter, "server-a", snapshot)
+        regions = {
+            item["region_id"]: item
+            for item in snapshot["activity_regions"]["regions"]
+        }
+        self.assertEqual("玩家确认的主站", regions["region-demo"]["description"]["text"])
+        self.assertEqual("ai_unconfirmed", regions["region-new"]["description"]["status"])
+        self.assertEqual("create_factory", regions["region-new"]["probable_types"][0]["type"])
+        self.assertIn("region-new", adapter.messages[0][1])
+        self.assertNotIn("region-demo", adapter.messages[0][1])
+
+    async def test_region_llm_can_only_reorder_known_candidates(self):
+        region = {
+            "region_id": "region-safe", "dimension": "minecraft:overworld",
+            "center_x_approx": 0, "center_z_approx": 0,
+            "probable_types": [
+                {"type": "warehouse", "label": "仓库", "evidence": ["storage=16"]},
+                {"type": "residence_base", "label": "住宅或基地", "evidence": ["beds=2"]},
+            ],
+            "description": {"evidence_hash": "evidence"},
+        }
+
+        async def llm(_adapter, _prompt):
+            return '["invented_palace", "residence_base", "warehouse"]'
+
+        self.coordinator._llm_text = llm
+        await self.coordinator._refine_region_draft(types.SimpleNamespace(), region)
+        text = region["description"]["text"]
+        self.assertIn("住宅或基地、仓库", text)
+        self.assertNotIn("invented_palace", text)
+        self.assertIn("仍需玩家确认", text)
 
     def test_rag_includes_site_and_region_without_private_contributors(self):
         snapshot = self.coordinator._snapshots["server-a"]
