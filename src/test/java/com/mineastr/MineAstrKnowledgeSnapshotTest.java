@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -65,6 +66,47 @@ final class MineAstrKnowledgeSnapshotTest {
 
         assertEquals(1, page.get("entries").getAsJsonArray().size());
         assertEquals(1, page.get("next_cursor").getAsInt());
+    }
+
+    @Test
+    void mergesChineseAndEnglishLanguageAliasesWithoutDuplicates() {
+        Map<String, List<String>> aliases = new LinkedHashMap<>();
+        MineAstrKnowledgeSnapshot.mergeLanguageJson(
+                aliases, "{\"item.example.gear\":\"齿轮\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        MineAstrKnowledgeSnapshot.mergeLanguageJson(
+                aliases, "{\"item.example.gear\":\"Gear\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        MineAstrKnowledgeSnapshot.mergeLanguageJson(
+                aliases, "{\"item.example.gear\":\"gear\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        assertEquals(List.of("齿轮", "Gear"), aliases.get("item.example.gear"));
+    }
+
+    @Test
+    void boundsOpaqueCustomRecipeStructures() {
+        JsonObject custom = new JsonObject();
+        JsonArray outputs = new JsonArray();
+        outputs.add("create:track");
+        outputs.add("create:shaft");
+        custom.add("results", outputs);
+        custom.addProperty("processing_time", 100);
+
+        var bounded = MineAstrKnowledgeSnapshot.boundedJson(custom, 0, new int[] {0});
+
+        assertEquals("create:track", bounded.getAsJsonObject().getAsJsonArray("results").get(0).getAsString());
+        assertEquals(100, bounded.getAsJsonObject().get("processing_time").getAsInt());
+    }
+
+    @Test
+    void stableSnapshotContentIgnoresObservationTimes() {
+        JsonObject first = new JsonObject();
+        first.addProperty("id", "create:track");
+        first.addProperty("updated_at_ms", 1);
+        JsonObject second = first.deepCopy();
+        second.addProperty("updated_at_ms", 2);
+
+        assertEquals(
+                MineAstrKnowledgeSnapshot.stableJson(first),
+                MineAstrKnowledgeSnapshot.stableJson(second));
     }
 
     private static Map<String, JsonArray> emptyCategories() {

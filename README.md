@@ -9,7 +9,7 @@
 
 MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接到 AstrBot，把 AstrBot 的回复广播回游戏，并让 AI 理解服务器实际安装的 Mod、方块、物品和配方。
 
-0.6 还可从独立服务器配置的官网建立服务器介绍知识，并按玩家长期活动把世界聚合为降精度地区，邀请玩家共同完善地区简介。
+0.7 还会安全读取 Mod JAR 的 `zh_cn`/`en_us` 语言别名，使用配方 serializer codec 保留自定义加工结构，并提供可观测的重扫状态。
 
 从 AstrBot 侧启用 MineAstr LLM 工具后，机器人还可以主动查询服务器状态、玩家状态、背包、附近实体和区域建筑特征，在严格鉴权后执行受控服务器命令，并在玩家客户端允许时请求低清晰度截图。
 
@@ -215,8 +215,11 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 - `/mineastr privacy`：查看服务器提供者配置的简要数据告知和活动数据期限。
 - `/mineastr tracking status|optout|optin`：查看、退出或重新加入活动地区统计；退出时删除仍可归属于该玩家的原始活动贡献。
 - `/mineastr regions analyze-now`：管理员立即执行一次地区聚类分析。
+- `/mineastr knowledge status`：查看本地扫描任务、快照 ID、各分类数量与最近错误。
+- `/mineastr knowledge rescan`：提交一次异步扫描；已有任务时复用现有任务 ID。
+- `/mineastr knowledge rescan-status`：查看最近重扫状态。
 
-`status`、`reconnect` 和 `regions analyze-now` 需要权限等级 2；隐私和 tracking 命令可由普通玩家使用。
+`status`、`reconnect`、`regions analyze-now` 和所有 `knowledge` 命令需要权限等级 2；隐私和 tracking 命令可由普通玩家使用。
 
 ## AstrBot 主动查询
 
@@ -232,9 +235,13 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 - `screenshot`：向指定玩家客户端请求低清晰度截图。玩家未安装客户端 Mod、拒绝截图、禁用截图或超时时会返回失败原因。
 - `knowledge_manifest`：返回当前知识快照 ID、生成时间和各分类记录数。
 - `knowledge_page`：按快照 ID、分类和游标分页返回知识条目；快照变更时会拒绝混合新旧数据。
+- `knowledge_status`：返回扫描启用状态、任务 ID、开始/完成时间、分类数量与经脱敏的最近错误。
+- `knowledge_rescan`：提交 `local` 异步重扫；同时仅运行一个任务。
 - `activity_regions_manifest` / `activity_regions_page`：返回按维度隔离、中心约 64 格精度的活动地区摘要。逐点轨迹、精确边界和明文玩家 UUID 不会进入 AstrBot RAG。
 
-扫描是只读的：不解析 Mod 私有代码，不读取玩家、世界存档、容器内容或方块实体 NBT。特殊或自定义配方若无法完整展开，会以 `opaque` 标记保留真实配方 ID 和类型。
+扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。
+
+WebSocket 协议仍为 1，新能力通过 `query_capabilities` 可选协商。MineAstr 0.4 客户端仍可连接 0.7 服务端；0.6 Mod 与 0.7 AstrBot 插件仍可使用旧功能，但不提供新的状态/重扫能力。
 
 这些查询由 AstrBot 插件中的 LLM 工具触发。实际使用时，玩家可以直接问“我背包里还有多少火把”“附近有什么怪”“分析一下这栋房子的材料和结构”或“能看看我现在画面吗”，AstrBot 会在模型支持工具调用时主动查询 Mod，然后再组织回复。
 

@@ -310,6 +310,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if (MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
             capabilities.add("knowledge_manifest");
             capabilities.add("knowledge_page");
+            capabilities.add("knowledge_status");
+            capabilities.add("knowledge_rescan");
         }
         if (MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) {
             capabilities.add("activity_regions_manifest");
@@ -469,6 +471,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
                     case "screenshot" -> handleScreenshotQuery(socket, messageId, payload, currentServer);
                     case "knowledge_manifest" -> handleKnowledgeManifestQuery(socket, messageId);
                     case "knowledge_page" -> handleKnowledgePageQuery(socket, messageId, payload);
+                    case "knowledge_status" -> sendQueryResult(socket, messageId, query, knowledgeSnapshot.status());
+                    case "knowledge_rescan" -> handleKnowledgeRescanQuery(socket, messageId, payload, currentServer);
                     case "activity_regions_manifest" -> handleActivityRegionsManifest(socket, messageId);
                     case "activity_regions_page" -> handleActivityRegionsPage(socket, messageId, payload);
                     default -> sendQueryError(socket, messageId, query, "不支持的查询类型：" + query);
@@ -482,6 +486,34 @@ public final class MineAstrBridge implements WebSocket.Listener {
 
     public void refreshKnowledgeSnapshot(MinecraftServer currentServer) {
         knowledgeSnapshot.refresh(currentServer);
+    }
+
+    public JsonObject knowledgeStatus() {
+        return knowledgeSnapshot.status();
+    }
+
+    public String rescanKnowledge(MinecraftServer currentServer) {
+        return knowledgeSnapshot.refresh(currentServer);
+    }
+
+    private void handleKnowledgeRescanQuery(
+            WebSocket socket, String messageId, JsonObject payload, MinecraftServer currentServer) {
+        if (!MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
+            sendQueryError(socket, messageId, "knowledge_rescan", "服务端已禁用 Mod 知识扫描。");
+            return;
+        }
+        String scope = trimFlatContent(getString(payload, "scope", "local"), 16).toLowerCase(Locale.ROOT);
+        if (!scope.equals("local") && !scope.equals("all")) {
+            sendQueryError(socket, messageId, "knowledge_rescan", "Minecraft 端仅支持 local 扫描。");
+            return;
+        }
+        boolean alreadyRunning = knowledgeSnapshot.isScanning();
+        String taskId = knowledgeSnapshot.refresh(currentServer);
+        JsonObject result = knowledgeSnapshot.status();
+        result.addProperty("task_id", taskId);
+        result.addProperty("accepted", !alreadyRunning && !"disabled".equals(taskId));
+        if (alreadyRunning) result.addProperty("reason", "already_running");
+        sendQueryResult(socket, messageId, "knowledge_rescan", result);
     }
 
     private void handleKnowledgeManifestQuery(WebSocket socket, String messageId) {

@@ -30,7 +30,15 @@ public final class MineAstrCommands {
                 .then(Commands.literal("regions")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("analyze-now")
-                                .executes(context -> analyzeNow(context.getSource(), bridge)))));
+                                .executes(context -> analyzeNow(context.getSource(), bridge))))
+                .then(Commands.literal("knowledge")
+                        .requires(source -> source.hasPermission(2))
+                        .then(Commands.literal("status")
+                                .executes(context -> knowledgeStatus(context.getSource(), bridge)))
+                        .then(Commands.literal("rescan")
+                                .executes(context -> knowledgeRescan(context.getSource(), bridge)))
+                        .then(Commands.literal("rescan-status")
+                                .executes(context -> knowledgeStatus(context.getSource(), bridge)))));
     }
 
     private static int status(CommandSourceStack source, MineAstrBridge bridge) {
@@ -87,6 +95,29 @@ public final class MineAstrCommands {
     private static int analyzeNow(CommandSourceStack source, MineAstrBridge bridge) {
         bridge.analyzeActivityNow();
         source.sendSuccess(() -> Component.literal("MineAstr 已立即重新分析活动地区。"), false);
+        return 1;
+    }
+
+    private static int knowledgeStatus(CommandSourceStack source, MineAstrBridge bridge) {
+        var status = bridge.knowledgeStatus();
+        String state = status.has("state") ? status.get("state").getAsString() : "unknown";
+        String task = status.has("task_id") ? status.get("task_id").getAsString() : "";
+        int total = status.has("total_entries") ? status.get("total_entries").getAsInt() : 0;
+        source.sendSuccess(() -> Component.literal(
+                "MineAstr 知识扫描：" + state + "；任务=" + (task.isBlank() ? "无" : task) + "；条目=" + total), false);
+        if (status.has("last_error") && !status.get("last_error").getAsString().isBlank()) {
+            source.sendFailure(Component.literal("最近错误：" + status.get("last_error").getAsString()));
+        }
+        return 1;
+    }
+
+    private static int knowledgeRescan(CommandSourceStack source, MineAstrBridge bridge) {
+        String taskId = bridge.rescanKnowledge(source.getServer());
+        if ("disabled".equals(taskId)) {
+            source.sendFailure(Component.literal("MineAstr Mod 知识扫描已禁用。"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("已提交 MineAstr 知识扫描：" + taskId), false);
         return 1;
     }
 }
