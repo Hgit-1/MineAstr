@@ -50,6 +50,8 @@ DEFAULT_CONFIG = {
     "knowledge_embedding_provider_id": "",
     "modrinth_enrichment_enabled": True,
     "server_site_sync_enabled": True,
+    "server_site_allowed_paths": "",
+    "server_site_excluded_paths": "/login*\n/account*\n/admin*\n/api/*\n/static/*",
     "activity_region_sync_enabled": True,
     "knowledge_chat_provider_id": "",
 }
@@ -161,6 +163,18 @@ CONFIG_METADATA = {
         "type": "bool",
         "hint": "读取 Minecraft 独立服务器配置下发的介绍地址；只抓取同源公网 HTTPS 页面。",
         "default": True,
+    },
+    "server_site_allowed_paths": {
+        "description": "官网允许路径",
+        "type": "string",
+        "hint": "每行一个 glob；留空表示允许所有同源路径。",
+        "default": "",
+    },
+    "server_site_excluded_paths": {
+        "description": "官网排除路径",
+        "type": "string",
+        "hint": "每行一个 glob；在 AI 选页前强制排除。",
+        "default": "/login*\n/account*\n/admin*\n/api/*\n/static/*",
     },
     "activity_region_sync_enabled": {
         "description": "活动地区知识同步",
@@ -489,6 +503,8 @@ class MinecraftPlatformAdapter(Platform):
         self.knowledge_embedding_provider_id = str(_config_value(self.config, "knowledge_embedding_provider_id"))
         self.modrinth_enrichment_enabled = bool(_config_value(self.config, "modrinth_enrichment_enabled"))
         self.server_site_sync_enabled = bool(_config_value(self.config, "server_site_sync_enabled"))
+        self.server_site_allowed_paths = str(_config_value(self.config, "server_site_allowed_paths"))
+        self.server_site_excluded_paths = str(_config_value(self.config, "server_site_excluded_paths"))
         self.activity_region_sync_enabled = bool(_config_value(self.config, "activity_region_sync_enabled"))
         self.knowledge_chat_provider_id = str(_config_value(self.config, "knowledge_chat_provider_id"))
         self.connection_manager = MinecraftConnectionManager(self.bot_display_name, self.outbound_max_message_length)
@@ -595,6 +611,14 @@ class MinecraftPlatformAdapter(Platform):
                 "page_size": page_size,
             },
             timeout=15.0,
+        )
+
+    async def query_knowledge_status(self, server_id: str) -> dict[str, Any]:
+        return await self.connection_manager.query("knowledge_status", server_id, timeout=15.0)
+
+    async def query_knowledge_rescan(self, server_id: str, scope: str = "local") -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "knowledge_rescan", server_id, params={"scope": scope}, timeout=15.0
         )
 
     async def query_activity_regions_manifest(self, server_id: str) -> dict[str, Any]:
@@ -812,6 +836,10 @@ class MinecraftPlatformAdapter(Platform):
                     str(payload.get("server_id") or "minecraft"),
                     [str(item) for item in payload.get("query_capabilities") or []],
                     str(payload.get("server_introduction_url") or ""),
+                    {
+                        "mod_version": str(payload.get("mod_version") or "unknown"),
+                        "minecraft_version": str(payload.get("minecraft_version") or "unknown"),
+                    },
                 )
         except Exception as exc:
             logger.warning("MineAstr 无法启动服务器知识同步：%s", exc)

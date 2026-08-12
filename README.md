@@ -21,7 +21,7 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 
 在模型支持工具调用时，AstrBot 还能主动查询实时服务器数据，并按需检索服务器实际安装的 Mod、物品、方块、标签和配方。Mod 功能说明可通过 Modrinth、官方 Wiki 和源码 README 补充到 AstrBot 原生 RAG 知识库。
 
-0.6 还会按配置同步服务器官网和已降精度的活动地区摘要，在游戏公聊中征集地区简介并写入同一服务器专用 RAG。
+0.7 还会管理知识来源的信任级别与确认状态，按单页/单地区增量维护 RAG，并为独立的话题插件提供不含历史行为的安全上下文。
 
 ## 最简单配置
 
@@ -93,12 +93,14 @@ pip install -r requirements.txt
 | `knowledge_embedding_provider_id` | 空 | AstrBot 中已配置的 Embedding Provider ID；填写后自动为每个 `server_id` 创建专用知识库。 |
 | `modrinth_enrichment_enabled` | `true` | 用 JAR SHA-512 匹配 Modrinth，并同步官方 Wiki 与 GitHub README。 |
 | `server_site_sync_enabled` | `true` | 是否读取 Mod 下发的独立服务器官网介绍地址并同步同源页面。 |
+| `server_site_allowed_paths` | 空 | 每行一个 glob；留空允许所有同源路径。 |
+| `server_site_excluded_paths` | `/login*` 等 | 在 AI 选页前强制排除登录、账户、管理、API 和静态路径；每行一个 glob。 |
 | `activity_region_sync_enabled` | `true` | 是否同步活动地区、发起48小时公开征集并写入 RAG。 |
 | `knowledge_chat_provider_id` | 空 | 官网页面选择和地区简介整理使用的聊天模型；留空使用默认模型，失败时规则降级。 |
 
 ## 机器人可调用工具
 
-插件会注册十四个 AstrBot LLM 工具。只要当前模型提供商支持 function calling / tools，并且 AstrBot 中没有禁用这些工具，机器人在对话中可以主动查询 Minecraft 数据后再回答。
+插件会注册十九个 AstrBot LLM 工具。插件只会向模型提示当次请求实际可用的工具；AstrBot 全局开关、人格过滤或提供商不支持工具时，不会诱导模型调用一个不存在的工具。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -116,6 +118,11 @@ pip install -r requirements.txt
 | `mineastr_list_regions` | 列出长期活动聚类地区、约64格精度位置和简介状态。 |
 | `mineastr_get_region` | 查询指定地区的环境摘要与确认简介。 |
 | `mineastr_submit_region_description` | 使用真实事件身份明确提交地区简介；管理员提交可覆盖。 |
+| `mineastr_preview_knowledge_sources` | 查看来源 ID、信任级别、确认和排除状态。 |
+| `mineastr_manage_knowledge_source` | 管理员确认/排除/恢复/重抓来源，或管理资源别名。 |
+| `mineastr_get_topic_context` | 为另一话题插件返回在线玩家名、主要 Mod、确认地区和近期非聊天事件。 |
+| `mineastr_get_knowledge_status` | 查看连接/心跳、扫描、远程来源、RAG 和征集状态。 |
+| `mineastr_rescan_server_knowledge` | 管理员按 local/remote/rag/all 提交单实例重扫任务。 |
 
 ## Mod 知识同步
 
@@ -124,6 +131,12 @@ pip install -r requirements.txt
 3. 确保 Mod 侧 `enableKnowledgeScan = true`，然后重启服务器和适配器。
 
 插件会在 `data/mineastr/knowledge/<server_id>/snapshot.json` 原子替换本地快照，并自动维护 `MineAstr-<server_id>` 知识库。每 60 秒检查一次 manifest，只在内容哈希变化时重新拉取；Minecraft 断线后保留上一份快照与 RAG 文档。
+
+schema v3 将来源分为 `authoritative > verified > reference > unverified`，并使用 `observed/admin_confirmed/player_confirmed/unreviewed/ai_unconfirmed` 状态。运行时注册表与配方决定精确 ID/物品/配方，管理员覆盖决定服务器命名与别名；低优先级冲突仍保留为带来源的补充材料。覆盖保存在每服务器 `overrides.json`，以临时文件原子替换。
+
+RAG 文档按 Mod 概览、注册表分页、单个官网页和单个地区拆分。更新时先上传新哈希文档，再删除同稳定键的旧文档。
+
+`mineastr_get_topic_context` 本身不主动发起通用话题，只供其他插件调用。它可返回当前在线玩家名，但不返回聊天、位置、背包、贡献者标识或在线历史；非聊天事件保留 30 天并使用稳定 `event_id`。
 
 Modrinth 补充只抓取项目元数据、项目声明的 Wiki/docs 和 GitHub README。请求限制为 HTTPS 公网 443 端口，会检查 DNS/重定向、robots.txt、MIME、超时和 512 KiB 体积上限；联网失败不影响本地注册表与配方查询。
 
@@ -194,6 +207,7 @@ AI 输出不代表天然正确或安全。提交到仓库的内容仍需由维�
 - Mod 一直显示 `未连接`：确认 AstrBot 插件已加载，`minecraft` 平台适配器已启用，端口没有被防火墙或其他程序占用。
 - AstrBot 收到消息但没有回复：这是 AstrBot 群聊规则、唤醒词或权限设置决定的，需要检查 AstrBot 的回复策略。Minecraft 里如果你是用 `@Aria` 之类的方式叫它，请确认 `mention_aliases` 包含 `Aria`。
 - 机器人不会主动查询服务器数据：确认当前模型支持工具调用，并确认 MineAstr 的 LLM 工具没有被禁用。
+- AstrBot 记录“未找到指定工具”：在 AstrBot 的 LLM 工具页和当前人格中启用该 `mineastr_*` 工具，然后重载插件；0.7 不会向本次请求提示已被过滤的工具。
 - 命令工具返回禁用、不可信或白名单外：检查 Mod 侧 `enableCommandTool`、`trustedCommandUsers` 和 `allowedCommandRules`，并查看服务端 WARN 审计日志。
 - 截图工具返回未安装客户端 Mod：目标玩家需要在自己的 NeoForge 客户端 `mods` 目录安装 MineAstr。
 - 截图工具返回拒绝或禁用：目标玩家需要在客户端弹窗中同意，或把 `mineastr-client.toml` 的 `screenshotMode` 改为 `"ASK"` / `"AUTO"`。

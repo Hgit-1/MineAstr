@@ -107,6 +107,18 @@
     "hint": "读取 Minecraft 独立服务器配置下发的介绍地址；只抓取同源公网 HTTPS 页面。",
     "default": true
   },
+  "server_site_allowed_paths": {
+    "description": "官网允许路径",
+    "type": "string",
+    "hint": "每行一个 glob；留空表示允许所有同源路径。",
+    "default": ""
+  },
+  "server_site_excluded_paths": {
+    "description": "官网排除路径",
+    "type": "string",
+    "hint": "每行一个 glob；在 AI 选页前强制排除。",
+    "default": "/login*\n/account*\n/admin*\n/api/*\n/static/*"
+  },
   "activity_region_sync_enabled": {
     "description": "活动地区知识同步",
     "type": "bool",

@@ -1,0 +1,97 @@
+import asyncio
+import importlib.util
+import json
+from pathlib import Path
+import sys
+import types
+import unittest
+
+
+def _identity_decorator(*_args, **_kwargs):
+    return lambda value: value
+
+
+def _load_main_module():
+    package_name = "mineastr_testpkg"
+    package = types.ModuleType(package_name)
+    package.__path__ = []
+    sys.modules[package_name] = package
+
+    api = sys.modules.setdefault("astrbot.api", types.ModuleType("astrbot.api"))
+    api.logger = types.SimpleNamespace(info=lambda *_a, **_k: None, warning=lambda *_a, **_k: None)
+    event_module = types.ModuleType("astrbot.api.event")
+    event_module.AstrMessageEvent = object
+    event_module.filter = types.SimpleNamespace(
+        on_llm_request=_identity_decorator,
+        llm_tool=_identity_decorator,
+    )
+    star_module = types.ModuleType("astrbot.api.star")
+
+    class Star:
+        def __init__(self, context):
+            self.context = context
+
+    star_module.Context = object
+    star_module.Star = Star
+    star_module.register = _identity_decorator
+    sys.modules["astrbot.api.event"] = event_module
+    sys.modules["astrbot.api.star"] = star_module
+
+    knowledge_module = types.ModuleType(f"{package_name}.knowledge")
+    knowledge_module.KnowledgeCoordinator = object
+    sys.modules[f"{package_name}.knowledge"] = knowledge_module
+
+    path = Path(__file__).resolve().parents[1] / "main.py"
+    spec = importlib.util.spec_from_file_location(f"{package_name}.main", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+MAIN = _load_main_module()
+
+
+class MainHelperTests(unittest.IsolatedAsyncioTestCase):
+    def test_only_active_request_tools_are_reported(self):
+        tool_set = types.SimpleNamespace(tools=[
+            types.SimpleNamespace(name="mineastr_get_recipes", active=True),
+            types.SimpleNamespace(name="mineastr_run_server_command", active=False),
+        ])
+        request = types.SimpleNamespace(func_tool=tool_set, tools=None)
+        self.assertEqual(
+            {"mineastr_get_recipes"},
+            MAIN.MineAstrPlugin._available_tool_names(request),
+        )
+
+    async def test_admin_write_tool_rejects_non_admin(self):
+        calls = []
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._knowledge = types.SimpleNamespace(
+            manage_source=lambda *args: calls.append(args) or {"ok": True}
+        )
+        event = types.SimpleNamespace(
+            is_admin=lambda: False,
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
+        )
+        result = await plugin.mineastr_manage_knowledge_source(event, "exclude", source_id="site:x")
+        self.assertFalse(json.loads(result.split("\n", 1)[1])["ok"])
+        self.assertEqual([], calls)
+
+    async def test_admin_write_tool_allows_admin(self):
+        calls = []
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._knowledge = types.SimpleNamespace(
+            manage_source=lambda *args: calls.append(args) or {"ok": True}
+        )
+        event = types.SimpleNamespace(
+            is_admin=lambda: True,
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
+        )
+        result = await plugin.mineastr_manage_knowledge_source(event, "exclude", source_id="site:x")
+        self.assertTrue(json.loads(result.split("\n", 1)[1])["ok"])
+        self.assertEqual("server-a", calls[0][0])
+
+
+if __name__ == "__main__":
+    unittest.main()

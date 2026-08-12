@@ -1,5 +1,6 @@
 import hashlib
 import json
+import asyncio
 import sys
 import types
 import unittest
@@ -128,6 +129,10 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         self.coordinator._save_snapshot = lambda *_args: None
+        self.coordinator._health = {}
+        self.coordinator._server_info = {}
+        self.coordinator._rescan_jobs = {}
+        self.coordinator._locks = {}
 
     async def test_list_and_search_structured_content(self):
         mods = await self.coordinator.list_mods(None, "machine", 10)
@@ -160,12 +165,16 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
             "https://api.github.com/repos/owner/repository/readme",
         )
 
-    def test_rag_documents_group_registry_by_mod(self):
+    def test_rag_documents_are_fine_grained_and_stable(self):
         documents = self.coordinator._rag_documents(self.coordinator._snapshots["server-a"])
-        self.assertIn("example", documents)
-        rendered = json.dumps(documents["example"], ensure_ascii=False)
-        self.assertIn("example:crusher", rendered)
-        self.assertIn("example:copper_gear", rendered)
+        self.assertIn("mod:example:overview", documents)
+        self.assertIn("registry:example:items:0", documents)
+        self.assertIn("registry:example:blocks:0", documents)
+        self.assertIn("registry:example:recipes:0", documents)
+        first = json.dumps(documents, sort_keys=True)
+        self.coordinator._snapshots["server-a"]["categories"]["items"][0]["updated_at_ms"] = 999
+        second = json.dumps(self.coordinator._rag_documents(self.coordinator._snapshots["server-a"]), sort_keys=True)
+        self.assertEqual(first, second)
 
     def test_site_candidates_are_same_origin_and_drop_assets(self):
         candidates = []
@@ -179,6 +188,12 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
             candidates, "https://example.com/", "/image.png", "https://example.com"
         )
         self.assertEqual(candidates, ["https://example.com/wiki"])
+
+    def test_site_path_rules_run_before_ai_selection(self):
+        allowed = self.coordinator._site_path_allowed
+        self.assertTrue(allowed("/wiki/start", "/wiki/*", "/admin*"))
+        self.assertFalse(allowed("/news", "/wiki/*", "/admin*"))
+        self.assertFalse(allowed("/admin/users", "", "/admin*\n/api/*"))
 
     async def test_site_request_rejects_cross_origin_redirect_before_fetch(self):
         async def session():
@@ -235,11 +250,112 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         snapshot = self.coordinator._snapshots["server-a"]
         snapshot["server_site"] = {"pages": [{"title": "欢迎", "url": "https://example.com/", "text": "这是服务器介绍"}]}
         documents = self.coordinator._rag_documents(snapshot)
-        self.assertIn("server_site", documents)
-        self.assertIn("server_regions", documents)
+        self.assertIn("site:cad6bb88012ec4690af7", documents)
+        self.assertIn("region:region-demo", documents)
         rendered = json.dumps(documents, ensure_ascii=False)
         self.assertNotIn("contributor_key", rendered)
         self.assertNotIn("uuid-a", rendered)
+
+    def test_schema_v3_migration_adds_trust_and_sources(self):
+        migrated = self.coordinator._migrate_snapshot(self.coordinator._snapshots["server-a"], "server-a")
+        item = migrated["categories"]["items"][0]
+        self.assertEqual(3, migrated["schema_version"])
+        self.assertEqual("authoritative", item["source_trust"])
+        self.assertEqual("observed", item["confirmation_status"])
+        self.assertEqual("minecraft_runtime", item["sources"][0]["source_id"])
+
+    async def test_search_resolves_conflicts_by_trust(self):
+        entries = self.coordinator._snapshots["server-a"]["categories"]["items"]
+        entries[:] = [
+            {"id": "example:gear", "name": "remote", "source_trust": "reference"},
+            {"id": "example:gear", "name": "runtime", "source_trust": "authoritative"},
+        ]
+        result = await self.coordinator.search("server-a", "example:gear", "items", 10)
+        self.assertEqual(1, result["total"])
+        self.assertEqual("runtime", result["results"][0]["name"])
+        self.assertEqual("remote", result["results"][0]["supplemental_conflicts"][0]["name"])
+
+    def test_source_management_is_atomic_override_data(self):
+        snapshot = self.coordinator._migrate_snapshot(self.coordinator._snapshots["server-a"], "server-a")
+        self.coordinator._snapshots["server-a"] = snapshot
+        override = {"schema_version": 1, "sources": {}, "aliases": {}}
+        self.coordinator._load_overrides = lambda _server_id: override
+        saved = []
+        self.coordinator._save_overrides = lambda server_id, data: saved.append((server_id, data))
+        result = self.coordinator.manage_source("server-a", "set_alias", resource_id="example:copper_gear", alias="铜齿轮")
+        self.assertTrue(result["ok"])
+        self.assertEqual(["铜齿轮"], saved[-1][1]["aliases"]["example:copper_gear"])
+
+    async def test_custom_recipe_codec_finds_multiple_outputs(self):
+        recipe = self.coordinator._snapshots["server-a"]["categories"]["recipes"][0]
+        recipe["serializer_data"] = {
+            "ingredients": [{"item": "create:andesite_alloy"}],
+            "results": [{"id": "create:track"}, {"id": "create:shaft"}],
+        }
+        result = await self.coordinator.recipes("server-a", "create:track", "produces", "", 10)
+        self.assertEqual("example:crusher", result["recipes"][0]["id"])
+
+    async def test_topic_context_exposes_current_names_but_no_sensitive_history(self):
+        class Adapter:
+            async def query_players(self, _server_id):
+                return {"ok": True, "data": {"players": [{"name": "Alice", "uuid": "secret", "position": [1, 2, 3]}]}}
+
+        snapshot = self.coordinator._snapshots["server-a"]
+        snapshot["topic_events"] = [self.coordinator._event("region_discovered", "region-demo", 123, "new")]
+        result = await self.coordinator.topic_context(Adapter(), "server-a", since_minutes=43200, limit=10)
+        rendered = json.dumps(result, ensure_ascii=False)
+        self.assertEqual(["Alice"], result["online"]["player_names"])
+        self.assertNotIn("secret", rendered)
+        self.assertNotIn("position", rendered)
+        self.assertNotIn("online_history", rendered)
+
+    def test_topic_event_id_is_stable(self):
+        first = self.coordinator._event("region_discovered", "region-a", 1234, "one")
+        second = self.coordinator._event("region_discovered", "region-a", 1234, "two")
+        self.assertEqual(first["event_id"], second["event_id"])
+
+    async def test_rescan_rejects_duplicate_job(self):
+        gate = asyncio.Event()
+
+        async def sync_server(_adapter, _server_id):
+            await gate.wait()
+
+        self.coordinator._sync_server = sync_server
+        self.coordinator._server_info["server-a"] = {"capabilities": set()}
+        first = await self.coordinator.rescan(types.SimpleNamespace(), "server-a", "rag")
+        second = await self.coordinator.rescan(types.SimpleNamespace(), "server-a", "rag")
+        self.assertTrue(first["accepted"])
+        self.assertFalse(second["accepted"])
+        gate.set()
+        await self.coordinator._rescan_jobs["server-a"]
+
+    async def test_status_degrades_and_sanitizes_remote_error(self):
+        class Adapter:
+            async def local_status(self):
+                return {"ok": True, "connected_count": 1, "servers": [{"server_id": "server-a", "last_seen_at": 99}]}
+
+            async def query_knowledge_status(self, _server_id):
+                return {"ok": False, "error": "token=abc\nfailed"}
+
+        self.coordinator._server_info["server-a"] = {"capabilities": {"knowledge_status"}, "meta": {"mod_version": "0.7.0"}}
+        result = await self.coordinator.knowledge_status(Adapter(), "server-a")
+        rendered = json.dumps(result, ensure_ascii=False)
+        self.assertEqual("error", result["overall"])
+        self.assertNotIn("token=abc", rendered)
+        self.assertIn("[redacted]", rendered)
+
+    async def test_status_reports_cached_remote_source_failure_as_degraded(self):
+        class Adapter:
+            async def local_status(self):
+                return {"ok": True, "connected_count": 1, "servers": [{"server_id": "server-a"}]}
+
+        self.coordinator._server_info["server-a"] = {"capabilities": set(), "meta": {}}
+        self.coordinator._health["server-a"] = {
+            "state": "ok", "remote_sources": {"state": "degraded", "last_error": "timeout"},
+            "rag": {"state": "ok"},
+        }
+        result = await self.coordinator.knowledge_status(Adapter(), "server-a")
+        self.assertEqual("degraded", result["overall"])
 
 
 if __name__ == "__main__":
