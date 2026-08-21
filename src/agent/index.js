@@ -44,6 +44,7 @@ let retreating = false
 let neoForgeNegotiated = false
 let taskGeneration = 0
 const observedCustomChannels = new Set()
+let lastProtocolDiagnostic = null
 
 const waypointFile = path.join(dataDir, 'waypoints.json')
 let waypointData = loadWaypointData()
@@ -139,6 +140,7 @@ function connectBot() {
     }, 30_000)
     connectionTimeout.unref()
     const recentProtocolFrames = []
+    const recentProtocolPackets = []
     const recordFrame = frame => {
       if (!Buffer.isBuffer(frame)) return
       recentProtocolFrames.push({ bytes: frame.length, prefix: frame.subarray(0, 12).toString('hex') })
@@ -150,6 +152,11 @@ function connectBot() {
     created.loadPlugin(pathfinder)
     created._client.on('custom_payload', packet => handleNeoForgePayload(created, packet))
     created._client.on('packet', (data, metadata) => {
+      recentProtocolPackets.push({
+        state: metadata?.state || null,
+        name: metadata?.name || null
+      })
+      while (recentProtocolPackets.length > 20) recentProtocolPackets.shift()
       const channel = data?.channel || data?.identifier || null
       if (metadata?.name?.includes('custom') && channel && !observedCustomChannels.has(channel)) {
         observedCustomChannels.add(channel)
@@ -200,7 +207,12 @@ function connectBot() {
     created.on('error', error => {
       lastError = safeError(error)
       lastDisconnectError = lastError
-      emit({ type: 'bot_error', error: lastError, recent_protocol_frames: recentProtocolFrames })
+      lastProtocolDiagnostic = {
+        frames: recentProtocolFrames.map(frame => ({ ...frame })),
+        packets: recentProtocolPackets.map(packet => ({ ...packet }))
+      }
+      emit({ type: 'bot_error', error: lastError, recent_protocol_frames: recentProtocolFrames,
+        recent_protocol_packets: recentProtocolPackets })
     })
     created.once('end', reason => {
       clearTimeout(connectionTimeout)
@@ -275,7 +287,8 @@ function status() {
       component_count: neoForgeComponentCount,
       degraded_mod_data: neoForgeNegotiated
     },
-    proxy_protocol: useProxyProtocol
+    proxy_protocol: useProxyProtocol,
+    last_protocol_diagnostic: lastProtocolDiagnostic
   }
 }
 
