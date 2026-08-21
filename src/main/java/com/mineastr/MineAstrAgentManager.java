@@ -54,9 +54,6 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private static final String NODE_VERSION = "22.19.0";
     private static final int MIN_NODE_MAJOR = 22;
     private static final int MAX_CONTROL_BODY_CHARS = 512 * 1024;
-    private static final Set<String> NEOFORGE_COMPATIBILITY_CHANNELS = Set.of(
-            "neoforge:extensible_enum_data", "neoforge:extensible_enum_ack",
-            "neoforge:feature_flags", "neoforge:feature_flags_ack");
     private static final Map<String, NodeArtifact> NODE_ARTIFACTS = Map.of(
             "linux-x86_64", new NodeArtifact(
                     "https://nodejs.org/dist/v" + NODE_VERSION + "/node-v" + NODE_VERSION + "-linux-x64.tar.gz",
@@ -538,10 +535,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
         for (Map.Entry<ConnectionProtocol, Map<?, PayloadRegistration<?>>> protocol : registrations.entrySet()) {
             Set<ModdedNetworkQueryComponent> components = new HashSet<>();
             for (PayloadRegistration<?> registration : protocol.getValue().values()) {
-                if (!registration.optional() || NEOFORGE_COMPATIBILITY_CHANNELS.contains(registration.id().toString())) {
-                    components.add(new ModdedNetworkQueryComponent(registration));
-                    count++;
-                }
+                // Some mods register a payload as optional but still send it
+                // unconditionally when a player joins. NeoForge rejects that
+                // send unless the peer advertised the optional channel. The
+                // local compatibility client therefore declares every channel
+                // registered by this exact server and safely ignores payloads
+                // that Mineflayer cannot interpret.
+                components.add(new ModdedNetworkQueryComponent(registration));
+                count++;
             }
             selected.put(protocol.getKey(), components);
         }

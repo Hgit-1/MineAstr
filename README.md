@@ -222,7 +222,7 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR，并由服务端 Mod 解压和监管独立 Node 子进程。Agent 控制端只监听 `127.0.0.1`，每次启动使用随机 Token；AstrBot 不会直接连接该内部端口。
 
-`agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取实际必需频道及版本，交给受监管的 Mineflayer 进程完成逐项协商。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
+`agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的全部频道及版本，交给受监管的 Mineflayer 进程完成逐项协商。全部声明是必要的，因为部分 Mod 会在玩家加入时无条件发送标记为“可选”的频道；Mineflayer 不解析的自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
 如果服务端安装了 Proxy Protocol Mod，并把 `127.0.0.1` 列为代理来源，同机 Agent 会在 Minecraft 握手前被要求发送 PROXY 头。此时设置 `agentProxyProtocol=true`；没有这类 Mod/代理时必须保持 `false`。MineAstr 只对同机 Agent 允许该选项，且状态工具会显示它是否生效。
 
