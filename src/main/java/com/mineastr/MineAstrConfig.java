@@ -180,6 +180,13 @@ public final class MineAstrConfig {
             .define("agentUsername", "MineAstrBot", value -> value instanceof String text
                     && text.matches("[A-Za-z0-9_]{3,16}"));
 
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> AGENT_JOIN_COMMANDS = BUILDER
+            .comment(
+                    "Agent 每次进入世界后依次执行的认证命令；默认空。可用于 /login 等私服认证插件。",
+                    "命令可能包含凭据并以明文保存在服务端配置中，请限制文件权限；最多 5 条、每条 256 字符。")
+            .defineListAllowEmpty("agentJoinCommands", List.of(), value -> value instanceof String text
+                    && text.startsWith("/") && text.length() <= 256 && text.indexOf('\n') < 0);
+
     public static final ModConfigSpec.ConfigValue<String> AGENT_SERVER_HOST = BUILDER
             .comment("Mineflayer 连接地址。服务端同机运行时保持 127.0.0.1。")
             .define("agentServerHost", "127.0.0.1", value -> value instanceof String text

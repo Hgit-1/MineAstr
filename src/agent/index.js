@@ -15,6 +15,8 @@ const port = parseInteger(process.env.MINEASTR_MC_PORT, 25565, 1, 65535)
 const username = (process.env.MINEASTR_AGENT_USERNAME || 'MineAstrBot').slice(0, 16)
 const version = process.env.MINEASTR_MC_VERSION || false
 const auth = process.env.MINEASTR_AGENT_AUTH === 'microsoft' ? 'microsoft' : 'offline'
+const joinCommands = String(process.env.MINEASTR_AGENT_JOIN_COMMANDS || '').split(/\r?\n/)
+  .map(command => command.trim()).filter(command => command.startsWith('/') && command.length <= 256).slice(0, 5)
 const neoForgeQuery = decodeBase64(process.env.MINEASTR_NEOFORGE_QUERY_B64)
 const neoForgeComponentCount = parseInteger(process.env.MINEASTR_NEOFORGE_COMPONENT_COUNT, 0, 0, 100000)
 const useProxyProtocol = process.env.MINEASTR_PROXY_PROTOCOL === 'true'
@@ -188,6 +190,7 @@ function connectBot() {
         lastError = safeError(error)
       }
       emit({ type: 'bot_online', username: created.username, version: created.version })
+      void runJoinCommands(created)
     })
     created.on('health', () => void selfCare())
     created.on('move', () => {
@@ -234,6 +237,15 @@ function connectBot() {
     state = 'error'
     lastError = safeError(error)
     scheduleConnect()
+  }
+}
+
+async function runJoinCommands(created) {
+  for (let index = 0; index < joinCommands.length; index++) {
+    await new Promise(resolve => setTimeout(resolve, 750))
+    if (bot !== created || state !== 'online') return
+    created.chat(joinCommands[index])
+    emit({ type: 'bot_join_command_sent', index })
   }
 }
 

@@ -137,6 +137,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
             environment.put("MINEASTR_MC_VERSION", SharedConstants.getCurrentVersion().getName());
             environment.put("MINEASTR_AGENT_USERNAME", MineAstrConfig.AGENT_USERNAME.get());
             environment.put("MINEASTR_AGENT_AUTH", MineAstrConfig.AGENT_ACCOUNT_MODE.get().toLowerCase(Locale.ROOT));
+            if (!MineAstrConfig.AGENT_JOIN_COMMANDS.get().isEmpty()) {
+                environment.put("MINEASTR_AGENT_JOIN_COMMANDS", String.join(
+                        "\n", MineAstrConfig.AGENT_JOIN_COMMANDS.get().stream().limit(5).toList()));
+            }
             environment.put("MINEASTR_FORBIDDEN_REGIONS", String.join("\n", MineAstrConfig.AGENT_FORBIDDEN_REGIONS.get()));
             if (MineAstrConfig.AGENT_PROXY_PROTOCOL.getAsBoolean()
                     && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get())) {
