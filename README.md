@@ -222,6 +222,8 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR，并由服务端 Mod 解压和监管独立 Node 子进程。Agent 控制端只监听 `127.0.0.1`，每次启动使用随机 Token；AstrBot 不会直接连接该内部端口。
 
+0.10.1 默认使用 `agentSessionPolicy="on_demand"`：Node 控制进程保持本机待命，但 Mineflayer 不会仅因服务器启动或有人在线而登录。外部话题插件决定搭话并提交 `chat`，或 AstrBot 提交其他明确任务时，Bot 才会登录并在认证命令完成后执行；任务完成且不再有会话需求时，默认等待 `agentIdleDisconnectSeconds=60` 秒退出。`players_online` 会在存在至少一名非 MineAstr Bot 玩家或任务时保持在线，`always` 则保留旧版常驻行为。离线任务在登录阶段显示为 `waiting_for_connection`，90 秒仍无法入服会安全失败。
+
 `agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的必需频道、MineAstr 已实现确认的四个 NeoForge 核心配置握手频道，以及可由服务端在玩家进入世界后发送的可选 PLAY 频道，交给受监管的 Mineflayer 进程完成逐项协商。其他可选 CONFIGURATION 频道不会声明，避免触发 Mineflayer 无法确认的 Mod 专用配置任务；Mineflayer 不解析的 PLAY 自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
 在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。移动、观察、聊天和不依赖背包的任务仍可使用；自动进食和物品使用只有在后续加载了匹配服务器注册表的 codec 后才应视为可用，不能据此声称已完整支持 Mod 食品。
@@ -278,9 +280,9 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 - `knowledge_status`：返回扫描启用状态、任务 ID、开始/完成时间、分类数量与经脱敏的最近错误。
 - `knowledge_rescan`：提交 `local` 异步重扫；同时仅运行一个任务。
 - `activity_regions_manifest` / `activity_regions_page`：返回按维度隔离、中心约 64 格精度的活动地区摘要，并可包含环境采样次数、疑似人工构造比例、建筑/机器特征计数和主要方块命名空间。逐点轨迹、精确边界和明文玩家 UUID 不会进入 AstrBot RAG。
-- `agent_status`：即使 Agent 被禁用或缺少 Node 也返回可诊断状态。
+- `agent_status`：即使 Agent 被禁用或缺少 Node 也返回可诊断状态，并报告会话策略、真人玩家数、唤醒原因和空闲退出时间。
 - `agent_observe`：返回 Bot 的生命、饥饿、位置、背包、视线方块、简单视场方块及附近实体。
-- `agent_task` / `agent_cancel`：提交或取消受类型约束的 Bot 任务；服务端执行自主模式、禁区和任务互斥检查。
+- `agent_task` / `agent_cancel`：提交或取消受类型约束的 Bot 任务；按需待机时任务会先唤醒 Bot，服务端继续执行自主模式、禁区和任务互斥检查。
 - `agent_waypoints` / `transport_graph`：管理世界私有路径点以及步行/轨道连接。
 
 扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。

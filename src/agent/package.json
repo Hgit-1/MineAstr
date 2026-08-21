@@ -1,6 +1,6 @@
 {
   "name": "mineastr-server-agent",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "private": true,
   "description": "MineAstr server-managed Mineflayer runtime",
   "main": "index.js",

@@ -20,6 +20,10 @@ const joinCommands = String(process.env.MINEASTR_AGENT_JOIN_COMMANDS || '').spli
 const neoForgeQuery = decodeBase64(process.env.MINEASTR_NEOFORGE_QUERY_B64)
 const neoForgeComponentCount = parseInteger(process.env.MINEASTR_NEOFORGE_COMPONENT_COUNT, 0, 0, 100000)
 const useProxyProtocol = process.env.MINEASTR_PROXY_PROTOCOL === 'true'
+const configuredSessionPolicy = String(process.env.MINEASTR_AGENT_SESSION_POLICY || 'on_demand').toLowerCase()
+const sessionPolicy = ['on_demand', 'players_online', 'always'].includes(configuredSessionPolicy)
+  ? configuredSessionPolicy : 'on_demand'
+const idleDisconnectSeconds = parseInteger(process.env.MINEASTR_AGENT_IDLE_DISCONNECT_SECONDS, 60, 0, 3600)
 const forbiddenRegions = parseForbiddenRegions(process.env.MINEASTR_FORBIDDEN_REGIONS || '')
 const neoForgeCustomPackets = neoForgeQuery ? {
   '1.21': {
@@ -36,14 +40,22 @@ const neoForgeCustomPackets = neoForgeQuery ? {
 const maxBodyBytes = 128 * 1024
 
 let bot = null
-let state = 'starting'
+let state = 'standby'
 let lastError = ''
 let activeTask = null
+let activeTaskArgs = null
 let taskSequence = 0
 const recentTasks = new Map()
 let reconnectTimer = null
+let idleDisconnectTimer = null
+let taskConnectionTimer = null
 let stopping = false
 let connectionBlocked = false
+let sessionDisconnecting = false
+let sessionReady = false
+let humanPlayerCount = 0
+let wakeReason = null
+let idleDisconnectAt = 0
 let connectedAt = 0
 let connectionStartedAt = 0
 let connectionAttempts = 0
@@ -116,17 +128,71 @@ function emit(record) {
   process.stdout.write(`${JSON.stringify({ time_ms: Date.now(), ...record })}\n`)
 }
 
+function taskNeedsSession() {
+  return activeTask?.state === 'waiting_for_connection' || activeTask?.state === 'running'
+}
+
+function maintenanceNeedsSession() {
+  return eating || retreating
+}
+
+function desiredWakeReason() {
+  if (taskNeedsSession()) return activeTask?.task_type === 'chat' ? 'conversation_task' : 'task'
+  if (maintenanceNeedsSession()) return 'self_care'
+  if (sessionPolicy === 'always') return 'always'
+  if (sessionPolicy === 'players_online' && humanPlayerCount > 0) return 'players_online'
+  return null
+}
+
+function clearIdleDisconnect() {
+  if (idleDisconnectTimer) clearTimeout(idleDisconnectTimer)
+  idleDisconnectTimer = null
+  idleDisconnectAt = 0
+}
+
+function reconcileSession() {
+  if (stopping) return
+  const desired = desiredWakeReason()
+  wakeReason = desired
+  if (desired) {
+    clearIdleDisconnect()
+    if (!bot && !reconnectTimer && !connectionBlocked) connectBot()
+    return
+  }
+  if (!bot) {
+    clearIdleDisconnect()
+    state = 'standby'
+    return
+  }
+  if (idleDisconnectTimer) return
+  const delayMs = idleDisconnectSeconds * 1000
+  idleDisconnectAt = Date.now() + delayMs
+  idleDisconnectTimer = setTimeout(() => {
+    idleDisconnectTimer = null
+    idleDisconnectAt = 0
+    if (desiredWakeReason() || !bot) return reconcileSession()
+    sessionDisconnecting = true
+    sessionReady = false
+    state = 'disconnecting_idle'
+    emit({ type: 'bot_idle_disconnect', idle_seconds: idleDisconnectSeconds })
+    try { bot.quit('MineAstr on-demand standby') } catch (_) { bot.end?.('MineAstr on-demand standby') }
+  }, delayMs)
+  idleDisconnectTimer.unref()
+}
+
 function scheduleConnect() {
-  if (stopping || connectionBlocked || reconnectTimer) return
+  if (stopping || connectionBlocked || reconnectTimer || !desiredWakeReason()) return
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
-    connectBot()
+    reconcileSession()
   }, 5000)
   reconnectTimer.unref()
 }
 
 function connectBot() {
-  if (stopping || bot) return
+  if (stopping || bot || !desiredWakeReason()) return
+  sessionDisconnecting = false
+  sessionReady = false
   state = 'connecting'
   connectionStartedAt = Date.now()
   connectionAttempts += 1
@@ -178,7 +244,7 @@ function connectBot() {
         })
       }
     })
-    created.once('spawn', () => {
+    created.once('spawn', async () => {
       clearTimeout(connectionTimeout)
       state = 'online'
       connectedAt = Date.now()
@@ -190,7 +256,11 @@ function connectBot() {
         lastError = safeError(error)
       }
       emit({ type: 'bot_online', username: created.username, version: created.version })
-      void runJoinCommands(created)
+      await runJoinCommands(created)
+      if (bot !== created || state !== 'online') return
+      sessionReady = true
+      startWaitingTask()
+      reconcileSession()
     })
     created.on('health', () => void selfCare())
     created.on('move', () => {
@@ -227,10 +297,17 @@ function connectBot() {
     created.once('end', reason => {
       clearTimeout(connectionTimeout)
       bot = null
-      if (!lastDisconnectError) lastDisconnectError = safeError(reason)
-      state = stopping ? 'stopped' : connectionBlocked ? 'incompatible_server' : 'disconnected'
+      sessionReady = false
+      const expectedIdleDisconnect = sessionDisconnecting
+      sessionDisconnecting = false
+      if (!expectedIdleDisconnect && !lastDisconnectError) lastDisconnectError = safeError(reason)
+      state = stopping ? 'stopped' : connectionBlocked ? 'incompatible_server'
+        : (expectedIdleDisconnect || !desiredWakeReason()) ? 'standby' : 'disconnected'
       if (activeTask?.state === 'running') finishTask(activeTask.run_id, false, `连接中断：${safeError(reason)}`)
-      if (!stopping) scheduleConnect()
+      if (!stopping) {
+        if (desiredWakeReason()) scheduleConnect()
+        else reconcileSession()
+      }
     })
   } catch (error) {
     bot = null
@@ -298,6 +375,11 @@ function status() {
     position: entity ? vectorJson(entity.position) : null,
     dimension: normalizeDimension(bot?.game?.dimension) || null,
     active_task: activeTask,
+    session_policy: sessionPolicy,
+    human_player_count: humanPlayerCount,
+    wake_reason: wakeReason,
+    idle_disconnect_seconds: idleDisconnectSeconds,
+    idle_disconnect_at_ms: idleDisconnectAt || null,
     maintenance_state: retreating ? 'retreating_from_threat' : eating ? 'eating' : 'idle',
     waypoint_count: Object.keys(waypointData.waypoints).length,
     neoforge_compatibility: {
@@ -334,7 +416,7 @@ function inventorySummary() {
 }
 
 function observe(distance = 8) {
-  if (!bot?.entity) throw new Error('Bot 尚未进入服务器')
+  if (!bot?.entity) throw new Error(state === 'standby' ? 'Agent 正在按需待机，尚未进入服务器' : 'Bot 尚未进入服务器')
   const target = bot.blockAtCursor(Math.max(1, Math.min(32, distance)))
   const nearby = Object.values(bot.entities)
     .filter(entity => entity !== bot.entity && entity.position.distanceTo(bot.entity.position) <= distance)
@@ -415,6 +497,7 @@ async function retreatFromThreat() {
     lastError = `自主避险失败：${safeError(error)}`
   } finally {
     retreating = false
+    reconcileSession()
   }
 }
 
@@ -435,34 +518,59 @@ async function autoEat(force = false) {
     return false
   } finally {
     eating = false
+    reconcileSession()
   }
 }
 
 function finishTask(runId, ok, message, data = null) {
-  if (!activeTask || activeTask.run_id !== runId || activeTask.state !== 'running') return false
+  if (!activeTask || activeTask.run_id !== runId
+      || !['waiting_for_connection', 'running'].includes(activeTask.state)) return false
+  if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
+  taskConnectionTimer = null
+  activeTaskArgs = null
   activeTask = { ...activeTask, state: ok ? 'completed' : 'failed', finished_at_ms: Date.now(), message, data }
   recentTasks.set(activeTask.task_id, activeTask)
   while (recentTasks.size > 100) recentTasks.delete(recentTasks.keys().next().value)
   emit({ type: 'task_finished', task: activeTask })
+  reconcileSession()
   return true
 }
 
 async function runTask(input) {
-  if (!bot || state !== 'online') throw new Error('Bot 尚未连接到服务器')
   if (retreating) throw new Error('Bot 正在执行自主生存避险，请稍后重试')
   const taskId = String(input.task_id || `task-${Date.now()}-${++taskSequence}`).slice(0, 80)
   const type = String(input.task_type || '').toLowerCase()
   const args = input.args && typeof input.args === 'object' ? input.args : {}
   if (activeTask?.task_id === taskId) return { ok: true, accepted: false, duplicate: true, task: activeTask }
   if (recentTasks.has(taskId)) return { ok: true, accepted: false, duplicate: true, task: recentTasks.get(taskId) }
-  if (activeTask?.state === 'running') throw new Error('已有任务正在执行')
+  if (['waiting_for_connection', 'running'].includes(activeTask?.state)) throw new Error('已有任务正在执行')
   const runId = ++taskGeneration
   activeTask = {
-    task_id: taskId, task_type: type, run_id: runId, state: 'running', started_at_ms: Date.now(),
+    task_id: taskId, task_type: type, run_id: runId, state: 'waiting_for_connection',
+    accepted_at_ms: Date.now(), started_at_ms: null,
     requester_id: String(input.requester_id || '').slice(0, 100) || null,
     requester_name: String(input.requester_name || '').slice(0, 100) || null,
     requester_platform: String(input.requester_platform || '').slice(0, 50) || null
   }
+  activeTaskArgs = args
+  taskConnectionTimer = setTimeout(() => {
+    taskConnectionTimer = null
+    finishTask(runId, false, 'Bot 在 90 秒内未能进入服务器，任务已取消')
+  }, 90_000)
+  taskConnectionTimer.unref()
+  reconcileSession()
+  startWaitingTask()
+  return { ok: true, accepted: true, task: activeTask }
+}
+
+function startWaitingTask() {
+  if (!activeTask || activeTask.state !== 'waiting_for_connection' || !bot || state !== 'online' || !sessionReady) return
+  if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
+  taskConnectionTimer = null
+  const runId = activeTask.run_id
+  const type = activeTask.task_type
+  const args = activeTaskArgs || {}
+  activeTask = { ...activeTask, state: 'running', started_at_ms: Date.now() }
   queueMicrotask(async () => {
     try {
       if (type === 'chat') {
@@ -535,7 +643,6 @@ async function runTask(input) {
       bot?.clearControlStates()
     }
   })
-  return { ok: true, accepted: true, task: activeTask }
 }
 
 function finiteCoordinate(value, name) {
@@ -579,14 +686,27 @@ function delay(milliseconds) {
 }
 
 function cancelTask() {
-  if (!activeTask || activeTask.state !== 'running') return { ok: true, canceled: false }
+  if (!activeTask || !['waiting_for_connection', 'running'].includes(activeTask.state)) {
+    return { ok: true, canceled: false }
+  }
+  if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
+  taskConnectionTimer = null
+  activeTaskArgs = null
   bot?.pathfinder?.stop()
   bot?.clearControlStates()
   activeTask = { ...activeTask, state: 'canceled', finished_at_ms: Date.now() }
   recentTasks.set(activeTask.task_id, activeTask)
   while (recentTasks.size > 100) recentTasks.delete(recentTasks.keys().next().value)
   emit({ type: 'task_canceled', task: activeTask })
+  reconcileSession()
   return { ok: true, canceled: true, task: activeTask }
+}
+
+function updateSession(input) {
+  humanPlayerCount = parseInteger(input.human_player_count, 0, 0, 100000)
+  emit({ type: 'session_presence', human_player_count: humanPlayerCount, session_policy: sessionPolicy })
+  reconcileSession()
+  return status()
 }
 
 function loadWaypointData() {
@@ -673,6 +793,7 @@ const control = http.createServer(async (request, response) => {
     if (request.url === '/task') return send(response, 202, await runTask(body))
     if (request.url === '/cancel') return send(response, 200, cancelTask())
     if (request.url === '/waypoints') return send(response, 200, waypointOperation(body))
+    if (request.url === '/session') return send(response, 200, updateSession(body))
     return send(response, 404, { ok: false, error: 'not_found' })
   } catch (error) {
     return send(response, 400, { ok: false, error: safeError(error) })
@@ -684,6 +805,9 @@ function shutdown() {
   stopping = true
   state = 'stopping'
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  clearIdleDisconnect()
+  if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
+  taskConnectionTimer = null
   cancelTask()
   try { bot?.quit('MineAstr server stopping') } catch (_) {}
   control.close(() => process.exit(0))
@@ -703,6 +827,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.0' })
-  connectBot()
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.1' })
+  reconcileSession()
 })

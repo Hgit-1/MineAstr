@@ -65,6 +65,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     private final ConcurrentMap<String, PendingScreenshot> pendingScreenshots = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, String> pendingScreenshotByPlayer = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ScreenshotAssembly> screenshotAssemblies = new ConcurrentHashMap<>();
+    private final java.util.Set<UUID> humanAgentPlayers = ConcurrentHashMap.newKeySet();
     private final MineAstrKnowledgeSnapshot knowledgeSnapshot = new MineAstrKnowledgeSnapshot();
     private final MineAstrAgentManager agentManager = new MineAstrAgentManager();
 
@@ -90,6 +91,11 @@ public final class MineAstrBridge implements WebSocket.Listener {
         }
         knowledgeSnapshot.refresh(server);
         MineAstrConfig.migrateDefaultPrivacyNotice();
+        humanAgentPlayers.clear();
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (!isAgentPlayer(player)) humanAgentPlayers.add(player.getUUID());
+        }
+        agentManager.updateHumanPlayerCount(humanAgentPlayers.size());
         agentManager.start(server);
         activityData = MineAstrActivityData.get(server);
         nextActivitySampleMs = 0;
@@ -108,6 +114,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         clearScreenshotState("Minecraft 服务器正在停止。");
         knowledgeSnapshot.close();
         agentManager.close();
+        humanAgentPlayers.clear();
         activityData = null;
         WebSocket socket = webSocket.getAndSet(null);
         if (socket != null) {
@@ -176,6 +183,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     }
 
     public void forwardPlayerPresence(ServerPlayer player, boolean joined) {
+        if (isAgentPlayer(player)) return;
         if (!MineAstrConfig.ENABLE_PLAYER_PRESENCE_PUSH.getAsBoolean()) {
             return;
         }
@@ -187,6 +195,17 @@ public final class MineAstrBridge implements WebSocket.Listener {
                 joined ? "player_join" : "player_leave",
                 playerName + (joined ? " 加入了服务器。" : " 离开了服务器。"),
                 details);
+    }
+
+    public void updateAgentPlayerPresence(ServerPlayer player, boolean joined) {
+        if (isAgentPlayer(player)) return;
+        if (joined) humanAgentPlayers.add(player.getUUID());
+        else humanAgentPlayers.remove(player.getUUID());
+        agentManager.updateHumanPlayerCount(humanAgentPlayers.size());
+    }
+
+    private static boolean isAgentPlayer(ServerPlayer player) {
+        return player.getGameProfile().getName().equalsIgnoreCase(MineAstrConfig.AGENT_USERNAME.get());
     }
 
     public void forwardPlayerDeath(ServerPlayer player, Component deathMessage) {

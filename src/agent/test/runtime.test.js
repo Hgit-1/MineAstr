@@ -6,7 +6,7 @@ const net = require('node:net')
 const path = require('node:path')
 const test = require('node:test')
 
-test('control server authenticates and reports disconnected bot safely', async () => {
+test('on-demand control stays in standby and an offline task wakes the bot', async () => {
   const child = spawn(process.execPath, [path.resolve(__dirname, '..', 'index.js')], {
     env: {
       ...process.env,
@@ -33,11 +33,33 @@ test('control server authenticates and reports disconnected bot safely', async (
     const status = await response.json()
     assert.equal(status.ok, true)
     assert.equal(status.username, 'MineAstrTest')
-    assert.ok(['connecting', 'disconnected', 'error'].includes(status.state))
+    assert.equal(status.state, 'standby')
+    assert.equal(status.connection_attempts, 0)
+    assert.equal(status.session_policy, 'on_demand')
+
+    const presence = await postJson(port, '/session', { human_player_count: 1 }, 'test-token')
+    assert.equal(presence.status, 200)
+    await delay(100)
+    const presentButIdle = await (await postJson(port, '/status', {}, 'test-token')).json()
+    assert.equal(presentButIdle.human_player_count, 1)
+    assert.equal(presentButIdle.state, 'standby')
+    assert.equal(presentButIdle.connection_attempts, 0)
+
+    const accepted = await postJson(port, '/task', {
+      task_id: 'offline-chat', task_type: 'chat', args: { message: 'hello' }
+    }, 'test-token')
+    assert.equal(accepted.status, 202)
+    const task = await accepted.json()
+    assert.equal(task.accepted, true)
+    assert.equal(task.task.state, 'waiting_for_connection')
+    await waitFor(async () => (await (await postJson(port, '/status', {}, 'test-token')).json()).connection_attempts > 0)
+
+    const canceled = await postJson(port, '/cancel', {}, 'test-token')
+    assert.equal((await canceled.json()).canceled, true)
+    const afterCancel = await (await postJson(port, '/status', {}, 'test-token')).json()
+    assert.equal(afterCancel.wake_reason, null)
   } finally {
-    child.kill('SIGTERM')
-    await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(4000)])
-    if (!child.killed) child.kill('SIGKILL')
+    await stopChild(child)
   }
 })
 
@@ -61,7 +83,8 @@ test('proxy protocol mode sends a v1 header before the Minecraft handshake', asy
       MINEASTR_AGENT_USERNAME: 'MineAstrProxy',
       MINEASTR_AGENT_AUTH: 'offline',
       MINEASTR_MC_VERSION: '1.21.1',
-      MINEASTR_PROXY_PROTOCOL: 'true'
+      MINEASTR_PROXY_PROTOCOL: 'true',
+      MINEASTR_AGENT_SESSION_POLICY: 'always'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   })
@@ -73,10 +96,49 @@ test('proxy protocol mode sends a v1 header before the Minecraft handshake', asy
     ])
     assert.match(firstWrite, /^PROXY TCP4 127\.0\.0\.1 127\.0\.0\.1 \d+ \d+\r\n/)
   } finally {
-    child.kill('SIGTERM')
     server.close()
-    await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(4000)])
-    if (!child.killed) child.kill('SIGKILL')
+    await stopChild(child)
+  }
+})
+
+test('players-online policy connects only after human presence is synchronized', async () => {
+  let resolveConnection
+  const connectionPromise = new Promise(resolve => { resolveConnection = resolve })
+  const server = net.createServer(socket => {
+    resolveConnection()
+    socket.destroy()
+  })
+  await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject))
+  const child = spawn(process.execPath, [path.resolve(__dirname, '..', 'index.js')], {
+    env: {
+      ...process.env,
+      MINEASTR_AGENT_TOKEN: 'presence-token',
+      MINEASTR_AGENT_DATA_DIR: path.resolve(__dirname, '.tmp-presence'),
+      MINEASTR_MC_HOST: '127.0.0.1',
+      MINEASTR_MC_PORT: String(server.address().port),
+      MINEASTR_AGENT_USERNAME: 'MineAstrHuman',
+      MINEASTR_AGENT_AUTH: 'offline',
+      MINEASTR_MC_VERSION: '1.21.1',
+      MINEASTR_AGENT_SESSION_POLICY: 'players_online'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  try {
+    const port = await readyPort(child)
+    await delay(200)
+    const standby = await (await postJson(port, '/status', {}, 'presence-token')).json()
+    assert.equal(standby.state, 'standby')
+    assert.equal(standby.connection_attempts, 0)
+
+    const session = await postJson(port, '/session', { human_player_count: 1 }, 'presence-token')
+    assert.equal(session.status, 200)
+    await Promise.race([
+      connectionPromise,
+      delay(5000).then(() => { throw new Error('presence wake timeout') })
+    ])
+  } finally {
+    server.close()
+    await stopChild(child)
   }
 })
 
@@ -105,4 +167,30 @@ function readyPort(child) {
 
 function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
+function postJson(port, endpoint, body, authorization) {
+  return fetch(`http://127.0.0.1:${port}${endpoint}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${authorization}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+}
+
+async function waitFor(predicate, timeoutMilliseconds = 5000) {
+  const deadline = Date.now() + timeoutMilliseconds
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await delay(50)
+  }
+  throw new Error('condition timeout')
+}
+
+async function stopChild(child) {
+  if (child.exitCode != null) return
+  const exited = new Promise(resolve => child.once('exit', () => resolve(true)))
+  child.kill('SIGTERM')
+  if (await Promise.race([exited, delay(4000).then(() => false)])) return
+  child.kill('SIGKILL')
+  await exited
 }

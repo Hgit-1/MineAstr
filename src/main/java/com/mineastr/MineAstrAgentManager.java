@@ -74,6 +74,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private final AtomicReference<State> state = new AtomicReference<>(State.DISABLED);
     private final AtomicInteger controlPort = new AtomicInteger();
     private final AtomicInteger restartCount = new AtomicInteger();
+    private final AtomicInteger humanPlayerCount = new AtomicInteger();
 
     private volatile MinecraftServer server;
     private volatile Process process;
@@ -137,6 +138,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
             environment.put("MINEASTR_MC_VERSION", SharedConstants.getCurrentVersion().getName());
             environment.put("MINEASTR_AGENT_USERNAME", MineAstrConfig.AGENT_USERNAME.get());
             environment.put("MINEASTR_AGENT_AUTH", MineAstrConfig.AGENT_ACCOUNT_MODE.get().toLowerCase(Locale.ROOT));
+            environment.put("MINEASTR_AGENT_SESSION_POLICY",
+                    MineAstrConfig.AGENT_SESSION_POLICY.get().toLowerCase(Locale.ROOT));
+            environment.put("MINEASTR_AGENT_IDLE_DISCONNECT_SECONDS",
+                    Integer.toString(MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt()));
             if (!MineAstrConfig.AGENT_JOIN_COMMANDS.get().isEmpty()) {
                 environment.put("MINEASTR_AGENT_JOIN_COMMANDS", String.join(
                         "\n", MineAstrConfig.AGENT_JOIN_COMMANDS.get().stream().limit(5).toList()));
@@ -289,6 +294,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
                         controlPort.set(payload.get("port").getAsInt());
                         state.set(State.RUNNING);
                         MineAstr.LOGGER.info("MineAstr Agent 控制端已就绪：127.0.0.1:{}", controlPort.get());
+                        syncSessionPresence();
                     } else if ("bot_error".equals(type) || "bot_incompatible".equals(type)
                             || "uncaught_exception".equals(type)) {
                         lastError = payload.has("error") ? payload.get("error").getAsString() : type;
@@ -342,6 +348,9 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("neoforge_manifest_components", neoForgeComponentCount);
         result.addProperty("proxy_protocol_enabled", MineAstrConfig.AGENT_PROXY_PROTOCOL.getAsBoolean()
                 && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get()));
+        result.addProperty("session_policy", MineAstrConfig.AGENT_SESSION_POLICY.get());
+        result.addProperty("human_player_count", humanPlayerCount.get());
+        result.addProperty("idle_disconnect_seconds", MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt());
         Process current = process;
         if (current != null) result.addProperty("pid", current.pid());
         if (!lastError.isBlank()) result.addProperty("last_error", lastError);
@@ -401,7 +410,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     }
 
     public CompletableFuture<JsonObject> request(String endpoint, JsonObject body, Duration timeout) {
-        if (!endpoint.matches("/(?:status|observe|task|cancel|waypoints)")) {
+        if (!endpoint.matches("/(?:status|observe|task|cancel|waypoints|session)")) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("不支持的 Agent 端点"));
         }
         int port = controlPort.get();
@@ -437,6 +446,23 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     if ("/status".equals(endpoint) || "/observe".equals(endpoint)) lastAgentStatus = parsed.deepCopy();
                     return parsed;
                 });
+    }
+
+    public void updateHumanPlayerCount(int count) {
+        humanPlayerCount.set(Math.max(0, count));
+        syncSessionPresence();
+    }
+
+    private void syncSessionPresence() {
+        if (state.get() != State.RUNNING || controlPort.get() <= 0 || stopping) return;
+        JsonObject body = new JsonObject();
+        body.addProperty("human_player_count", humanPlayerCount.get());
+        request("/session", body, Duration.ofSeconds(3)).whenComplete((ignored, throwable) -> {
+            if (throwable != null && !stopping) {
+                Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
+                MineAstr.LOGGER.debug("MineAstr Agent 玩家会话状态同步失败：{}", safeMessage(cause));
+            }
+        });
     }
 
     private static void validateRequest(String endpoint, JsonObject body) {

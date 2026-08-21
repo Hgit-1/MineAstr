@@ -24,7 +24,7 @@ import org.slf4j.Logger;
 @Mod(MineAstr.MODID)
 public final class MineAstr {
     public static final String MODID = "mineastr";
-    public static final String MOD_VERSION = "0.10.0";
+    public static final String MOD_VERSION = "0.10.1";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     private static MineAstrBridge activeBridge;
@@ -100,6 +100,7 @@ public final class MineAstr {
     @SubscribeEvent
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
+            bridge.updateAgentPlayerPresence(player, true);
             bridge.forwardPlayerPresence(player, true);
             bridge.onPlayerLogin(player);
         }
@@ -108,6 +109,7 @@ public final class MineAstr {
     @SubscribeEvent
     public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
+            bridge.updateAgentPlayerPresence(player, false);
             bridge.forwardPlayerPresence(player, false);
             bridge.unregisterClientCapability(player);
         }

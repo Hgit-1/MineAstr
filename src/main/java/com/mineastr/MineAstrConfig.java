@@ -187,6 +187,22 @@ public final class MineAstrConfig {
             .defineListAllowEmpty("agentJoinCommands", List.of(), value -> value instanceof String text
                     && text.startsWith("/") && text.length() <= 256 && text.indexOf('\n') < 0);
 
+    public static final ModConfigSpec.ConfigValue<String> AGENT_SESSION_POLICY = BUILDER
+            .comment(
+                    "Mineflayer 游戏会话策略：on_demand、players_online 或 always。",
+                    "on_demand（默认）只在收到聊天/动作任务时上线；players_online 在有真人玩家或任务时上线；",
+                    "always 保留 0.10.0 的常驻行为。Node 控制进程仍会在后台待命。")
+            .define("agentSessionPolicy", "on_demand", value -> value instanceof String text
+                    && ("on_demand".equalsIgnoreCase(text)
+                    || "players_online".equalsIgnoreCase(text)
+                    || "always".equalsIgnoreCase(text)));
+
+    public static final ModConfigSpec.IntValue AGENT_IDLE_DISCONNECT_SECONDS = BUILDER
+            .comment(
+                    "按需会话不再被玩家或任务需要后，Mineflayer 延迟退出服务器的秒数。",
+                    "默认 60 秒，用于避免玩家短暂重连造成 Bot 频繁登录；设为 0 表示立即退出。")
+            .defineInRange("agentIdleDisconnectSeconds", 60, 0, 3600);
+
     public static final ModConfigSpec.ConfigValue<String> AGENT_SERVER_HOST = BUILDER
             .comment("Mineflayer 连接地址。服务端同机运行时保持 127.0.0.1。")
             .define("agentServerHost", "127.0.0.1", value -> value instanceof String text
