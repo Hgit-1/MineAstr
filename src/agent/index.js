@@ -21,7 +21,14 @@ const useProxyProtocol = process.env.MINEASTR_PROXY_PROTOCOL === 'true'
 const forbiddenRegions = parseForbiddenRegions(process.env.MINEASTR_FORBIDDEN_REGIONS || '')
 const neoForgeCustomPackets = neoForgeQuery ? {
   '1.21': {
-    play: { toClient: { types: { packet_declare_recipes: 'restBuffer' } } }
+    play: { toClient: { types: {
+      packet_declare_recipes: 'restBuffer',
+      // Modded item data components use dynamically negotiated registry IDs.
+      // Parsing them with vanilla IDs corrupts the stream; keep the Bot online
+      // with inventory features degraded until registry-aware codecs are loaded.
+      packet_window_items: 'restBuffer',
+      packet_set_slot: 'restBuffer'
+    } } }
   }
 } : undefined
 const maxBodyBytes = 128 * 1024

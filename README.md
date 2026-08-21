@@ -224,6 +224,8 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 `agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的必需频道、MineAstr 已实现确认的四个 NeoForge 核心配置握手频道，以及可由服务端在玩家进入世界后发送的可选 PLAY 频道，交给受监管的 Mineflayer 进程完成逐项协商。其他可选 CONFIGURATION 频道不会声明，避免触发 Mineflayer 无法确认的 Mod 专用配置任务；Mineflayer 不解析的 PLAY 自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
+在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。移动、观察、聊天和不依赖背包的任务仍可使用；自动进食和物品使用只有在后续加载了匹配服务器注册表的 codec 后才应视为可用，不能据此声称已完整支持 Mod 食品。
+
 如果服务端安装了 Proxy Protocol Mod，并把 `127.0.0.1` 列为代理来源，同机 Agent 会在 Minecraft 握手前被要求发送 PROXY 头。此时设置 `agentProxyProtocol=true`；没有这类 Mod/代理时必须保持 `false`。MineAstr 只对同机 Agent 允许该选项，且状态工具会显示它是否生效。
 
 > [!CAUTION]
