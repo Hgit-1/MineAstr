@@ -132,6 +132,7 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.coordinator._health = {}
         self.coordinator._server_info = {}
         self.coordinator._rescan_jobs = {}
+        self.coordinator._rag_restore_tasks = {}
         self.coordinator._locks = {}
         self.coordinator._tasks = {}
         self.coordinator._warned_missing_embedding = set()
@@ -540,6 +541,24 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         await self.coordinator.ensure_snapshot(Adapter(), "server-a")
 
         self.assertEqual(["server-a"], restored)
+
+    async def test_cached_snapshot_restores_native_rag_without_live_server(self):
+        calls = []
+        self.coordinator.context.kb_manager = object()
+
+        async def ensure_rag(_adapter, server_id, snapshot):
+            calls.append((server_id, snapshot["snapshot_id"]))
+
+        self.coordinator._ensure_rag = ensure_rag
+        adapter = types.SimpleNamespace(knowledge_embedding_provider_id="embedding-provider")
+
+        scheduled = self.coordinator.restore_cached_rag(adapter)
+        task = self.coordinator._rag_restore_tasks["server-a"]
+        await task
+
+        self.assertEqual(["server-a"], scheduled)
+        self.assertEqual([("server-a", "abc")], calls)
+        self.assertNotIn("server-a", self.coordinator._rag_restore_tasks)
 
     async def test_legacy_adapter_instance_uses_generic_query_after_hot_upgrade(self):
         self.coordinator._snapshots = {}

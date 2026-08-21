@@ -75,7 +75,7 @@
     "description": "WebSocket 单包大小上限",
     "type": "int",
     "hint": "MineAstr 插件接收 Mod WebSocket 消息的最大字节数；截图查询结果也会经过这里，建议保持默认。",
-    "default": 2097152
+    "default": 4194304
   },
   "screenshot_cooldown_seconds": {
     "description": "截图请求冷却秒数",
@@ -136,5 +136,23 @@
     "type": "string",
     "hint": "用于选择官网页面和整理地区简介；留空时使用 AstrBot 默认聊天模型，失败则安全降级为规则选择。",
     "default": ""
+  },
+  "agent_actions_enabled": {
+    "description": "AI 玩家 Agent 操作",
+    "type": "bool",
+    "hint": "允许 AstrBot 向服务端托管的 Mineflayer 提交任务；服务端仍执行最终安全检查。",
+    "default": true
+  },
+  "agent_require_admin_approval": {
+    "description": "Agent 任务要求管理员审批",
+    "type": "bool",
+    "hint": "默认关闭以允许 AI 在服务端安全边界内自主行动；需要人工审批时开启。观察、状态和紧急取消仍可用。",
+    "default": false
+  },
+  "agent_observation_distance": {
+    "description": "Agent 默认观察距离",
+    "type": "int",
+    "hint": "Mineflayer 结构化视场和附近实体的默认距离，范围 1 到 32 格。",
+    "default": 8
   }
 }

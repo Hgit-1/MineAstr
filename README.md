@@ -21,7 +21,7 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 
 在模型支持工具调用时，AstrBot 还能主动查询实时服务器数据，并按需检索服务器实际安装的 Mod、物品、方块、标签和配方。Mod 功能说明可通过 Modrinth、官方 Wiki 和源码 README 补充到 AstrBot 原生 RAG 知识库。
 
-0.9 还会管理知识来源的信任级别与确认状态，按单页/单地区增量维护 RAG，并依据建筑与机器聚合特征为活动地区生成带置信度的未确认草稿。
+1.0 在原有知识来源、地区分类与 RAG 能力上，增加由服务端 Mod 托管的 AI 玩家 Agent 状态、观察、基础动作和路径点工具。
 
 ## 最简单配置
 
@@ -87,7 +87,7 @@ pip install -r requirements.txt
 | `max_message_length` | `1000` | 转发到 AstrBot 的单条玩家消息最大长度，超出部分会被截断。 |
 | `outbound_max_message_length` | `2000` | AstrBot 回复广播回 Minecraft 前允许的最大长度，超出部分会被截断，避免刷屏或客户端显示异常。 |
 | `server_event_push_enabled` | `true` | 接收并投递 Mod 推送的玩家上下线、死亡和公开成就事件；Mod 侧仍可分类关闭。 |
-| `websocket_max_message_bytes` | `2097152` | 插件接收 MineAstr Mod WebSocket 消息的单包大小上限，截图查询结果也会经过这里。 |
+| `websocket_max_message_bytes` | `4194304` | 插件接收 MineAstr Mod WebSocket 消息的单包大小上限，720p 截图查询结果也会经过这里。 |
 | `screenshot_cooldown_seconds` | `10` | 同一目标玩家的截图请求冷却时间，防止模型连续触发截图弹窗。 |
 | `screenshot_timeout_seconds` | `30` | 等待 Minecraft 客户端返回截图的最长时间，超时后直接把失败原因返回给模型。 |
 | `knowledge_sync_enabled` | `true` | 自动同步服务器 Mod、注册表、标签和配方快照。 |
@@ -98,6 +98,11 @@ pip install -r requirements.txt
 | `server_site_excluded_paths` | `/login*` 等 | 在 AI 选页前强制排除登录、账户、管理、API 和静态路径；每行一个 glob。 |
 | `activity_region_sync_enabled` | `true` | 是否同步活动地区、发起48小时公开征集并写入 RAG。 |
 | `knowledge_chat_provider_id` | 空 | 官网页面选择和地区简介整理使用的聊天模型；留空使用默认模型，失败时规则降级。 |
+| `agent_actions_enabled` | `true` | 允许 AstrBot 向服务端 Mod 托管的 Mineflayer Agent 提交任务；服务端仍做最终检查。 |
+| `agent_require_admin_approval` | `false` | 需要人工审批时设为 `true`；默认允许 AI 在服务端类型白名单和禁区内自主行动。状态、观察和紧急取消不受影响。 |
+| `agent_observation_distance` | `8` | Agent 结构化视场与附近实体的默认观察距离，范围 1–32 格。 |
+
+服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。
 
 ## 服务器事件推送
 
@@ -107,7 +112,7 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 
 ## 机器人可调用工具
 
-插件会注册十九个 AstrBot LLM 工具。插件只会向模型提示当次请求实际可用的工具；AstrBot 全局开关、人格过滤或提供商不支持工具时，不会诱导模型调用一个不存在的工具。
+插件会注册原有知识与实时工具以及五个服务端 Agent 工具。插件只会向模型提示当次请求实际可用的工具；AstrBot 全局开关、人格过滤或提供商不支持工具时，不会诱导模型调用一个不存在的工具。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -118,7 +123,7 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 | `mineastr_get_nearby_entities` | 查询玩家附近实体的种类、数量、距离和生命摘要。 |
 | `mineastr_analyze_region` | 分析已加载区域的方块材料、建筑部件、表面高度和粗略三维形状。 |
 | `mineastr_run_server_command` | 代表真实请求者执行受控服务器命令；Mod 侧默认关闭并执行可信名单、命令白名单和审计检查。 |
-| `mineastr_request_screenshot` | 请求指定玩家客户端发送低清晰度截图，并把截图保存到 AstrBot 工作目录。 |
+| `mineastr_request_screenshot` | 请求指定玩家客户端发送默认 720p 的受控截图，并把截图保存到 AstrBot 工作目录。 |
 | `mineastr_list_server_mods` | 列出实际安装的 Mod，可按 ID 或名称过滤。 |
 | `mineastr_search_server_content` | 同时搜索结构化注册数据与对应服务器的 AstrBot 原生 RAG。 |
 | `mineastr_get_recipes` | 正向查询某物品如何制作，或反向查询它参与的配方。 |
@@ -130,6 +135,11 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 | `mineastr_get_topic_context` | 为另一话题插件返回在线玩家名、主要 Mod、确认地区和近期非聊天事件。 |
 | `mineastr_get_knowledge_status` | 查看连接/心跳、扫描、远程来源、RAG 和征集状态。 |
 | `mineastr_rescan_server_knowledge` | 管理员按 local/remote/rag/all 提交单实例重扫任务。 |
+| `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer连接、当前任务和渲染资源门槛。 |
+| `mineastr_observe_agent` | 查询 Bot 的生命、饥饿、位置、背包、视线、简单视场和附近实体。 |
+| `mineastr_submit_agent_task` | 提交聊天、连续下蹲、坐标/路径点移动、跟随、转向、方块交互、物品使用、等待或进食任务。 |
+| `mineastr_cancel_agent_task` | 紧急取消当前任务；不要求管理员审批。 |
+| `mineastr_manage_agent_waypoint` | 列出或管理私有路径点及步行/轨道连接。 |
 
 ## Mod 知识同步
 
@@ -160,7 +170,7 @@ Modrinth 补充只抓取项目元数据、项目声明的 Wiki/docs 和 GitHub R
 > [!WARNING]
 > 服务器提供者决定为何处理玩家数据、选择何种模型/Embedding服务、谁能访问知识库，并负责适用地区要求的告知、同意、未成年人保护、处理委托或跨境安排、玩家查阅/删除请求和安全事件处置。私人服或白名单服不当然免除这些责任。
 
-Minecraft Mod 提供 `enablePrivacyNotice`、`privacyNoticeText` 和 `privacyNoticeVersion` 作为可配置简要告知，并提供 `/mineastr privacy` 与活动统计退出/删除命令。服主应把完整政策放入服规或官网，至少说明：运营者联系方式、普通聊天与已开启的上下线/死亡/公开成就事件会转发给 AstrBot、活动区块、玩家周边已加载方块的聚合建筑特征及地区简介的用途与期限、截图/背包/位置工具、实际 AI 和 Embedding 服务商及数据所在地、未成年人规则，以及查阅、更正、删除和撤回渠道。如不希望采集周边方块聚合特征，可在 Mod 配置中设置 `enableAutomaticRegionFeatureScan=false`。
+Minecraft Mod 提供 `enablePrivacyNotice`、`privacyNoticeText` 和 `privacyNoticeVersion` 作为可配置简要告知，并提供 `/mineastr privacy`、活动统计退出/删除和独立的 `/mineastr learning optout`。服主应把完整政策放入服规或官网，至少说明：运营者联系方式、AI 玩家 Bot、普通聊天与公开事件转发、活动区块、周边方块聚合特征、可选设备交互/容器差量学习、路径点、截图/背包/位置工具、用途与期限、实际 AI 和 Embedding 服务商及数据所在地、未成年人规则，以及查阅、更正、删除和撤回渠道。设备学习默认关闭；如不需要采集，可保持 `enablePassiveSkillLearning=false`。
 
 若无法确认第三方模型是否留存、用于训练或跨境处理数据，建议使用本地模型/Embedding，或关闭 `server_site_sync_enabled`、`activity_region_sync_enabled` 和相应 Mod 功能。应限制 `data/mineastr/knowledge/`、`data/mineastr/screenshots/` 及备份的访问权限，并为删除请求、备份清理和泄露通知建立实际流程。
 

@@ -20,7 +20,7 @@ from astrbot.api import logger
 KNOWLEDGE_DIR = Path("data") / "mineastr" / "knowledge"
 KNOWLEDGE_CATEGORIES = ("mods", "items", "blocks", "entities", "fluids", "recipes")
 MODRINTH_API = "https://api.modrinth.com/v2"
-USER_AGENT = "MineAstr/0.9.0 (https://github.com/Hgit-1/MineAstr)"
+USER_AGENT = "MineAstr/1.0.0 (https://github.com/Hgit-1/MineAstr)"
 MAX_REMOTE_TEXT_BYTES = 512 * 1024
 MAX_SITE_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_SITE_PAGES = 12
@@ -172,6 +172,7 @@ class KnowledgeCoordinator:
         self._server_info: dict[str, dict[str, Any]] = {}
         self._health: dict[str, dict[str, Any]] = {}
         self._rescan_jobs: dict[str, asyncio.Task[Any]] = {}
+        self._rag_restore_tasks: dict[str, asyncio.Task[Any]] = {}
         self._load_cached_snapshots()
         _COORDINATOR = self
 
@@ -189,7 +190,11 @@ class KnowledgeCoordinator:
 
     async def close(self) -> None:
         global _COORDINATOR
-        tasks = list(self._tasks.values()) + list(self._rescan_jobs.values())
+        tasks = (
+            list(self._tasks.values())
+            + list(self._rescan_jobs.values())
+            + list(self._rag_restore_tasks.values())
+        )
         for task in tasks:
             task.cancel()
         if tasks:
@@ -199,6 +204,42 @@ class KnowledgeCoordinator:
             self._session = None
         if _COORDINATOR is self:
             _COORDINATOR = None
+
+    def restore_cached_rag(self, adapter: Any) -> list[str]:
+        """Build missing native RAG indexes from durable snapshots after hot reload."""
+        provider_id = str(getattr(adapter, "knowledge_embedding_provider_id", "") or "").strip()
+        if not provider_id or getattr(self.context, "kb_manager", None) is None:
+            return []
+        scheduled: list[str] = []
+        for server_id in self._snapshots:
+            existing = self._rag_restore_tasks.get(server_id)
+            if existing is not None and not existing.done():
+                continue
+            task = asyncio.create_task(
+                self._restore_cached_rag(adapter, server_id),
+                name=f"mineastr-rag-restore-{_safe_name(server_id)}",
+            )
+            self._rag_restore_tasks[server_id] = task
+            scheduled.append(server_id)
+        return scheduled
+
+    async def _restore_cached_rag(self, adapter: Any, server_id: str) -> None:
+        try:
+            lock = self._locks.setdefault(server_id, asyncio.Lock())
+            async with lock:
+                current = self._snapshots.get(server_id)
+                if current is not None:
+                    await self._ensure_rag(adapter, server_id, current)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            rag_health = self._health.setdefault(server_id, {}).setdefault("rag", {})
+            rag_health.update({"state": "error", "last_error": _sanitize_error(exc)})
+            logger.warning("MineAstr 从缓存恢复服务器 %s 原生 RAG 失败：%s", server_id, exc)
+        finally:
+            current_task = asyncio.current_task()
+            if self._rag_restore_tasks.get(server_id) is current_task:
+                self._rag_restore_tasks.pop(server_id, None)
 
     @staticmethod
     def _migrate_snapshot(payload: dict[str, Any], server_id: str) -> dict[str, Any]:

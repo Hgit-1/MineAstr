@@ -138,6 +138,48 @@ class MainHelperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("不是玩家发言", request.system_prompt)
 
+    async def test_agent_admin_approval_blocks_non_admin_task(self):
+        calls = []
+
+        class Adapter:
+            agent_require_admin_approval = True
+
+            async def submit_agent_task(self, *args):
+                calls.append(args)
+                return {"ok": True}
+
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._minecraft_adapter = lambda: Adapter()
+        event = types.SimpleNamespace(
+            is_admin=lambda: False,
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
+        )
+
+        result = await plugin.mineastr_submit_agent_task(event, "eat")
+
+        self.assertFalse(json.loads(result.split("\n", 1)[1])["ok"])
+        self.assertEqual([], calls)
+
+    async def test_agent_cancel_is_available_without_admin_approval(self):
+        calls = []
+
+        class Adapter:
+            async def cancel_agent_task(self, server_id):
+                calls.append(server_id)
+                return {"ok": True, "canceled": True}
+
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._minecraft_adapter = lambda: Adapter()
+        event = types.SimpleNamespace(
+            is_admin=lambda: False,
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
+        )
+
+        result = await plugin.mineastr_cancel_agent_task(event)
+
+        self.assertTrue(json.loads(result.split("\n", 1)[1])["ok"])
+        self.assertEqual(["server-a"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()

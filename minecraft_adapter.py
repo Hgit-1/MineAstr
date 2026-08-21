@@ -1,7 +1,10 @@
 import asyncio
+import gc
 import json
 import re
+import sys
 import time
+import types
 import uuid
 from pathlib import Path
 from typing import Any
@@ -31,6 +34,7 @@ LOGO_PATH = str(Path(__file__).resolve().with_name("logo.png"))
 MINECRAFT_LEADING_MENTION_RE = re.compile(r"^\s*@(?P<target>[^\s@]+)(?P<body>(?:\s+.*)?)$")
 DEFAULT_MENTION_ALIASES = "AstrBot,Aria,astrbot"
 MAX_SENDER_NAME_LENGTH = 64
+RUNTIME_STATE_MODULE = "_mineastr_astrbot_runtime_state"
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
     "port": 8765,
@@ -44,7 +48,7 @@ DEFAULT_CONFIG = {
     "max_message_length": 1000,
     "outbound_max_message_length": 2000,
     "server_event_push_enabled": True,
-    "websocket_max_message_bytes": 2097152,
+    "websocket_max_message_bytes": 4194304,
     "screenshot_cooldown_seconds": 10,
     "screenshot_timeout_seconds": 30,
     "knowledge_sync_enabled": True,
@@ -55,6 +59,9 @@ DEFAULT_CONFIG = {
     "server_site_excluded_paths": "/login*\n/account*\n/admin*\n/api/*\n/static/*",
     "activity_region_sync_enabled": True,
     "knowledge_chat_provider_id": "",
+    "agent_actions_enabled": True,
+    "agent_require_admin_approval": False,
+    "agent_observation_distance": 8,
 }
 CONFIG_METADATA = {
     "host": {
@@ -133,7 +140,7 @@ CONFIG_METADATA = {
         "description": "WebSocket 单包大小上限",
         "type": "int",
         "hint": "MineAstr 插件接收 Mod WebSocket 消息的最大字节数；截图查询结果也会经过这里，建议保持默认。",
-        "default": 2097152,
+        "default": 4194304,
     },
     "screenshot_cooldown_seconds": {
         "description": "截图请求冷却秒数",
@@ -195,11 +202,118 @@ CONFIG_METADATA = {
         "hint": "用于选择官网页面和整理地区简介；留空时使用 AstrBot 默认聊天模型，失败则安全降级为规则选择。",
         "default": "",
     },
+    "agent_actions_enabled": {
+        "description": "AI 玩家 Agent 操作",
+        "type": "bool",
+        "hint": "允许 AstrBot 向服务端托管的 Mineflayer提交任务；服务端仍执行最终安全检查。",
+        "default": True,
+    },
+    "agent_require_admin_approval": {
+        "description": "Agent 任务要求管理员审批",
+        "type": "bool",
+        "hint": "推荐开启。开启后只有 AstrBot 管理员上下文可提交会改变 Bot 行为的任务；观察和状态查询仍可用。",
+        "default": False,
+    },
+    "agent_observation_distance": {
+        "description": "Agent 默认观察距离",
+        "type": "int",
+        "hint": "Mineflayer结构化视场和附近实体的默认距离，范围 1 到 32 格。",
+        "default": 8,
+    },
 }
 
 
 def _config_value(config: dict[str, Any], key: str) -> Any:
     return config.get(key, DEFAULT_CONFIG[key])
+
+
+def _runtime_connection_managers() -> dict[tuple[str, int, str], Any]:
+    """Keep live WebSocket state across AstrBot's in-process module reloads."""
+    state = sys.modules.get(RUNTIME_STATE_MODULE)
+    if state is None:
+        state = types.ModuleType(RUNTIME_STATE_MODULE)
+        state.connection_managers = {}
+        sys.modules[RUNTIME_STATE_MODULE] = state
+    managers = getattr(state, "connection_managers", None)
+    if not isinstance(managers, dict):
+        managers = {}
+        state.connection_managers = managers
+    return managers
+
+
+def _discover_legacy_connection_manager(
+    host: str, port: int, path: str
+) -> Any | None:
+    """Adopt the live manager from an adapter created before shared state existed."""
+    candidates: list[Any] = []
+    for value in gc.get_objects():
+        try:
+            value_type = type(value)
+            if value_type.__name__ != "MinecraftPlatformAdapter":
+                continue
+            if not value_type.__module__.endswith(".minecraft_adapter"):
+                continue
+            if (
+                str(getattr(value, "host", "")) != host
+                or int(getattr(value, "port", -1)) != port
+                or str(getattr(value, "path", "")) != path
+            ):
+                continue
+            manager = getattr(value, "connection_manager", None)
+            if callable(getattr(manager, "query", None)) and callable(
+                getattr(manager, "snapshot", None)
+            ):
+                candidates.append(manager)
+        except (AttributeError, ReferenceError, TypeError, ValueError):
+            continue
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: int(getattr(item, "connected_count", 0)))
+
+
+def select_live_platform_adapter(preferred: Any | None) -> Any | None:
+    """Prefer the same-endpoint adapter that owns an actual live connection."""
+    endpoint = None
+    if preferred is not None:
+        try:
+            endpoint = (
+                str(getattr(preferred, "host")),
+                int(getattr(preferred, "port")),
+                str(getattr(preferred, "path")),
+            )
+        except (AttributeError, TypeError, ValueError):
+            endpoint = None
+    candidates: list[Any] = []
+    if preferred is not None:
+        candidates.append(preferred)
+    for value in gc.get_objects():
+        try:
+            value_type = type(value)
+            if value_type.__name__ != "MinecraftPlatformAdapter":
+                continue
+            if not value_type.__module__.endswith(".minecraft_adapter"):
+                continue
+            if endpoint is not None and (
+                str(getattr(value, "host", "")),
+                int(getattr(value, "port", -1)),
+                str(getattr(value, "path", "")),
+            ) != endpoint:
+                continue
+            if callable(getattr(value, "local_status", None)) and all(
+                value is not item for item in candidates
+            ):
+                candidates.append(value)
+        except (AttributeError, ReferenceError, TypeError, ValueError):
+            continue
+    if not candidates:
+        return preferred
+    return max(
+        candidates,
+        key=lambda value: (
+            int(getattr(getattr(value, "connection_manager", None), "connected_count", 0)),
+            value is preferred,
+        ),
+    )
 
 
 def _trim_content(value: Any, max_len: int) -> str:
@@ -262,6 +376,10 @@ class MinecraftConnectionManager:
     @property
     def connected_count(self) -> int:
         return len(self._connections)
+
+    def reconfigure(self, bot_display_name: str, outbound_max_message_length: int) -> None:
+        self._bot_display_name = bot_display_name
+        self._outbound_max_message_length = max(1, outbound_max_message_length)
 
     async def register(self, ws: web.WebSocketResponse, hello: dict[str, Any]) -> None:
         now = int(time.time() * 1000)
@@ -508,6 +626,9 @@ class MinecraftPlatformAdapter(Platform):
         self.websocket_max_message_bytes = max(8192, int(_config_value(self.config, "websocket_max_message_bytes")))
         self.screenshot_cooldown_seconds = max(0.0, float(_config_value(self.config, "screenshot_cooldown_seconds")))
         self.screenshot_timeout_seconds = max(1.0, float(_config_value(self.config, "screenshot_timeout_seconds")))
+        self.agent_actions_enabled = bool(_config_value(self.config, "agent_actions_enabled"))
+        self.agent_require_admin_approval = bool(_config_value(self.config, "agent_require_admin_approval"))
+        self.agent_observation_distance = max(1, min(32, int(_config_value(self.config, "agent_observation_distance"))))
         self.knowledge_sync_enabled = bool(_config_value(self.config, "knowledge_sync_enabled"))
         self.knowledge_embedding_provider_id = str(_config_value(self.config, "knowledge_embedding_provider_id"))
         self.modrinth_enrichment_enabled = bool(_config_value(self.config, "modrinth_enrichment_enabled"))
@@ -516,7 +637,31 @@ class MinecraftPlatformAdapter(Platform):
         self.server_site_excluded_paths = str(_config_value(self.config, "server_site_excluded_paths"))
         self.activity_region_sync_enabled = bool(_config_value(self.config, "activity_region_sync_enabled"))
         self.knowledge_chat_provider_id = str(_config_value(self.config, "knowledge_chat_provider_id"))
-        self.connection_manager = MinecraftConnectionManager(self.bot_display_name, self.outbound_max_message_length)
+        self._runtime_manager_key = (self.host, self.port, self.path)
+        managers = _runtime_connection_managers()
+        manager = managers.get(self._runtime_manager_key)
+        legacy_manager = _discover_legacy_connection_manager(*self._runtime_manager_key)
+        if legacy_manager is not None and int(getattr(legacy_manager, "connected_count", 0)) > int(
+            getattr(manager, "connected_count", 0)
+        ):
+            manager = legacy_manager
+            managers[self._runtime_manager_key] = manager
+            logger.info(
+                "MineAstr 已接管热重载前的平台 WebSocket 状态：%s 个服务器连接。",
+                manager.connected_count,
+            )
+        if manager is None or not callable(getattr(manager, "query", None)):
+            manager = MinecraftConnectionManager(self.bot_display_name, self.outbound_max_message_length)
+            managers[self._runtime_manager_key] = manager
+        else:
+            reconfigure = getattr(manager, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(self.bot_display_name, self.outbound_max_message_length)
+            else:
+                # Compatible with a manager created by MineAstr 0.9 before hot reload.
+                manager._bot_display_name = self.bot_display_name
+                manager._outbound_max_message_length = self.outbound_max_message_length
+        self.connection_manager = manager
         self._runner: web.AppRunner | None = None
 
     def _bot_mention_aliases(self) -> set[str]:
@@ -753,8 +898,9 @@ class MinecraftPlatformAdapter(Platform):
             "player_uuid": player_uuid.strip(),
             "player_name": player_name.strip(),
             "reason": reason.strip() or "AstrBot 请求查看当前 Minecraft 画面。",
-            "max_width": 240,
-            "max_height": 135,
+            "max_width": 1280,
+            "max_height": 720,
+            "max_bytes": 1048576,
             "format": "jpeg",
         }
         return await self.connection_manager.query(
@@ -764,11 +910,55 @@ class MinecraftPlatformAdapter(Platform):
             timeout=self.screenshot_timeout_seconds,
         )
 
+    async def query_agent_status(self, server_id: str | None = None) -> dict[str, Any]:
+        return await self.connection_manager.query("agent_status", server_id, timeout=8.0)
+
+    async def observe_agent(self, server_id: str | None = None, distance: int | None = None) -> dict[str, Any]:
+        selected = self.agent_observation_distance if distance is None else max(1, min(32, int(distance)))
+        return await self.connection_manager.query(
+            "agent_observe", server_id, params={"distance": selected}, timeout=12.0
+        )
+
+    async def submit_agent_task(
+        self,
+        server_id: str | None,
+        task_type: str,
+        args: dict[str, Any],
+        task_id: str = "",
+        approved_by_admin: bool = False,
+        requester: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        if not self.agent_actions_enabled:
+            raise RuntimeError("AstrBot 配置已禁用 AI 玩家 Agent 操作")
+        params: dict[str, Any] = {
+            "task_id": task_id.strip(), "task_type": task_type.strip(), "args": args,
+            "approved_by_admin": bool(approved_by_admin),
+        }
+        if requester:
+            params.update({key: str(value)[:100] for key, value in requester.items() if value})
+        return await self.connection_manager.query(
+            "agent_task",
+            server_id,
+            params=params,
+            timeout=15.0,
+        )
+
+    async def cancel_agent_task(self, server_id: str | None = None) -> dict[str, Any]:
+        return await self.connection_manager.query("agent_cancel", server_id, timeout=8.0)
+
+    async def manage_agent_waypoint(
+        self, server_id: str | None, action: str, **values: Any
+    ) -> dict[str, Any]:
+        params = {"action": action.strip().lower()}
+        params.update(values)
+        return await self.connection_manager.query("agent_waypoints", server_id, params=params, timeout=12.0)
+
     async def local_status(self) -> dict[str, Any]:
         return {
             "ok": True,
             "connected_count": self.connection_manager.connected_count,
             "servers": await self.connection_manager.snapshot(),
+            "shared_connection_state": True,
         }
 
     async def _handle_websocket(self, request: web.Request) -> web.StreamResponse:

@@ -163,6 +163,91 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], COORDINATOR.server_events)
         self.assertEqual([], self.events)
 
+    async def test_agent_task_is_typed_and_carries_admin_approval(self):
+        calls = []
+
+        class Manager:
+            async def query(self, query, server_id, params=None, timeout=0):
+                calls.append((query, server_id, params, timeout))
+                return {"ok": True}
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = True
+
+        result = await self.adapter.submit_agent_task(
+            "server-a", "goto", {"x": 1, "y": 64, "z": 2}, "task-1", True,
+            {"requester_id": "player-1", "requester_name": "Alex"},
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("agent_task", calls[0][0])
+        self.assertEqual("task-1", calls[0][2]["task_id"])
+        self.assertTrue(calls[0][2]["approved_by_admin"])
+        self.assertEqual("player-1", calls[0][2]["requester_id"])
+        self.assertEqual("Alex", calls[0][2]["requester_name"])
+
+    async def test_agent_master_switch_blocks_mutation_but_not_observation(self):
+        calls = []
+
+        class Manager:
+            async def query(self, query, server_id, params=None, timeout=0):
+                calls.append(query)
+                return {"ok": True}
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = False
+        self.adapter.agent_observation_distance = 8
+
+        with self.assertRaises(RuntimeError):
+            await self.adapter.submit_agent_task(None, "eat", {})
+        observed = await self.adapter.observe_agent(None, 99)
+        self.assertTrue(observed["ok"])
+        self.assertEqual(["agent_observe"], calls)
+
+    async def test_hot_reload_adopts_pre_shared_live_connection_manager(self):
+        managers = ADAPTER._runtime_connection_managers()
+        managers.clear()
+        original = ADAPTER.MinecraftPlatformAdapter({}, {}, None)
+        websocket = object()
+        await original.connection_manager.register(websocket, {
+            "server_id": "minecraft",
+            "server_name": "MFMC",
+            "mod_version": "0.9.0",
+            "minecraft_version": "1.21.1",
+            "query_capabilities": ["knowledge_manifest", "knowledge_page"],
+        })
+
+        # Simulate upgrading from 0.9.0, which had no process-wide registry.
+        managers.clear()
+        replacement = ADAPTER.MinecraftPlatformAdapter({}, {}, None)
+
+        self.assertIs(original.connection_manager, replacement.connection_manager)
+        status = await replacement.local_status()
+        self.assertEqual(1, status["connected_count"])
+        self.assertEqual("minecraft", status["servers"][0]["server_id"])
+        self.assertTrue(status["shared_connection_state"])
+
+        await replacement.connection_manager.unregister(websocket)
+        ADAPTER._runtime_connection_managers().clear()
+
+    async def test_plugin_reload_selects_adapter_with_live_connection(self):
+        ADAPTER._runtime_connection_managers().clear()
+        active = ADAPTER.MinecraftPlatformAdapter({}, {}, None)
+        websocket = object()
+        await active.connection_manager.register(websocket, {
+            "server_id": "minecraft",
+            "query_capabilities": ["knowledge_manifest", "knowledge_page"],
+        })
+        preferred = object.__new__(ADAPTER.MinecraftPlatformAdapter)
+        preferred.host, preferred.port, preferred.path = active.host, active.port, active.path
+        preferred.connection_manager = ADAPTER.MinecraftConnectionManager("AstrBot", 2000)
+
+        selected = ADAPTER.select_live_platform_adapter(preferred)
+
+        self.assertIs(active, selected)
+        await active.connection_manager.unregister(websocket)
+        ADAPTER._runtime_connection_managers().clear()
+
 
 if __name__ == "__main__":
     unittest.main()
