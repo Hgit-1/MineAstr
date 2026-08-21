@@ -55,6 +55,9 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private static final String NODE_VERSION = "22.19.0";
     private static final int MIN_NODE_MAJOR = 22;
     private static final int MAX_CONTROL_BODY_CHARS = 512 * 1024;
+    private static final Set<String> NEOFORGE_CONFIGURATION_CHANNELS = Set.of(
+            "neoforge:extensible_enum_data", "neoforge:extensible_enum_ack",
+            "neoforge:feature_flags", "neoforge:feature_flags_ack");
     private static final Map<String, NodeArtifact> NODE_ARTIFACTS = Map.of(
             "linux-x86_64", new NodeArtifact(
                     "https://nodejs.org/dist/v" + NODE_VERSION + "/node-v" + NODE_VERSION + "-linux-x64.tar.gz",
@@ -542,9 +545,11 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 // advertise optional PLAY clientbound channels: optional
                 // CONFIGURATION channels can start mod-specific configuration
                 // tasks that Mineflayer cannot acknowledge and would stall login.
-                if (registration.optional()
-                        && (protocol.getKey() != ConnectionProtocol.PLAY
-                        || !registration.matchesFlow(PacketFlow.CLIENTBOUND))) {
+                boolean supportedConfigurationChannel = NEOFORGE_CONFIGURATION_CHANNELS.contains(
+                        registration.id().toString());
+                boolean optionalPlayToClient = protocol.getKey() == ConnectionProtocol.PLAY
+                        && registration.matchesFlow(PacketFlow.CLIENTBOUND);
+                if (registration.optional() && !supportedConfigurationChannel && !optionalPlayToClient) {
                     continue;
                 }
                 components.add(new ModdedNetworkQueryComponent(registration));
