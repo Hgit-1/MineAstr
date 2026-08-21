@@ -595,6 +595,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
 
     private static void untarStrippingFirstDirectory(InputStream input, Path target) throws IOException {
         byte[] header = new byte[512];
+        String pendingLongName = null;
         while (true) {
             int read = input.readNBytes(header, 0, header.length);
             if (read == 0) return;
@@ -604,10 +605,25 @@ public final class MineAstrAgentManager implements AutoCloseable {
             if (empty) return;
             String entryName = tarString(header, 0, 100);
             String prefix = tarString(header, 345, 155);
-            String originalName = prefix.isBlank() ? entryName : prefix + "/" + entryName;
-            String name = stripFirstDirectory(originalName);
             long size = parseTarOctal(header, 124, 12);
             int type = header[156] & 0xff;
+            if (type == 'L' || type == 'x') {
+                if (size < 0 || size > 1024 * 1024) throw new IOException("tar 长路径元数据过大");
+                byte[] metadata = input.readNBytes((int) size);
+                if (metadata.length != size) throw new IOException("tar 长路径元数据被截断");
+                String decoded = type == 'L'
+                        ? new String(metadata, StandardCharsets.UTF_8).replace("\0", "").strip()
+                        : paxPath(metadata);
+                if (!decoded.isBlank()) pendingLongName = decoded;
+                long metadataPadding = (512 - (size % 512)) % 512;
+                if (metadataPadding > 0) input.skipNBytes(metadataPadding);
+                continue;
+            }
+            String originalName = pendingLongName != null
+                    ? pendingLongName
+                    : prefix.isBlank() ? entryName : prefix + "/" + entryName;
+            pendingLongName = null;
+            String name = stripFirstDirectory(originalName);
             if (!name.isBlank()) {
                 Path resolved = safeResolve(target, name);
                 if (type == '5') Files.createDirectories(resolved);
@@ -623,6 +639,36 @@ public final class MineAstrAgentManager implements AutoCloseable {
             long padding = (512 - (size % 512)) % 512;
             if (padding > 0) input.skipNBytes(padding);
         }
+    }
+
+    private static String paxPath(byte[] metadata) throws IOException {
+        int offset = 0;
+        while (offset < metadata.length) {
+            int space = offset;
+            while (space < metadata.length && metadata[space] != ' ') space++;
+            if (space >= metadata.length) throw new IOException("无效的 PAX tar 元数据");
+            int recordLength;
+            try {
+                recordLength = Integer.parseInt(
+                        new String(metadata, offset, space - offset, StandardCharsets.US_ASCII));
+            } catch (NumberFormatException exc) {
+                throw new IOException("无效的 PAX tar 记录长度", exc);
+            }
+            if (recordLength <= 0 || offset + recordLength > metadata.length) {
+                throw new IOException("PAX tar 记录被截断");
+            }
+            String record = new String(
+                    metadata,
+                    space + 1,
+                    recordLength - (space + 1 - offset),
+                    StandardCharsets.UTF_8).strip();
+            int equals = record.indexOf('=');
+            if (equals > 0 && "path".equals(record.substring(0, equals))) {
+                return record.substring(equals + 1);
+            }
+            offset += recordLength;
+        }
+        return "";
     }
 
     private static Path safeResolve(Path root, String entryName) throws IOException {

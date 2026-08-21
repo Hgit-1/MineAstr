@@ -42,6 +42,54 @@ final class MineAstrAgentManagerTarTest {
         }
     }
 
+    @Test
+    void extractsGnuLongNameInsteadOfTruncatedHeaderName() throws Exception {
+        String fullName = "node-v22.19.0-linux-x64/include/node/openssl/archs/darwin64-x86_64-cc/asm/"
+                + "providers/common/include/prov/der_rsa.h";
+        byte[] content = "gnu-long-name".getBytes(StandardCharsets.US_ASCII);
+        byte[] archive = gnuLongNameTarEntry(fullName, content);
+        Path target = Files.createTempDirectory("mineastr-gnu-tar-test-");
+        try {
+            Method untar = MineAstrAgentManager.class.getDeclaredMethod(
+                    "untarStrippingFirstDirectory", java.io.InputStream.class, Path.class);
+            untar.setAccessible(true);
+            untar.invoke(null, new ByteArrayInputStream(archive), target);
+
+            Path expected = target.resolve(fullName.substring(fullName.indexOf('/') + 1));
+            assertTrue(Files.isRegularFile(expected));
+            assertArrayEquals(content, Files.readAllBytes(expected));
+        } finally {
+            try (var paths = Files.walk(target)) {
+                for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.deleteIfExists(path);
+                }
+            }
+        }
+    }
+
+    private static byte[] gnuLongNameTarEntry(String fullName, byte[] content) throws Exception {
+        byte[] longName = (fullName + "\0").getBytes(StandardCharsets.UTF_8);
+        byte[] longHeader = new byte[512];
+        putAscii(longHeader, 0, 100, "././@LongLink");
+        putAscii(longHeader, 124, 12, String.format("%011o", longName.length));
+        longHeader[156] = 'L';
+
+        byte[] fileHeader = new byte[512];
+        putAscii(fileHeader, 0, 100, fullName.substring(0, 100));
+        putAscii(fileHeader, 124, 12, String.format("%011o", content.length));
+        fileHeader[156] = '0';
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(longHeader);
+        output.write(longName);
+        output.write(new byte[(512 - longName.length % 512) % 512]);
+        output.write(fileHeader);
+        output.write(content);
+        output.write(new byte[(512 - content.length % 512) % 512]);
+        output.write(new byte[1024]);
+        return output.toByteArray();
+    }
+
     private static byte[] tarEntry(String prefix, String name, byte[] content) throws Exception {
         byte[] header = new byte[512];
         putAscii(header, 0, 100, name);
