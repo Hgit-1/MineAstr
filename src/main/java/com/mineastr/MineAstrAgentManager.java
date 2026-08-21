@@ -41,6 +41,7 @@ import java.util.zip.ZipInputStream;
 import net.minecraft.SharedConstants;
 import net.minecraft.network.ConnectionProtocol;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.server.MinecraftServer;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.network.payload.ModdedNetworkQueryComponent;
@@ -537,10 +538,15 @@ public final class MineAstrAgentManager implements AutoCloseable {
             for (PayloadRegistration<?> registration : protocol.getValue().values()) {
                 // Some mods register a payload as optional but still send it
                 // unconditionally when a player joins. NeoForge rejects that
-                // send unless the peer advertised the optional channel. The
-                // local compatibility client therefore declares every channel
-                // registered by this exact server and safely ignores payloads
-                // that Mineflayer cannot interpret.
+                // send unless the peer advertised the optional channel. Only
+                // advertise optional PLAY clientbound channels: optional
+                // CONFIGURATION channels can start mod-specific configuration
+                // tasks that Mineflayer cannot acknowledge and would stall login.
+                if (registration.optional()
+                        && (protocol.getKey() != ConnectionProtocol.PLAY
+                        || !registration.matchesFlow(PacketFlow.CLIENTBOUND))) {
+                    continue;
+                }
                 components.add(new ModdedNetworkQueryComponent(registration));
                 count++;
             }

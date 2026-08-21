@@ -222,7 +222,7 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 
 MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR，并由服务端 Mod 解压和监管独立 Node 子进程。Agent 控制端只监听 `127.0.0.1`，每次启动使用随机 Token；AstrBot 不会直接连接该内部端口。
 
-`agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的全部频道及版本，交给受监管的 Mineflayer 进程完成逐项协商。全部声明是必要的，因为部分 Mod 会在玩家加入时无条件发送标记为“可选”的频道；Mineflayer 不解析的自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
+`agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的必需频道，以及可由服务端在玩家进入世界后发送的可选 PLAY 频道，交给受监管的 Mineflayer 进程完成逐项协商。可选 CONFIGURATION 频道不会声明，避免触发 Mineflayer 无法确认的 Mod 专用配置任务；Mineflayer 不解析的 PLAY 自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
 如果服务端安装了 Proxy Protocol Mod，并把 `127.0.0.1` 列为代理来源，同机 Agent 会在 Minecraft 握手前被要求发送 PROXY 头。此时设置 `agentProxyProtocol=true`；没有这类 Mod/代理时必须保持 `false`。MineAstr 只对同机 Agent 允许该选项，且状态工具会显示它是否生效。
 
@@ -281,7 +281,7 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 
 扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。
 
-WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 1.0 服务端；旧 AstrBot 插件会忽略新增 Agent 能力，仍可使用原有功能。
+WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.10 服务端；旧 AstrBot 插件会忽略新增 Agent 能力，仍可使用原有功能。
 
 MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`player_join`、`player_leave`、`player_death` 和 `player_advancement`。死亡和进度推送尊重 `showDeathMessages` 与 `announceAdvancements` 游戏规则；只推送会在游戏聊天中公开宣告的进度，不推送隐藏配方解锁。事件不含 IP 地址、精确坐标、背包或 NBT。
 
