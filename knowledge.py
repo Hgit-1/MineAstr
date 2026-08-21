@@ -1562,8 +1562,8 @@ class KnowledgeCoordinator:
                 "document_count": len(documents), "content_hash": rag_content_hash,
             })
             return
-        if helper is None:
-            helper = await kb_manager.create_kb(
+        async def create_helper():
+            return await kb_manager.create_kb(
                 kb_name=kb_name,
                 description=f"MineAstr 服务器 {server_id} 自动同步的 Mod、官网与活动地区知识库",
                 emoji="⛏️",
@@ -1573,36 +1573,61 @@ class KnowledgeCoordinator:
                 top_m_final=5,
             )
 
-        existing = await helper.list_documents(offset=0, limit=10000)
-        wanted_names: set[str] = set()
-        deleted_doc_ids: set[str] = set()
-        for stable_key, chunks in documents.items():
-            content_hash = _json_hash(chunks)
-            prefix = f"mineastr_{_safe_name(server_id)}_{_safe_name(stable_key)}_"
-            wanted_name = f"{prefix}{content_hash[:16]}.md"
-            wanted_names.add(wanted_name)
-            old = [doc for doc in existing if str(getattr(doc, "doc_name", "")).startswith(prefix)]
-            if any(str(getattr(doc, "doc_name", "")) == wanted_name for doc in old):
-                continue
-            uploaded = await helper.upload_document(
-                file_name=wanted_name,
-                file_content=None,
-                file_type="md",
-                pre_chunked_text=chunks,
+        async def sync_documents(active_helper) -> None:
+            existing = await active_helper.list_documents(offset=0, limit=10000)
+            wanted_names: set[str] = set()
+            deleted_doc_ids: set[str] = set()
+            for stable_key, chunks in documents.items():
+                content_hash = _json_hash(chunks)
+                prefix = f"mineastr_{_safe_name(server_id)}_{_safe_name(stable_key)}_"
+                wanted_name = f"{prefix}{content_hash[:16]}.md"
+                wanted_names.add(wanted_name)
+                old = [
+                    doc for doc in existing
+                    if str(getattr(doc, "doc_name", "")).startswith(prefix)
+                ]
+                if any(str(getattr(doc, "doc_name", "")) == wanted_name for doc in old):
+                    continue
+                uploaded = await active_helper.upload_document(
+                    file_name=wanted_name,
+                    file_content=None,
+                    file_type="md",
+                    pre_chunked_text=chunks,
+                )
+                if uploaded:
+                    for doc in old:
+                        await active_helper.delete_document(doc.doc_id)
+                        deleted_doc_ids.add(str(doc.doc_id))
+            owned_prefix = f"mineastr_{_safe_name(server_id)}_"
+            for doc in existing:
+                doc_name = str(getattr(doc, "doc_name", ""))
+                if (
+                    str(doc.doc_id) not in deleted_doc_ids
+                    and doc_name.startswith(owned_prefix)
+                    and doc_name not in wanted_names
+                ):
+                    await active_helper.delete_document(doc.doc_id)
+
+        helper_existed = helper is not None
+        if helper is None:
+            helper = await create_helper()
+        try:
+            await sync_documents(helper)
+        except Exception as exc:
+            message = str(exc).lower()
+            dimension_mismatch = (
+                ("dimension" in message and "mismatch" in message)
+                or ("维度" in message and ("不匹配" in message or "期望" in message))
             )
-            if uploaded:
-                for doc in old:
-                    await helper.delete_document(doc.doc_id)
-                    deleted_doc_ids.add(str(doc.doc_id))
-        owned_prefix = f"mineastr_{_safe_name(server_id)}_"
-        for doc in existing:
-            doc_name = str(getattr(doc, "doc_name", ""))
-            if (
-                str(doc.doc_id) not in deleted_doc_ids
-                and doc_name.startswith(owned_prefix)
-                and doc_name not in wanted_names
-            ):
-                await helper.delete_document(doc.doc_id)
+            if not helper_existed or not dimension_mismatch:
+                raise
+            logger.warning(
+                "MineAstr 知识库 %s 的向量维度已变化，将重建该专用库后重试。", kb_name
+            )
+            await kb_manager.delete_kb(helper.kb.kb_id)
+            helper = await create_helper()
+            previous_rag = {}
+            await sync_documents(helper)
         snapshot["rag"] = {
             "kb_id": helper.kb.kb_id,
             "kb_name": kb_name,
