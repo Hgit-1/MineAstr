@@ -142,6 +142,18 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     MineAstrConfig.AGENT_SESSION_POLICY.get().toLowerCase(Locale.ROOT));
             environment.put("MINEASTR_AGENT_IDLE_DISCONNECT_SECONDS",
                     Integer.toString(MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt()));
+            environment.put("MINEASTR_NAV_ALLOW_DIGGING",
+                    Boolean.toString(MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean()));
+            environment.put("MINEASTR_NAV_ALLOW_PLACING",
+                    Boolean.toString(MineAstrConfig.AGENT_NAVIGATION_ALLOW_PLACING.getAsBoolean()));
+            environment.put("MINEASTR_NAV_DIG_COST",
+                    Integer.toString(MineAstrConfig.AGENT_NAVIGATION_DIG_COST.getAsInt()));
+            environment.put("MINEASTR_NAV_PLACE_COST",
+                    Integer.toString(MineAstrConfig.AGENT_NAVIGATION_PLACE_COST.getAsInt()));
+            environment.put("MINEASTR_NAV_LIQUID_COST",
+                    Integer.toString(MineAstrConfig.AGENT_NAVIGATION_LIQUID_COST.getAsInt()));
+            environment.put("MINEASTR_NAV_CACHE_MAX_CHUNKS",
+                    Integer.toString(MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt()));
             if (!MineAstrConfig.AGENT_JOIN_COMMANDS.get().isEmpty()) {
                 environment.put("MINEASTR_AGENT_JOIN_COMMANDS", String.join(
                         "\n", MineAstrConfig.AGENT_JOIN_COMMANDS.get().stream().limit(5).toList()));
@@ -351,6 +363,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("session_policy", MineAstrConfig.AGENT_SESSION_POLICY.get());
         result.addProperty("human_player_count", humanPlayerCount.get());
         result.addProperty("idle_disconnect_seconds", MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt());
+        JsonObject navigation = new JsonObject();
+        navigation.addProperty("allow_digging", MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean());
+        navigation.addProperty("allow_placing", MineAstrConfig.AGENT_NAVIGATION_ALLOW_PLACING.getAsBoolean());
+        navigation.addProperty("dig_cost", MineAstrConfig.AGENT_NAVIGATION_DIG_COST.getAsInt());
+        navigation.addProperty("place_cost", MineAstrConfig.AGENT_NAVIGATION_PLACE_COST.getAsInt());
+        navigation.addProperty("liquid_cost", MineAstrConfig.AGENT_NAVIGATION_LIQUID_COST.getAsInt());
+        navigation.addProperty("cache_max_chunks", MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt());
+        result.add("navigation_config", navigation);
         Process current = process;
         if (current != null) result.addProperty("pid", current.pid());
         if (!lastError.isBlank()) result.addProperty("last_error", lastError);

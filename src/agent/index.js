@@ -7,6 +7,8 @@ const path = require('node:path')
 const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
+const { navigateTo } = require('./navigation')
+const { ChunkNavigationCache } = require('./chunk-cache')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
@@ -38,6 +40,14 @@ const neoForgeCustomPackets = neoForgeQuery ? {
   }
 } : undefined
 const maxBodyBytes = 128 * 1024
+const navigationAllowDigging = process.env.MINEASTR_NAV_ALLOW_DIGGING === 'true'
+const navigationAllowPlacing = process.env.MINEASTR_NAV_ALLOW_PLACING === 'true'
+const navigationDigCost = parseInteger(process.env.MINEASTR_NAV_DIG_COST, 12, 1, 99)
+const navigationPlaceCost = parseInteger(process.env.MINEASTR_NAV_PLACE_COST, 18, 1, 99)
+const navigationLiquidCost = parseInteger(process.env.MINEASTR_NAV_LIQUID_COST, 8, 1, 99)
+const navigationCache = new ChunkNavigationCache(path.join(dataDir, 'navigation-cache'), {
+  maxChunks: parseInteger(process.env.MINEASTR_NAV_CACHE_MAX_CHUNKS, 2048, 64, 16384)
+})
 
 let bot = null
 let state = 'standby'
@@ -251,11 +261,27 @@ function connectBot() {
       lastError = ''
       lastDisconnectError = ''
       try {
-        created.pathfinder.setMovements(new Movements(created))
+        const movements = new Movements(created)
+        // Navigation is not authorization to edit the world. Destructive movement
+        // is exposed only through explicit, separately guarded task types.
+        movements.canDig = navigationAllowDigging
+        movements.digCost = navigationDigCost
+        movements.placeCost = navigationPlaceCost
+        movements.liquidCost = navigationLiquidCost
+        movements.allow1by1towers = navigationAllowPlacing
+        movements.allowParkour = false
+        if (!navigationAllowPlacing) movements.scafoldingBlocks = []
+        movements.exclusionAreasStep.push(block => isForbidden(block?.position, created.game?.dimension) ? 100 : 0)
+        created.pathfinder.setMovements(movements)
       } catch (error) {
         lastError = safeError(error)
       }
       emit({ type: 'bot_online', username: created.username, version: created.version })
+      created.world.on('chunkColumnLoad', corner => navigationCache.capture(created, corner, normalizeDimension(created.game?.dimension)))
+      created.on('blockUpdate', (_oldBlock, newBlock) => navigationCache.refreshLater(
+        created, newBlock?.position, normalizeDimension(created.game?.dimension)
+      ))
+      navigationCache.captureLoaded(created, normalizeDimension(created.game?.dimension))
       await runJoinCommands(created)
       if (bot !== created || state !== 'online') return
       sessionReady = true
@@ -389,7 +415,19 @@ function status() {
       degraded_mod_data: neoForgeNegotiated
     },
     proxy_protocol: useProxyProtocol,
-    last_protocol_diagnostic: lastProtocolDiagnostic
+    last_protocol_diagnostic: lastProtocolDiagnostic,
+    navigation: {
+      backend: 'mineflayer-pathfinder-a-star',
+      segmented: true,
+      stitched_chunk_corridor: true,
+      tool_aware_dig_cost: true,
+      allow_digging: navigationAllowDigging,
+      allow_placing: navigationAllowPlacing,
+      dig_cost: navigationDigCost,
+      place_cost: navigationPlaceCost,
+      liquid_cost: navigationLiquidCost,
+      cache: navigationCache.status()
+    }
   }
 }
 
@@ -588,14 +626,15 @@ function startWaitingTask() {
         const x = finiteCoordinate(args.x, 'x')
         const y = finiteCoordinate(args.y, 'y')
         const z = finiteCoordinate(args.z, 'z')
-        assertAllowedTarget(new Vec3(x, y, z), args.dimension)
-        await bot.pathfinder.goto(new goals.GoalBlock(x, y, z))
+        const target = new Vec3(x, y, z)
+        assertAllowedTarget(target, args.dimension)
+        await navigateTask(target, args, runId)
       } else if (type === 'goto_waypoint') {
         const waypoint = waypointData.waypoints[String(args.id || '')]
         if (!waypoint) throw new Error('未找到路径点')
         if (normalizeDimension(waypoint.dimension) !== normalizeDimension(bot.game?.dimension)) throw new Error('路径点与 Bot 不在同一维度')
         assertAllowedTarget(waypoint, waypoint.dimension)
-        await bot.pathfinder.goto(new goals.GoalBlock(waypoint.x, waypoint.y, waypoint.z))
+        await navigateTask(new Vec3(waypoint.x, waypoint.y, waypoint.z), args, runId)
       } else if (type === 'follow_player') {
         const playerName = String(args.player_name || '').slice(0, 16)
         const target = bot.players[playerName]?.entity
@@ -616,7 +655,7 @@ function startWaitingTask() {
       } else if (type === 'interact_block') {
         const position = new Vec3(finiteCoordinate(args.x, 'x'), finiteCoordinate(args.y, 'y'), finiteCoordinate(args.z, 'z'))
         assertAllowedTarget(position, args.dimension)
-        if (bot.entity.position.distanceTo(position) > 5) await bot.pathfinder.goto(new goals.GoalNear(position.x, position.y, position.z, 4))
+        if (bot.entity.position.distanceTo(position) > 5) await navigateTask(position, { ...args, tolerance: 4 }, runId)
         assertTaskActive(runId)
         const block = bot.blockAt(position)
         if (!block) throw new Error('目标方块不可见')
@@ -642,6 +681,17 @@ function startWaitingTask() {
     } finally {
       bot?.clearControlStates()
     }
+  })
+}
+
+async function navigateTask(target, args, runId) {
+  return navigateTo(bot, goals, target, {
+    tolerance: parseInteger(args.tolerance, 2, 1, 8),
+    timeoutMilliseconds: parseInteger(args.timeout_seconds, 0, 0, 900) * 1000 || undefined,
+    assertActive: () => assertTaskActive(runId),
+    dimension: normalizeDimension(args.dimension || bot?.game?.dimension),
+    cache: navigationCache,
+    emit
   })
 }
 
@@ -827,6 +877,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.1' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.2' })
   reconcileSession()
 })

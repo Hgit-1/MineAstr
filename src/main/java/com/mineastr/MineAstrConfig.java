@@ -225,6 +225,36 @@ public final class MineAstrConfig {
                     "AstrBot 可额外启用分级审批；服务端禁区、预算和紧急停止始终生效。")
             .define("agentFullAutonomy", true);
 
+    public static final ModConfigSpec.BooleanValue AGENT_NAVIGATION_ALLOW_DIGGING = BUILDER
+            .comment(
+                    "是否允许 Agent 在明确的寻路任务中挖掘挡路方块。默认关闭。",
+                    "启用后仍会避开容器、液体相邻方块、坠落方块、禁区和不可破坏方块，并按当前最佳工具耗时计入成本。")
+            .define("agentNavigationAllowDigging", false);
+
+    public static final ModConfigSpec.BooleanValue AGENT_NAVIGATION_ALLOW_PLACING = BUILDER
+            .comment(
+                    "是否允许 Agent 在明确的寻路任务中消耗背包方块搭路或垫高。默认关闭。",
+                    "只有 Mineflayer 能可靠识别背包物品时才会实际规划放置；Mod 数据降级状态下不会假定存在材料。")
+            .define("agentNavigationAllowPlacing", false);
+
+    public static final ModConfigSpec.IntValue AGENT_NAVIGATION_DIG_COST = BUILDER
+            .comment("寻路中挖掘的基础成本倍率；实际成本还会按最佳可用工具和方块挖掘时间增加。")
+            .defineInRange("agentNavigationDigCost", 12, 1, 99);
+
+    public static final ModConfigSpec.IntValue AGENT_NAVIGATION_PLACE_COST = BUILDER
+            .comment("寻路中放置一个方块的成本；值越高越倾向绕路并节省材料。")
+            .defineInRange("agentNavigationPlaceCost", 18, 1, 99);
+
+    public static final ModConfigSpec.IntValue AGENT_NAVIGATION_LIQUID_COST = BUILDER
+            .comment("经过可通行液体的额外寻路成本；危险液体仍会直接避开。")
+            .defineInRange("agentNavigationLiquidCost", 8, 1, 99);
+
+    public static final ModConfigSpec.IntValue AGENT_NAVIGATION_CACHE_MAX_CHUNKS = BUILDER
+            .comment(
+                    "Agent 长距离寻路的持久化压缩区块缓存上限。每方块只保存 2-bit 可通行分类，不保存 NBT、容器或玩家数据。",
+                    "超过上限时按最旧更新时间删除；缓存位于世界 data/mineastr/agent/navigation-cache。")
+            .defineInRange("agentNavigationCacheMaxChunks", 2048, 64, 16384);
+
     public static final ModConfigSpec.BooleanValue AGENT_NEOFORGE_COMPATIBILITY = BUILDER
             .comment(
                     "是否允许同机 Mineflayer Bot 使用 MineAstr 限定的 NeoForge 协议兼容层。默认开启。",

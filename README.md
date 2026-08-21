@@ -244,6 +244,12 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 当前内置动作包括聊天、连续下蹲示好、移动到坐标/路径点、短时跟随玩家、看向坐标、交互方块、使用背包物品、等待以及手动/自动进食。`agentFullAutonomy=true` 时 AstrBot 可在类型白名单内自主调用；任务仍受单任务互斥、可取消执行、生命保护、维度/坐标检查、服务端禁区和请求者审计约束。路径点和 `walk`/`rail` 连接保存在当前世界的 `data/mineastr/agent/waypoints.json`，不会进入公共 RAG。
 
+0.10.2 的坐标与路径点移动不再直接信任上游 `goto()` 的 Promise：长距离会先用已知区块生成粗粒度 A* 走廊，再拼接为约 24 格的局部路段；每段及最终目标都校验 Bot 实际位置，连续无进展或总预算超时会返回目标、当前位置和剩余距离，不再误报完成。路径预算会按距离在 2–15 分钟间调整。
+
+Agent 会把实际加载过的区块按每方块 2-bit 分类为空气、固体、水体或危险，并使用 deflate 持久化到 `world/data/mineastr/agent/navigation-cache/`。缓存不保存方块 ID、方块实体、NBT、容器、告示牌、玩家或聊天内容；索引只保留区块坐标、地表高度离散度和类别比例。默认最多 2048 个区块，超过后删除最旧项。方块变化会延迟刷新对应区块，缓存损坏或写入失败只会降级为直线分段，不会阻断 Agent。
+
+`agentNavigationAllowDigging` 与 `agentNavigationAllowPlacing` 默认均为 `false`。服主显式启用后，Mineflayer 会把挖掘、放置、液体和实体代价纳入 A*：挖掘成本还会结合当前背包中最佳工具、附魔、状态效果及方块实际挖掘时间；放置会检查可识别的脚手材料并按 `agentNavigationPlaceCost` 惩罚。NeoForge Mod 物品数据处于 `degraded_mod_data=true` 时不会假定存在材料，因此不会凭空规划放置。
+
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
 
 高信息量设备学习使用独立的 `enablePassiveSkillLearning` 开关，默认关闭。玩家可用 `/mineastr learning optout` 独立退出；该选择不影响活动地区统计。
