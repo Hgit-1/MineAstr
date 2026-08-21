@@ -625,6 +625,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '1.0.0' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.0' })
   connectBot()
 })
