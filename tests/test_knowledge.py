@@ -666,6 +666,59 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(manager.helper.upload_count, 0)
         self.assertEqual("kb-new", snapshot["rag"]["kb_id"])
 
+    async def test_native_rag_rebuilds_persisted_faiss_dimension_before_upload(self):
+        class Helper:
+            def __init__(self, kb_id, configured_dimension, persisted_dimension):
+                self.kb = types.SimpleNamespace(
+                    kb_id=kb_id, embedding_provider_id="embedding-provider"
+                )
+                self.vec_db = types.SimpleNamespace(
+                    embedding_storage=types.SimpleNamespace(
+                        dimension=configured_dimension,
+                        index=types.SimpleNamespace(d=persisted_dimension),
+                    )
+                )
+                self.upload_count = 0
+
+            async def list_documents(self, offset=0, limit=10000):
+                return []
+
+            async def upload_document(self, **_kwargs):
+                self.upload_count += 1
+                return True
+
+            async def delete_document(self, _doc_id):
+                return None
+
+        class Manager:
+            def __init__(self):
+                self.helper = Helper("kb-stale", 3072, 1024)
+                self.deleted = []
+                self.create_count = 0
+
+            async def get_kb_by_name(self, _name):
+                return self.helper
+
+            async def create_kb(self, **_kwargs):
+                self.create_count += 1
+                self.helper = Helper("kb-fresh", 3072, 3072)
+                return self.helper
+
+            async def delete_kb(self, kb_id):
+                self.deleted.append(kb_id)
+
+        manager = Manager()
+        self.coordinator.context.kb_manager = manager
+        adapter = types.SimpleNamespace(knowledge_embedding_provider_id="embedding-provider")
+        snapshot = self.coordinator._snapshots["server-a"]
+
+        await self.coordinator._ensure_rag(adapter, "server-a", snapshot)
+
+        self.assertEqual(["kb-stale"], manager.deleted)
+        self.assertEqual(1, manager.create_count)
+        self.assertGreater(manager.helper.upload_count, 0)
+        self.assertEqual("kb-fresh", snapshot["rag"]["kb_id"])
+
     async def test_legacy_adapter_instance_uses_generic_query_after_hot_upgrade(self):
         self.coordinator._snapshots = {}
 

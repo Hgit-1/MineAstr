@@ -1545,8 +1545,38 @@ class KnowledgeCoordinator:
         previous_rag = snapshot.get("rag") or {}
         kb_name = f"MineAstr-{_safe_name(server_id)}"[:100]
         helper = await kb_manager.get_kb_by_name(kb_name)
+
+        def has_stale_vector_dimension(active_helper: Any) -> bool:
+            """Detect AstrBot FAISS indexes whose persisted dimension is stale.
+
+            AstrBot keeps the provider dimension on ``EmbeddingStorage.dimension``
+            but loads an existing FAISS index without validating ``index.d``.  In
+            that situation uploads fail later with a generic storage error, which
+            hides the original dimension mismatch from plugin-level recovery.
+            """
+            vec_db = getattr(active_helper, "vec_db", None)
+            storage = getattr(vec_db, "embedding_storage", None)
+            configured = getattr(storage, "dimension", None)
+            persisted = getattr(getattr(storage, "index", None), "d", None)
+            return (
+                isinstance(configured, int)
+                and isinstance(persisted, int)
+                and configured > 0
+                and persisted > 0
+                and configured != persisted
+            )
+
         if helper is not None and str(helper.kb.embedding_provider_id or "") != provider_id:
             logger.info("MineAstr 知识库 %s 的 Embedding Provider 已变更，将重建专用库。", kb_name)
+            await kb_manager.delete_kb(helper.kb.kb_id)
+            helper = None
+            previous_rag = {}
+        if helper is not None and has_stale_vector_dimension(helper):
+            logger.warning(
+                "MineAstr 知识库 %s 的 FAISS 索引维度与当前 Embedding Provider 不一致，"
+                "将重建该专用库。",
+                kb_name,
+            )
             await kb_manager.delete_kb(helper.kb.kb_id)
             helper = None
             previous_rag = {}
