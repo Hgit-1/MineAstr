@@ -1,7 +1,7 @@
 name: astrbot_plugin_mineastr
 display_name: MineAstr Minecraft 群聊桥接
 desc: 将 Minecraft 聊天接入 AstrBot，并提供实时工具、服务器 Mod/配方扫描与原生 RAG 知识库。
-version: v0.10.1
+version: v0.10.2
 author: MineAstr
 repo: ""
 astrbot_version: ">=4.16,<5"

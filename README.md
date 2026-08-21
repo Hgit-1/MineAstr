@@ -21,7 +21,7 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 
 在模型支持工具调用时，AstrBot 还能主动查询实时服务器数据，并按需检索服务器实际安装的 Mod、物品、方块、标签和配方。Mod 功能说明可通过 Modrinth、官方 Wiki 和源码 README 补充到 AstrBot 原生 RAG 知识库。
 
-1.0 在原有知识来源、地区分类与 RAG 能力上，增加由服务端 Mod 托管的 AI 玩家 Agent 状态、观察、基础动作和路径点工具。
+0.10.2 在原有知识来源、地区分类与 RAG 能力上，增加由服务端 Mod 托管的 AI 玩家 Agent 状态、观察、基础动作、路径点和可验证的长距离分段寻路工具。
 
 ## 最简单配置
 
@@ -137,7 +137,7 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 | `mineastr_rescan_server_knowledge` | 管理员按 local/remote/rag/all 提交单实例重扫任务。 |
 | `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer 按需会话、唤醒原因、当前任务和渲染资源门槛。 |
 | `mineastr_observe_agent` | 查询 Bot 的生命、饥饿、位置、背包、视线、简单视场和附近实体。 |
-| `mineastr_submit_agent_task` | 提交并在需要时唤醒 Bot 执行聊天、连续下蹲、坐标/路径点移动、跟随、转向、方块交互、物品使用、等待或进食任务。 |
+| `mineastr_submit_agent_task` | 提交并在需要时唤醒 Bot 执行聊天、连续下蹲、可验证的分段坐标/路径点移动、跟随、转向、方块交互、物品使用、等待或进食任务。 |
 | `mineastr_cancel_agent_task` | 紧急取消当前任务；不要求管理员审批。 |
 | `mineastr_manage_agent_waypoint` | 列出或管理私有路径点及步行/轨道连接。 |
 
