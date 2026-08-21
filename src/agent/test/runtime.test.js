@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
+const net = require('node:net')
 const path = require('node:path')
 const test = require('node:test')
 
@@ -35,6 +36,45 @@ test('control server authenticates and reports disconnected bot safely', async (
     assert.ok(['connecting', 'disconnected', 'error'].includes(status.state))
   } finally {
     child.kill('SIGTERM')
+    await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(4000)])
+    if (!child.killed) child.kill('SIGKILL')
+  }
+})
+
+test('proxy protocol mode sends a v1 header before the Minecraft handshake', async () => {
+  let resolveHeader
+  const headerPromise = new Promise(resolve => { resolveHeader = resolve })
+  const server = net.createServer(socket => {
+    socket.once('data', data => {
+      resolveHeader(data.toString('latin1'))
+      socket.destroy()
+    })
+  })
+  await new Promise((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject))
+  const child = spawn(process.execPath, [path.resolve(__dirname, '..', 'index.js')], {
+    env: {
+      ...process.env,
+      MINEASTR_AGENT_TOKEN: 'proxy-test-token',
+      MINEASTR_AGENT_DATA_DIR: path.resolve(__dirname, '.tmp-proxy'),
+      MINEASTR_MC_HOST: '127.0.0.1',
+      MINEASTR_MC_PORT: String(server.address().port),
+      MINEASTR_AGENT_USERNAME: 'MineAstrProxy',
+      MINEASTR_AGENT_AUTH: 'offline',
+      MINEASTR_MC_VERSION: '1.21.1',
+      MINEASTR_PROXY_PROTOCOL: 'true'
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+  try {
+    await readyPort(child)
+    const firstWrite = await Promise.race([
+      headerPromise,
+      delay(5000).then(() => { throw new Error('proxy header timeout') })
+    ])
+    assert.match(firstWrite, /^PROXY TCP4 127\.0\.0\.1 127\.0\.0\.1 \d+ \d+\r\n/)
+  } finally {
+    child.kill('SIGTERM')
+    server.close()
     await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(4000)])
     if (!child.killed) child.kill('SIGKILL')
   }

@@ -189,6 +189,13 @@ public final class MineAstrConfig {
             .comment("Mineflayer 连接的 Minecraft 端口。")
             .defineInRange("agentServerPort", 25565, 1, 65535);
 
+    public static final ModConfigSpec.BooleanValue AGENT_PROXY_PROTOCOL = BUILDER
+            .comment(
+                    "Mineflayer 连接时是否先发送 HAProxy PROXY protocol v1 头。默认关闭。",
+                    "仅当服务端的 Proxy Protocol Mod/代理对 Agent 连接地址启用了该协议时打开，",
+                    "否则 Minecraft 会把该头当成无效握手。为避免伪造来源，MineAstr 只允许同机地址使用。")
+            .define("agentProxyProtocol", false);
+
     public static final ModConfigSpec.BooleanValue AGENT_FULL_AUTONOMY = BUILDER
             .comment(
                     "是否允许 Agent 在服务端安全边界内自主执行任务。默认开启。",

@@ -224,6 +224,8 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 `agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取实际必需频道及版本，交给受监管的 Mineflayer 进程完成逐项协商。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
+如果服务端安装了 Proxy Protocol Mod，并把 `127.0.0.1` 列为代理来源，同机 Agent 会在 Minecraft 握手前被要求发送 PROXY 头。此时设置 `agentProxyProtocol=true`；没有这类 Mod/代理时必须保持 `false`。MineAstr 只对同机 Agent 允许该选项，且状态工具会显示它是否生效。
+
 > [!CAUTION]
 > 兼容层会忽略 Mineflayer 无法解析的 Mod 自定义游戏数据，并跳过 Create 的自定义配方包（配方理解仍由 MineAstr 服务端知识快照/RAG 提供）。这可以保证本次实测组合上的登录、原版世界观察和基本动作，不等于完整 Create 客户端模拟。复杂机械结构的视觉与专用 GUI 操作仍需 with-mod 执行后端。
 

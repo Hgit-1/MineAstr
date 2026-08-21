@@ -2,6 +2,7 @@
 
 const fs = require('node:fs')
 const http = require('node:http')
+const net = require('node:net')
 const path = require('node:path')
 const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
@@ -16,6 +17,7 @@ const version = process.env.MINEASTR_MC_VERSION || false
 const auth = process.env.MINEASTR_AGENT_AUTH === 'microsoft' ? 'microsoft' : 'offline'
 const neoForgeQuery = decodeBase64(process.env.MINEASTR_NEOFORGE_QUERY_B64)
 const neoForgeComponentCount = parseInteger(process.env.MINEASTR_NEOFORGE_COMPONENT_COUNT, 0, 0, 100000)
+const useProxyProtocol = process.env.MINEASTR_PROXY_PROTOCOL === 'true'
 const forbiddenRegions = parseForbiddenRegions(process.env.MINEASTR_FORBIDDEN_REGIONS || '')
 const neoForgeCustomPackets = neoForgeQuery ? {
   '1.21': {
@@ -34,6 +36,9 @@ let reconnectTimer = null
 let stopping = false
 let connectionBlocked = false
 let connectedAt = 0
+let connectionStartedAt = 0
+let connectionAttempts = 0
+let lastDisconnectError = ''
 let eating = false
 let retreating = false
 let neoForgeNegotiated = false
@@ -113,15 +118,26 @@ function scheduleConnect() {
 function connectBot() {
   if (stopping || bot) return
   state = 'connecting'
-  lastError = ''
+  connectionStartedAt = Date.now()
+  connectionAttempts += 1
   neoForgeNegotiated = false
   try {
-    const created = mineflayer.createBot({
+    const options = {
       host, port, username, auth, version, hideErrors: true,
       customPackets: neoForgeCustomPackets,
       plugins: { craft: !neoForgeQuery }
-    })
+    }
+    if (useProxyProtocol) options.connect = connectWithProxyProtocol
+    const created = mineflayer.createBot(options)
     bot = created
+    const connectionTimeout = setTimeout(() => {
+      if (bot !== created || state !== 'connecting') return
+      lastError = `Minecraft 登录超时（协议状态 ${created._client?.state || 'unknown'}）`
+      lastDisconnectError = lastError
+      emit({ type: 'bot_connection_timeout', error: lastError })
+      try { created.quit('MineAstr login timeout') } catch (_) { created.end?.('MineAstr login timeout') }
+    }, 30_000)
+    connectionTimeout.unref()
     const recentProtocolFrames = []
     const recordFrame = frame => {
       if (!Buffer.isBuffer(frame)) return
@@ -147,8 +163,11 @@ function connectBot() {
       }
     })
     created.once('spawn', () => {
+      clearTimeout(connectionTimeout)
       state = 'online'
       connectedAt = Date.now()
+      lastError = ''
+      lastDisconnectError = ''
       try {
         created.pathfinder.setMovements(new Movements(created))
       } catch (error) {
@@ -166,6 +185,7 @@ function connectBot() {
     })
     created.on('kicked', reason => {
       lastError = safeError(reason)
+      lastDisconnectError = lastError
       if (/running NeoForge|install NeoForge|neoforge\.network\.negotiation/i.test(lastError)) {
         connectionBlocked = true
         state = 'incompatible_server'
@@ -179,10 +199,13 @@ function connectBot() {
     })
     created.on('error', error => {
       lastError = safeError(error)
+      lastDisconnectError = lastError
       emit({ type: 'bot_error', error: lastError, recent_protocol_frames: recentProtocolFrames })
     })
     created.once('end', reason => {
+      clearTimeout(connectionTimeout)
       bot = null
+      if (!lastDisconnectError) lastDisconnectError = safeError(reason)
       state = stopping ? 'stopped' : connectionBlocked ? 'incompatible_server' : 'disconnected'
       if (activeTask?.state === 'running') finishTask(activeTask.run_id, false, `连接中断：${safeError(reason)}`)
       if (!stopping) scheduleConnect()
@@ -193,6 +216,24 @@ function connectBot() {
     lastError = safeError(error)
     scheduleConnect()
   }
+}
+
+function connectWithProxyProtocol(client) {
+  const socket = net.connect(port, host)
+  socket.prependOnceListener('connect', () => {
+    const localAddress = normalizeProxyAddress(socket.localAddress)
+    const remoteAddress = normalizeProxyAddress(socket.remoteAddress)
+    const family = net.isIPv6(localAddress) || net.isIPv6(remoteAddress) ? 'TCP6' : 'TCP4'
+    const header = `PROXY ${family} ${localAddress} ${remoteAddress} ${socket.localPort} ${socket.remotePort}\r\n`
+    socket.write(header)
+    emit({ type: 'proxy_protocol_sent', family })
+  })
+  client.setSocket(socket)
+}
+
+function normalizeProxyAddress(value) {
+  const address = String(value || '127.0.0.1')
+  return address.startsWith('::ffff:') ? address.slice(7) : address
 }
 
 function handleNeoForgePayload(clientBot, packet) {
@@ -217,6 +258,10 @@ function status() {
     username: bot?.username || username,
     version: bot?.version || version || null,
     connected_at_ms: connectedAt || null,
+    connection_started_at_ms: connectionStartedAt || null,
+    connection_attempts: connectionAttempts,
+    protocol_state: bot?._client?.state || null,
+    last_disconnect_error: lastDisconnectError || null,
     health: numberOrNull(bot?.health),
     food: numberOrNull(bot?.food),
     position: entity ? vectorJson(entity.position) : null,
@@ -229,7 +274,8 @@ function status() {
       negotiated: neoForgeNegotiated,
       component_count: neoForgeComponentCount,
       degraded_mod_data: neoForgeNegotiated
-    }
+    },
+    proxy_protocol: useProxyProtocol
   }
 }
 

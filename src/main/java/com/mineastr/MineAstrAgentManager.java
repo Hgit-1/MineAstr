@@ -137,6 +137,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
             environment.put("MINEASTR_AGENT_USERNAME", MineAstrConfig.AGENT_USERNAME.get());
             environment.put("MINEASTR_AGENT_AUTH", MineAstrConfig.AGENT_ACCOUNT_MODE.get().toLowerCase(Locale.ROOT));
             environment.put("MINEASTR_FORBIDDEN_REGIONS", String.join("\n", MineAstrConfig.AGENT_FORBIDDEN_REGIONS.get()));
+            if (MineAstrConfig.AGENT_PROXY_PROTOCOL.getAsBoolean()
+                    && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get())) {
+                environment.put("MINEASTR_PROXY_PROTOCOL", "true");
+            }
             if (MineAstrConfig.AGENT_NEOFORGE_COMPATIBILITY.getAsBoolean()
                     && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get())) {
                 NeoForgeManifest manifest = buildNeoForgeManifest();
@@ -331,6 +335,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("restart_count", restartCount.get());
         result.addProperty("neoforge_compatibility_enabled", MineAstrConfig.AGENT_NEOFORGE_COMPATIBILITY.getAsBoolean());
         result.addProperty("neoforge_manifest_components", neoForgeComponentCount);
+        result.addProperty("proxy_protocol_enabled", MineAstrConfig.AGENT_PROXY_PROTOCOL.getAsBoolean()
+                && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get()));
         Process current = process;
         if (current != null) result.addProperty("pid", current.pid());
         if (!lastError.isBlank()) result.addProperty("last_error", lastError);
