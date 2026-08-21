@@ -179,6 +179,25 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         second = json.dumps(self.coordinator._rag_documents(self.coordinator._snapshots["server-a"]), sort_keys=True)
         self.assertEqual(first, second)
 
+    def test_rag_documents_bound_prechunked_embedding_inputs(self):
+        snapshot = self.coordinator._snapshots["server-a"]
+        long_marker = "机械动力轨道-唯一尾部标记"
+        snapshot["categories"]["items"] = [
+            {
+                "id": f"example:item_{index}",
+                "namespace": "example",
+                "description": ("方块与配方说明" * 120) + (long_marker if index == 99 else ""),
+            }
+            for index in range(100)
+        ]
+
+        documents = self.coordinator._rag_documents(snapshot)
+        chunks = documents["registry:example:items:0"]
+
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= knowledge.RAG_EMBEDDING_CHUNK_CHARS for chunk in chunks))
+        self.assertIn(long_marker, "".join(chunks))
+
     def test_site_candidates_are_same_origin_and_drop_assets(self):
         candidates = []
         self.coordinator._add_same_origin_candidate(

@@ -22,6 +22,8 @@ KNOWLEDGE_CATEGORIES = ("mods", "items", "blocks", "entities", "fluids", "recipe
 MODRINTH_API = "https://api.modrinth.com/v2"
 USER_AGENT = "MineAstr/0.10.0 (https://github.com/Hgit-1/MineAstr)"
 MAX_REMOTE_TEXT_BYTES = 512 * 1024
+RAG_EMBEDDING_CHUNK_CHARS = 6000
+RAG_EMBEDDING_CHUNK_OVERLAP_CHARS = 200
 MAX_SITE_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_SITE_PAGES = 12
 REMOTE_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -1758,7 +1760,45 @@ class KnowledgeCoordinator:
                     "隐私说明: 未保存玩家 UUID、逐点轨迹或精确地区边界。",
                 ])
             ]
-        return documents
+        return {
+            stable_key: [
+                piece
+                for chunk in chunks
+                for piece in KnowledgeCoordinator._split_rag_text(chunk)
+            ]
+            for stable_key, chunks in documents.items()
+        }
+
+    @staticmethod
+    def _split_rag_text(value: Any) -> list[str]:
+        """Bound every pre-chunked embedding input below provider token limits.
+
+        AstrBot treats ``pre_chunked_text`` as final chunks. Registry pages and
+        remote documentation can therefore exceed an embedding provider's
+        per-input token limit even though the knowledge base has a chunk size.
+        A conservative character cap is safe for CJK and JSON-heavy content.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return []
+        if len(text) <= RAG_EMBEDDING_CHUNK_CHARS:
+            return [text]
+        pieces: list[str] = []
+        start = 0
+        while start < len(text):
+            hard_end = min(len(text), start + RAG_EMBEDDING_CHUNK_CHARS)
+            end = hard_end
+            if hard_end < len(text):
+                boundary = text.rfind("\n", start + RAG_EMBEDDING_CHUNK_CHARS // 2, hard_end)
+                if boundary > start:
+                    end = boundary + 1
+            piece = text[start:end].strip()
+            if piece:
+                pieces.append(piece)
+            if end >= len(text):
+                break
+            start = max(start + 1, end - RAG_EMBEDDING_CHUNK_OVERLAP_CHARS)
+        return pieces
 
     @staticmethod
     def _stable_rag_value(value: Any) -> Any:
