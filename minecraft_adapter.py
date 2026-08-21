@@ -35,6 +35,19 @@ MINECRAFT_LEADING_MENTION_RE = re.compile(r"^\s*@(?P<target>[^\s@]+)(?P<body>(?:
 DEFAULT_MENTION_ALIASES = "AstrBot,Aria,astrbot"
 MAX_SENDER_NAME_LENGTH = 64
 RUNTIME_STATE_MODULE = "_mineastr_astrbot_runtime_state"
+PLUGIN_OPERATIONAL_CONFIG_KEYS = (
+    "knowledge_sync_enabled",
+    "knowledge_embedding_provider_id",
+    "modrinth_enrichment_enabled",
+    "server_site_sync_enabled",
+    "server_site_allowed_paths",
+    "server_site_excluded_paths",
+    "activity_region_sync_enabled",
+    "knowledge_chat_provider_id",
+    "agent_actions_enabled",
+    "agent_require_admin_approval",
+    "agent_observation_distance",
+)
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
     "port": 8765,
@@ -227,13 +240,36 @@ def _config_value(config: dict[str, Any], key: str) -> Any:
     return config.get(key, DEFAULT_CONFIG[key])
 
 
-def _runtime_connection_managers() -> dict[tuple[str, int, str], Any]:
-    """Keep live WebSocket state across AstrBot's in-process module reloads."""
+def _runtime_state() -> types.ModuleType:
     state = sys.modules.get(RUNTIME_STATE_MODULE)
     if state is None:
         state = types.ModuleType(RUNTIME_STATE_MODULE)
         state.connection_managers = {}
         sys.modules[RUNTIME_STATE_MODULE] = state
+    return state
+
+
+def configure_plugin_operational_settings(config: Any) -> None:
+    """Publish plugin-level switches for adapters created later by AstrBot."""
+    selected: dict[str, Any] = {}
+    if config:
+        for key in PLUGIN_OPERATIONAL_CONFIG_KEYS:
+            try:
+                if key in config:
+                    selected[key] = config[key]
+            except (KeyError, TypeError):
+                continue
+    _runtime_state().plugin_operational_config = selected
+
+
+def _runtime_plugin_operational_settings() -> dict[str, Any]:
+    configured = getattr(_runtime_state(), "plugin_operational_config", None)
+    return dict(configured) if isinstance(configured, dict) else {}
+
+
+def _runtime_connection_managers() -> dict[tuple[str, int, str], Any]:
+    """Keep live WebSocket state across AstrBot's in-process module reloads."""
+    state = _runtime_state()
     managers = getattr(state, "connection_managers", None)
     if not isinstance(managers, dict):
         managers = {}
@@ -607,7 +643,11 @@ class MinecraftPlatformAdapter(Platform):
             super().__init__(platform_config or {}, event_queue)
         except TypeError:
             super().__init__(event_queue)
-        self.config = {**DEFAULT_CONFIG, **(platform_config or {})}
+        self.config = {
+            **DEFAULT_CONFIG,
+            **(platform_config or {}),
+            **_runtime_plugin_operational_settings(),
+        }
         self.settings = platform_settings or {}
         self.host = str(_config_value(self.config, "host"))
         self.port = int(_config_value(self.config, "port"))

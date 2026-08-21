@@ -60,13 +60,33 @@ MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
     "0.10.0",
 )
 class MineAstrPlugin(Star):
-    def __init__(self, context: Context):
+    _ADAPTER_PLUGIN_CONFIG_KEYS = (
+        "knowledge_sync_enabled",
+        "knowledge_embedding_provider_id",
+        "modrinth_enrichment_enabled",
+        "server_site_sync_enabled",
+        "server_site_allowed_paths",
+        "server_site_excluded_paths",
+        "activity_region_sync_enabled",
+        "knowledge_chat_provider_id",
+        "agent_actions_enabled",
+        "agent_require_admin_approval",
+        "agent_observation_distance",
+    )
+
+    def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
+        self._config = config or {}
         self._screenshot_last_request_at: dict[tuple[str, str, str], float] = {}
         from .knowledge import KnowledgeCoordinator
 
         self._knowledge = KnowledgeCoordinator(context)
-        from .minecraft_adapter import MinecraftPlatformAdapter  # noqa: F401
+        from .minecraft_adapter import (  # noqa: F401
+            MinecraftPlatformAdapter,
+            configure_plugin_operational_settings,
+        )
+
+        configure_plugin_operational_settings(self._config)
 
     async def initialize(self):
         names = sorted(name for name in dir(self) if name.startswith("mineastr_") and name != "mineastr_on_llm_request")
@@ -174,7 +194,31 @@ class MineAstrPlugin(Star):
             or not hasattr(adapter, "request_screenshot")
         ):
             return None
+        self._apply_plugin_adapter_config(adapter)
         return adapter
+
+    def _apply_plugin_adapter_config(self, adapter: Any) -> None:
+        """Apply the plugin configuration to adapter-owned knowledge/Agent switches.
+
+        AstrBot stores custom platform connection settings separately from a plugin's
+        `_conf_schema.json` values.  MineAstr exposes these operational switches in
+        the plugin configuration, so they must be copied to the live adapter before
+        knowledge synchronization or tool execution.
+        """
+        config = getattr(self, "_config", None)
+        if not config:
+            return
+        adapter_config = getattr(adapter, "config", None)
+        for key in self._ADAPTER_PLUGIN_CONFIG_KEYS:
+            try:
+                if key not in config:
+                    continue
+                value = config[key]
+            except (KeyError, TypeError):
+                continue
+            setattr(adapter, key, value)
+            if isinstance(adapter_config, dict):
+                adapter_config[key] = value
 
     async def _ensure_knowledge_snapshot(self, server_id: str | None) -> None:
         adapter = self._minecraft_adapter()

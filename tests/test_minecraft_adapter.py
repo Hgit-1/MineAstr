@@ -129,6 +129,18 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         self.events = []
         self.adapter.commit_event = self.events.append
 
+    def test_plugin_operational_config_reaches_adapter_created_later(self):
+        ADAPTER.configure_plugin_operational_settings({
+            "knowledge_embedding_provider_id": "embedding-provider",
+            "agent_require_admin_approval": True,
+        })
+        try:
+            adapter = ADAPTER.MinecraftPlatformAdapter({}, {}, None)
+            self.assertEqual("embedding-provider", adapter.knowledge_embedding_provider_id)
+            self.assertTrue(adapter.agent_require_admin_approval)
+        finally:
+            ADAPTER.configure_plugin_operational_settings({})
+
     async def test_server_event_uses_server_identity_and_skips_region_chat(self):
         payload = {
             "type": "chat",

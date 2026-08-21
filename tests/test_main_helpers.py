@@ -53,6 +53,34 @@ MAIN = _load_main_module()
 
 
 class MainHelperTests(unittest.IsolatedAsyncioTestCase):
+    def test_plugin_config_is_applied_to_live_adapter(self):
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._config = {
+            "knowledge_embedding_provider_id": "embedding-provider",
+            "knowledge_sync_enabled": True,
+            "agent_require_admin_approval": True,
+        }
+        adapter = types.SimpleNamespace(config={})
+
+        plugin._apply_plugin_adapter_config(adapter)
+
+        self.assertEqual("embedding-provider", adapter.knowledge_embedding_provider_id)
+        self.assertTrue(adapter.knowledge_sync_enabled)
+        self.assertTrue(adapter.agent_require_admin_approval)
+        self.assertEqual("embedding-provider", adapter.config["knowledge_embedding_provider_id"])
+
+    def test_missing_plugin_config_preserves_platform_values(self):
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._config = {}
+        adapter = types.SimpleNamespace(
+            config={"knowledge_embedding_provider_id": "platform-provider"},
+            knowledge_embedding_provider_id="platform-provider",
+        )
+
+        plugin._apply_plugin_adapter_config(adapter)
+
+        self.assertEqual("platform-provider", adapter.knowledge_embedding_provider_id)
+
     def test_only_active_request_tools_are_reported(self):
         tool_set = types.SimpleNamespace(tools=[
             types.SimpleNamespace(name="mineastr_get_recipes", active=True),
