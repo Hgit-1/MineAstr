@@ -154,6 +154,80 @@ public final class MineAstrConfig {
             .comment("单个区块进入地区聚类所需的最少累计活动分钟数。")
             .defineInRange("minimumRegionChunkMinutes", 2, 1, 1440);
 
+    public static final ModConfigSpec.BooleanValue ENABLE_AGENT = BUILDER
+            .comment(
+                    "是否由 MineAstr 服务端 Mod 启动内置 Mineflayer Agent。默认关闭，配置账号后再启用。",
+                    "Agent 使用独立 Node 子进程；缺少兼容 Node 时会安全禁用，不影响其他功能。")
+            .define("enableAgent", false);
+
+    public static final ModConfigSpec.ConfigValue<String> AGENT_NODE_EXECUTABLE = BUILDER
+            .comment("Node 可执行文件路径；留空或 node 表示从 PATH 查找。要求 Node.js 22 或更高版本。")
+            .define("agentNodeExecutable", "node", MineAstrConfig::isNonBlankString);
+
+    public static final ModConfigSpec.BooleanValue AGENT_AUTO_DOWNLOAD_NODE = BUILDER
+            .comment(
+                    "找不到兼容 Node 时是否下载 MineAstr 固定版本并校验 SHA-256。默认关闭。",
+                    "自动下载只支持已列入 MineAstr 校验表的平台，不执行未知文件。")
+            .define("agentAutoDownloadNode", false);
+
+    public static final ModConfigSpec.ConfigValue<String> AGENT_ACCOUNT_MODE = BUILDER
+            .comment("Bot 登录模式：offline 或 microsoft。离线模式存在身份冒用风险。")
+            .define("agentAccountMode", "offline", value -> value instanceof String text
+                    && ("offline".equalsIgnoreCase(text) || "microsoft".equalsIgnoreCase(text)));
+
+    public static final ModConfigSpec.ConfigValue<String> AGENT_USERNAME = BUILDER
+            .comment("Agent 专用玩家名；建议加入白名单，不要与真人账号共用。")
+            .define("agentUsername", "MineAstrBot", value -> value instanceof String text
+                    && text.matches("[A-Za-z0-9_]{3,16}"));
+
+    public static final ModConfigSpec.ConfigValue<String> AGENT_SERVER_HOST = BUILDER
+            .comment("Mineflayer 连接地址。服务端同机运行时保持 127.0.0.1。")
+            .define("agentServerHost", "127.0.0.1", value -> value instanceof String text
+                    && !text.isBlank() && text.length() <= 253 && text.indexOf('\n') < 0);
+
+    public static final ModConfigSpec.IntValue AGENT_SERVER_PORT = BUILDER
+            .comment("Mineflayer 连接的 Minecraft 端口。")
+            .defineInRange("agentServerPort", 25565, 1, 65535);
+
+    public static final ModConfigSpec.BooleanValue AGENT_FULL_AUTONOMY = BUILDER
+            .comment(
+                    "是否允许 Agent 在服务端安全边界内自主执行任务。默认开启。",
+                    "AstrBot 可额外启用分级审批；服务端禁区、预算和紧急停止始终生效。")
+            .define("agentFullAutonomy", true);
+
+    public static final ModConfigSpec.BooleanValue AGENT_NEOFORGE_COMPATIBILITY = BUILDER
+            .comment(
+                    "是否允许同机 Mineflayer Bot 使用 MineAstr 限定的 NeoForge 协议兼容层。默认开启。",
+                    "它只向 127.0.0.1/localhost/::1 上的 Bot 提供本服务器必需频道清单，不关闭 NeoForge 的全局校验。",
+                    "Bot 会忽略无法解析的 Mod 自定义数据，因此兼容模式下仍应通过观察结果确认任务。")
+            .define("agentNeoForgeCompatibility", true);
+
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> AGENT_FORBIDDEN_REGIONS = BUILDER
+            .comment("Agent 禁止进入或改变的区域，格式 dimension,minX,minY,minZ,maxX,maxY,maxZ。")
+            .defineListAllowEmpty("agentForbiddenRegions", List.of(), MineAstrConfig::isNonBlankString);
+
+    public static final ModConfigSpec.ConfigValue<String> AGENT_CLIENT_INSTANCE_PATH = BUILDER
+            .comment("独立、客户端可用的 NeoForge 实例目录；留空表示禁用临时 with-mod 渲染。")
+            .define("agentClientInstancePath", "", value -> value instanceof String text && text.length() <= 1024);
+
+    public static final ModConfigSpec.IntValue AGENT_RENDERER_MIN_FREE_MEMORY_MB = BUILDER
+            .comment("启动临时模组客户端前要求的最小可用内存，默认 3072MB。")
+            .defineInRange("agentRendererMinFreeMemoryMb", 3072, 1024, 65536);
+
+    public static final ModConfigSpec.IntValue AGENT_RENDERER_MAX_MINUTES = BUILDER
+            .comment("单次模组客户端观察会话最长分钟数。")
+            .defineInRange("agentRendererMaxMinutes", 10, 1, 120);
+
+    public static final ModConfigSpec.BooleanValue ENABLE_PASSIVE_SKILL_LEARNING = BUILDER
+            .comment(
+                    "是否观察全服高信息量 Mod 设备交互以形成候选技能。默认关闭。",
+                    "启用前应更新告知；普通行走和挖矿不会进入技能学习。")
+            .define("enablePassiveSkillLearning", false);
+
+    public static final ModConfigSpec.ConfigValue<String> SKILL_SANDBOX_REGION = BUILDER
+            .comment("候选技能验证沙盒，格式 dimension,minX,minY,minZ,maxX,maxY,maxZ；留空时禁止自动发布技能。")
+            .define("skillSandboxRegion", "", value -> value instanceof String text && text.length() <= 256);
+
     public static final ModConfigSpec.BooleanValue ENABLE_PRIVACY_NOTICE = BUILDER
             .comment(
                     "是否在玩家首次加入以及告知版本变化时显示简要数据告知。",
@@ -166,12 +240,12 @@ public final class MineAstrConfig {
                     "支持 {server_name} 和 {retention_days} 占位符。")
             .define(
                     "privacyNoticeText",
-                    "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。",
+                    "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块与建筑特征；服务器还可运行 AI 玩家 Bot，并在服主显式启用后观察高信息量设备交互及非 NBT 的容器差量以学习设备用法。普通聊天和公开服务器事件也可转发给 AstrBot。不保存完整容器快照、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 与 /mineastr learning optout 可分别退出。",
                     value -> value instanceof String text && text.length() <= 2000);
 
     public static final ModConfigSpec.ConfigValue<String> PRIVACY_NOTICE_VERSION = BUILDER
             .comment("简要告知版本。修改后，所有玩家下次加入时会重新看到告知。")
-            .define("privacyNoticeVersion", "3", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
+            .define("privacyNoticeVersion", "4", value -> value instanceof String text && !text.isBlank() && text.length() <= 64);
 
     public static final ModConfigSpec.BooleanValue ENABLE_COMMAND_TOOL = BUILDER
             .comment(
@@ -220,9 +294,17 @@ public final class MineAstrConfig {
         String oldText = "本服使用 MineAstr 按区块统计活动并由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。";
         if ("2".equals(PRIVACY_NOTICE_VERSION.get()) && oldText.equals(PRIVACY_NOTICE_TEXT.get())) {
             PRIVACY_NOTICE_TEXT.set(PRIVACY_NOTICE_TEXT.getDefault());
-            PRIVACY_NOTICE_VERSION.set("3");
+            PRIVACY_NOTICE_VERSION.set("4");
             SPEC.save();
-            MineAstr.LOGGER.info("MineAstr 已将未修改的默认数据告知升级为版本 3。");
+            MineAstr.LOGGER.info("MineAstr 已将未修改的默认数据告知升级为版本 4。");
+            return;
+        }
+        String version3Text = "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。";
+        if ("3".equals(PRIVACY_NOTICE_VERSION.get()) && version3Text.equals(PRIVACY_NOTICE_TEXT.get())) {
+            PRIVACY_NOTICE_TEXT.set(PRIVACY_NOTICE_TEXT.getDefault());
+            PRIVACY_NOTICE_VERSION.set("4");
+            SPEC.save();
+            MineAstr.LOGGER.info("MineAstr 已将未修改的默认数据告知升级为版本 4。");
         }
     }
 

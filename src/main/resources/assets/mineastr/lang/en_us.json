@@ -8,7 +8,7 @@
   "commands.mineastr.reconnect": "MineAstr reconnect requested.",
   "commands.mineastr.reconnect.unavailable": "MineAstr is not started or is disabled. Enable the local-world bridge when playing single-player.",
   "screen.mineastr.screenshot.title": "MineAstr Screenshot Request",
-  "screen.mineastr.screenshot.message": "AstrBot wants to view your current game screen to answer a question.\nReason: %s\nThe screenshot is compressed locally into a low-resolution JPEG and is not saved to your local screenshots folder.",
+  "screen.mineastr.screenshot.message": "AstrBot wants to view your current game screen to answer a question.\nReason: %s\nThe screenshot is compressed locally and limited by your quality settings; it is not saved to your local screenshots folder.",
   "screen.mineastr.screenshot.allow": "Send Once",
   "screen.mineastr.screenshot.deny": "Do Not Send",
   "screen.mineastr.screenshot.privacy_badge": "Privacy confirmation · Local compression · No screenshot file",

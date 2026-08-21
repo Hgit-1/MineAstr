@@ -72,8 +72,39 @@ minimumRegionChunkMinutes = 2
 
 # 可配置的首次加入简要告知。服务器提供者负责确认其满足实际适用规则。
 enablePrivacyNotice = true
-privacyNoticeText = "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
-privacyNoticeVersion = "3"
+privacyNoticeText = "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块与建筑特征；服务器还可运行 AI 玩家 Bot，并在服主显式启用后观察高信息量设备交互及非 NBT 的容器差量以学习设备用法。普通聊天和公开服务器事件也可转发给 AstrBot。不保存完整容器快照、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 与 /mineastr learning optout 可分别退出。"
+privacyNoticeVersion = "4"
+
+# 服务端托管的 AI 玩家 Agent。首次部署建议先保持 false，通过 /mineastr agent status 检查环境。
+enableAgent = false
+
+# 要求 Node.js 22+。默认从 PATH 查找；也可以填写绝对路径。
+agentNodeExecutable = "node"
+
+# 缺少 Node 时是否下载固定且经过 SHA-256 校验的版本；默认不联网下载。
+agentAutoDownloadNode = false
+
+# offline 或 microsoft。离线身份必须配合白名单并注意同名冒用风险。
+agentAccountMode = "offline"
+agentUsername = "MineAstrBot"
+agentServerHost = "127.0.0.1"
+agentServerPort = 25565
+
+# 默认允许 AstrBot 在服务端限制内自主下达任务；设为 false 后要求管理员审批标记。
+agentFullAutonomy = true
+
+# 同机 Bot 的 NeoForge 限定兼容层；不会关闭服务器全局网络校验。非同机地址不会启用。
+agentNeoForgeCompatibility = true
+agentForbiddenRegions = []
+
+# 独立客户端实例和严格资源熔断；留空时不启用 with-mod 临时渲染。
+agentClientInstancePath = ""
+agentRendererMinFreeMemoryMb = 3072
+agentRendererMaxMinutes = 10
+
+# 高信息量 Mod 设备交互学习默认关闭；启用前更新告知并配置验证沙盒。
+enablePassiveSkillLearning = false
+skillSandboxRegion = ""
 
 # 高风险：是否允许受控 LLM 服务器命令。默认必须保持 false，按需显式开启。
 enableCommandTool = false

@@ -66,6 +66,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     private final ConcurrentMap<UUID, String> pendingScreenshotByPlayer = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ScreenshotAssembly> screenshotAssemblies = new ConcurrentHashMap<>();
     private final MineAstrKnowledgeSnapshot knowledgeSnapshot = new MineAstrKnowledgeSnapshot();
+    private final MineAstrAgentManager agentManager = new MineAstrAgentManager();
 
     private volatile MineAstrActivityData activityData;
     private volatile long nextActivitySampleMs;
@@ -89,6 +90,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         }
         knowledgeSnapshot.refresh(server);
         MineAstrConfig.migrateDefaultPrivacyNotice();
+        agentManager.start(server);
         activityData = MineAstrActivityData.get(server);
         nextActivitySampleMs = 0;
         nextEnvironmentSampleMs = 0;
@@ -105,6 +107,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         cancelReconnect();
         clearScreenshotState("Minecraft 服务器正在停止。");
         knowledgeSnapshot.close();
+        agentManager.close();
         activityData = null;
         WebSocket socket = webSocket.getAndSet(null);
         if (socket != null) {
@@ -329,6 +332,16 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if (data != null) data.setOptedOut(playerUuid, optedOut);
     }
 
+    public boolean isLearningOptedOut(UUID playerUuid) {
+        MineAstrActivityData data = activityData;
+        return data != null && data.isLearningOptedOut(playerUuid);
+    }
+
+    public void setLearningOptedOut(UUID playerUuid, boolean optedOut) {
+        MineAstrActivityData data = activityData;
+        if (data != null) data.setLearningOptedOut(playerUuid, optedOut);
+    }
+
     private void connectNow() {
         if (server == null || stopping || !MineAstrConfig.ENABLED.getAsBoolean() || isConnected() || !connecting.compareAndSet(false, true)) {
             return;
@@ -379,6 +392,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
         JsonObject payload = new JsonObject();
         payload.addProperty("type", "hello");
         payload.addProperty("protocol", PROTOCOL_VERSION);
+        payload.addProperty("protocol_min", 1);
+        payload.addProperty("protocol_max", 2);
         payload.addProperty("server_id", MineAstrConfig.SERVER_ID.get());
         payload.addProperty("server_name", MineAstrConfig.SERVER_NAME.get());
         payload.addProperty("mod_version", MineAstr.MOD_VERSION);
@@ -396,6 +411,14 @@ public final class MineAstrBridge implements WebSocket.Listener {
         capabilities.add("command");
         capabilities.add("screenshot");
         capabilities.add("server_events");
+        capabilities.add("agent_status");
+        if (MineAstrConfig.ENABLE_AGENT.getAsBoolean()) {
+            capabilities.add("agent_task");
+            capabilities.add("agent_cancel");
+            capabilities.add("agent_observe");
+            capabilities.add("agent_waypoints");
+            capabilities.add("transport_graph");
+        }
         if (MineAstrConfig.ENABLE_KNOWLEDGE_SCAN.getAsBoolean()) {
             capabilities.add("knowledge_manifest");
             capabilities.add("knowledge_page");
@@ -564,6 +587,11 @@ public final class MineAstrBridge implements WebSocket.Listener {
                     case "knowledge_rescan" -> handleKnowledgeRescanQuery(socket, messageId, payload, currentServer);
                     case "activity_regions_manifest" -> handleActivityRegionsManifest(socket, messageId);
                     case "activity_regions_page" -> handleActivityRegionsPage(socket, messageId, payload);
+                    case "agent_status" -> handleAgentQuery(socket, messageId, query, "/status", payload, Duration.ofSeconds(5));
+                    case "agent_task" -> handleAgentQuery(socket, messageId, query, "/task", payload, Duration.ofSeconds(10));
+                    case "agent_cancel" -> handleAgentQuery(socket, messageId, query, "/cancel", payload, Duration.ofSeconds(5));
+                    case "agent_observe" -> handleAgentQuery(socket, messageId, query, "/observe", payload, Duration.ofSeconds(10));
+                    case "agent_waypoints", "transport_graph" -> handleAgentQuery(socket, messageId, query, "/waypoints", payload, Duration.ofSeconds(10));
                     default -> sendQueryError(socket, messageId, query, "不支持的查询类型：" + query);
                 }
             } catch (RuntimeException exc) {
@@ -583,6 +611,52 @@ public final class MineAstrBridge implements WebSocket.Listener {
 
     public String rescanKnowledge(MinecraftServer currentServer) {
         return knowledgeSnapshot.refresh(currentServer);
+    }
+
+    public JsonObject agentStatus() {
+        return agentManager.status();
+    }
+
+    private void handleAgentQuery(
+            WebSocket socket,
+            String messageId,
+            String query,
+            String endpoint,
+            JsonObject payload,
+            Duration timeout) {
+        if ("agent_status".equals(query)) {
+            JsonObject local = agentManager.status();
+            if (!local.has("control_ready") || !local.get("control_ready").getAsBoolean()) {
+                sendQueryResult(socket, messageId, query, local);
+                return;
+            }
+            agentManager.request("/status", new JsonObject(), timeout).whenComplete((runtime, throwable) -> {
+                if (throwable != null) {
+                    Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
+                    local.addProperty("runtime_error", safeErrorMessage(cause));
+                } else {
+                    local.add("agent", runtime);
+                }
+                sendQueryResult(socket, messageId, query, local);
+            });
+            return;
+        } else if (!MineAstrConfig.ENABLE_AGENT.getAsBoolean()) {
+            sendQueryError(socket, messageId, query, "服务端 Agent 已禁用；请由服主设置 enableAgent=true。" );
+            return;
+        }
+        JsonObject body = payload.deepCopy();
+        body.remove("type");
+        body.remove("query");
+        body.remove("message_id");
+        body.remove("time_ms");
+        agentManager.request(endpoint, body, timeout).whenComplete((result, throwable) -> {
+            if (throwable != null) {
+                Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
+                sendQueryError(socket, messageId, query, safeErrorMessage(cause));
+            } else {
+                sendQueryResult(socket, messageId, query, result);
+            }
+        });
     }
 
     private void handleKnowledgeRescanQuery(
@@ -816,9 +890,9 @@ public final class MineAstrBridge implements WebSocket.Listener {
         }
 
         String reason = trimContent(getString(payload, "reason", "AstrBot 请求查看当前 Minecraft 画面。"), MineAstrPayloads.MAX_REASON_LENGTH);
-        int maxWidth = getInt(payload, "max_width", 240, 64, 1024);
-        int maxHeight = getInt(payload, "max_height", 135, 36, 1024);
-        int maxBytes = getInt(payload, "max_bytes", 131072, 8192, 524288);
+        int maxWidth = getInt(payload, "max_width", 1280, 64, 3840);
+        int maxHeight = getInt(payload, "max_height", 720, 36, 2160);
+        int maxBytes = getInt(payload, "max_bytes", 1048576, 8192, 1572864);
         String format = getString(payload, "format", "jpeg");
         if (!"jpeg".equalsIgnoreCase(format) && !"jpg".equalsIgnoreCase(format)) {
             format = "jpeg";
@@ -856,6 +930,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         data.addProperty("player_count", playerList.getPlayerCount());
         data.addProperty("max_players", playerList.getMaxPlayers());
         data.addProperty("uptime_ms", Math.max(0L, System.currentTimeMillis() - startedAtMs));
+        data.add("agent", agentManager.status());
         BlockPos spawn = currentServer.overworld().getSharedSpawnPos();
         JsonObject spawnData = new JsonObject();
         spawnData.addProperty("dimension", Level.OVERWORLD.location().toString());

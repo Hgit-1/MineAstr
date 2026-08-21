@@ -155,8 +155,8 @@ minimumRegionChunkMinutes = 2
 
 # 首次加入简要告知。关闭或改写不会转移服务器提供者的责任。
 enablePrivacyNotice = true
-privacyNoticeText = "本服使用 MineAstr 按区块统计活动，并摘要采集玩家周边已加载方块的类型与建筑特征，由 AI 生成地区介绍；普通聊天以及玩家上下线、死亡和公开成就事件也可转发给 AstrBot。不读取容器内容、告示牌文字或完整建筑蓝图。原始活动最多保存 {retention_days} 天。使用 /mineastr privacy 查看详情，/mineastr tracking optout 可退出并删除可识别活动数据。"
-privacyNoticeVersion = "3"
+privacyNoticeText = "本服使用 MineAstr 统计活动与建筑特征；服务器还可运行 AI 玩家 Bot，并在服主显式启用后观察高信息量设备交互。普通聊天和公开事件也可转发给 AstrBot。不保存完整容器快照或完整建筑蓝图。使用 /mineastr privacy 查看详情，/mineastr tracking optout 与 /mineastr learning optout 可分别退出。"
+privacyNoticeVersion = "4"
 
 # 高风险命令工具默认关闭。
 enableCommandTool = false
@@ -181,16 +181,16 @@ localWorldServerEnabled = false
 screenshotMode = "ASK"
 
 # 发送给 AstrBot 的截图最大宽度。
-screenshotMaxWidth = 240
+screenshotMaxWidth = 1280
 
 # 发送给 AstrBot 的截图最大高度。
-screenshotMaxHeight = 135
+screenshotMaxHeight = 720
 
 # 截图 JPEG 质量，范围 0.10 到 0.95。
-screenshotJpegQuality = 0.35
+screenshotJpegQuality = 0.75
 
 # 单张截图编码后的最大字节数。
-screenshotMaxBytes = 131072
+screenshotMaxBytes = 1048576
 ```
 
 ## 跨机器部署
@@ -218,18 +218,42 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 - 不要删除 `=`，不要把中文说明文字写到 `=` 后面。
 - `websocketUrl` 的格式是 `ws://地址:端口/路径`，例如 `ws://127.0.0.1:8765/ws`。
 
+## 服务端托管 AI 玩家 Agent
+
+MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR，并由服务端 Mod 解压和监管独立 Node 子进程。Agent 控制端只监听 `127.0.0.1`，每次启动使用随机 Token；AstrBot 不会直接连接该内部端口。
+
+`agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取实际必需频道及版本，交给受监管的 Mineflayer 进程完成逐项协商。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
+
+> [!CAUTION]
+> 兼容层会忽略 Mineflayer 无法解析的 Mod 自定义游戏数据，并跳过 Create 的自定义配方包（配方理解仍由 MineAstr 服务端知识快照/RAG 提供）。这可以保证本次实测组合上的登录、原版世界观察和基本动作，不等于完整 Create 客户端模拟。复杂机械结构的视觉与专用 GUI 操作仍需 with-mod 执行后端。
+
+1. 在 Minecraft 服务端安装 Node.js 22 或更高版本。
+2. 为 Bot 准备专用白名单账号；离线服也应固定并保护 `agentUsername`。
+3. 首次保持 `enableAgent=false` 启动，并用 `/mineastr agent status` 确认配置。
+4. 设置正确的 `agentServerPort` 后启用 `enableAgent=true` 并重启服务端。
+
+如果系统没有 Node，Agent 会安全禁用，聊天、知识快照、地区和事件功能不会受影响。`agentAutoDownloadNode=true` 可下载 MineAstr 固定版本；下载仅支持列入代码校验表的平台，并强制核对 SHA-256。默认不会联网安装 Node。
+
+当前内置动作包括聊天、连续下蹲示好、移动到坐标/路径点、短时跟随玩家、看向坐标、交互方块、使用背包物品、等待以及手动/自动进食。`agentFullAutonomy=true` 时 AstrBot 可在类型白名单内自主调用；任务仍受单任务互斥、可取消执行、生命保护、维度/坐标检查、服务端禁区和请求者审计约束。路径点和 `walk`/`rail` 连接保存在当前世界的 `data/mineastr/agent/waypoints.json`，不会进入公共 RAG。
+
+完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
+
+高信息量设备学习使用独立的 `enablePassiveSkillLearning` 开关，默认关闭。玩家可用 `/mineastr learning optout` 独立退出；该选择不影响活动地区统计。
+
 ## 命令
 
 - `/mineastr status`：查看连接状态。
 - `/mineastr reconnect`：主动断开当前连接并立即重连。
 - `/mineastr privacy`：查看服务器提供者配置的简要数据告知和活动数据期限。
 - `/mineastr tracking status|optout|optin`：查看、退出或重新加入活动地区统计；退出时删除仍可归属于该玩家的原始活动贡献。
+- `/mineastr learning status|optout|optin`：查看、退出或重新加入高信息量设备技能学习。
+- `/mineastr agent status`：管理员查看 Node、Agent、最近错误和渲染资源门槛。
 - `/mineastr regions analyze-now`：管理员立即执行一次地区聚类分析。
 - `/mineastr knowledge status`：查看本地扫描任务、快照 ID、各分类数量与最近错误。
 - `/mineastr knowledge rescan`：提交一次异步扫描；已有任务时复用现有任务 ID。
 - `/mineastr knowledge rescan-status`：查看最近重扫状态。
 
-`status`、`reconnect`、`regions analyze-now` 和所有 `knowledge` 命令需要权限等级 2；隐私和 tracking 命令可由普通玩家使用。
+`status`、`reconnect`、`agent status`、`regions analyze-now` 和所有 `knowledge` 命令需要权限等级 2；隐私、tracking 和 learning 命令可由普通玩家使用。
 
 ## AstrBot 主动查询
 
@@ -248,10 +272,14 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 - `knowledge_status`：返回扫描启用状态、任务 ID、开始/完成时间、分类数量与经脱敏的最近错误。
 - `knowledge_rescan`：提交 `local` 异步重扫；同时仅运行一个任务。
 - `activity_regions_manifest` / `activity_regions_page`：返回按维度隔离、中心约 64 格精度的活动地区摘要，并可包含环境采样次数、疑似人工构造比例、建筑/机器特征计数和主要方块命名空间。逐点轨迹、精确边界和明文玩家 UUID 不会进入 AstrBot RAG。
+- `agent_status`：即使 Agent 被禁用或缺少 Node 也返回可诊断状态。
+- `agent_observe`：返回 Bot 的生命、饥饿、位置、背包、视线方块、简单视场方块及附近实体。
+- `agent_task` / `agent_cancel`：提交或取消受类型约束的 Bot 任务；服务端执行自主模式、禁区和任务互斥检查。
+- `agent_waypoints` / `transport_graph`：管理世界私有路径点以及步行/轨道连接。
 
 扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。
 
-WebSocket 协议仍为 1，新能力通过 `query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.9 服务端；旧 AstrBot 插件会忽略 0.9 的地区特征字段，仍可使用原有功能。
+WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 1.0 服务端；旧 AstrBot 插件会忽略新增 Agent 能力，仍可使用原有功能。
 
 MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`player_join`、`player_leave`、`player_death` 和 `player_advancement`。死亡和进度推送尊重 `showDeathMessages` 与 `announceAdvancements` 游戏规则；只推送会在游戏聊天中公开宣告的进度，不推送隐藏配方解锁。事件不含 IP 地址、精确坐标、背包或 NBT。
 

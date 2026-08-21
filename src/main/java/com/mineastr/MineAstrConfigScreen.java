@@ -58,12 +58,12 @@ public final class MineAstrConfigScreen extends Screen {
         row += 28;
         addRenderableWidget(new ValueSlider(
                 controlLeft, row, controlWidth,
-                "screen.mineastr.config.width", 64, 1024, maxWidth,
+                "screen.mineastr.config.width", 64, 3840, maxWidth,
                 value -> maxWidth = (int) Math.round(value), value -> Integer.toString((int) Math.round(value))));
         row += 28;
         addRenderableWidget(new ValueSlider(
                 controlLeft, row, controlWidth,
-                "screen.mineastr.config.height", 36, 1024, maxHeight,
+                "screen.mineastr.config.height", 36, 2160, maxHeight,
                 value -> maxHeight = (int) Math.round(value), value -> Integer.toString((int) Math.round(value))));
         row += 28;
         addRenderableWidget(new ValueSlider(
@@ -73,7 +73,7 @@ public final class MineAstrConfigScreen extends Screen {
         row += 28;
         addRenderableWidget(new ValueSlider(
                 controlLeft, row, controlWidth,
-                "screen.mineastr.config.bytes", 8192, 524288, maxBytes,
+                "screen.mineastr.config.bytes", 8192, 1572864, maxBytes,
                 value -> maxBytes = roundToStep((int) Math.round(value), 1024),
                 value -> (roundToStep((int) Math.round(value), 1024) / 1024) + " KiB"));
 

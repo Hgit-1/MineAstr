@@ -32,6 +32,26 @@ final class MineAstrActivityDataTest {
     }
 
     @Test
+    void learningOptOutIsIndependentAndPersists() throws Exception {
+        UUID player = UUID.fromString("22345678-1234-5678-9abc-123456789abc");
+        MineAstrActivityData data = new MineAstrActivityData();
+        data.setLearningOptedOut(player, true);
+        assertTrue(data.isLearningOptedOut(player));
+        assertFalse(data.isOptedOut(player));
+
+        CompoundTag saved = data.save(new CompoundTag(), null);
+        Method load = MineAstrActivityData.class.getDeclaredMethod(
+                "load", CompoundTag.class, HolderLookup.Provider.class);
+        load.setAccessible(true);
+        MineAstrActivityData restored = (MineAstrActivityData) load.invoke(null, saved, null);
+        assertTrue(restored.isLearningOptedOut(player));
+        assertFalse(restored.isOptedOut(player));
+
+        restored.setLearningOptedOut(player, false);
+        assertFalse(restored.isLearningOptedOut(player));
+    }
+
+    @Test
     void clusteringSeparatesDimensionsAndDistantChunks() {
         MineAstrActivityData data = new MineAstrActivityData();
         long now = 1_800_000_000_000L;

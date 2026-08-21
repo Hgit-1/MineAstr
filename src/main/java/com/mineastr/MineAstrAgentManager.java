@@ -1,0 +1,717 @@
+package com.mineastr;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import io.netty.buffer.Unpooled;
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.lang.management.ManagementFactory;
+import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.util.Comparator;
+import java.util.Base64;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.IdentityHashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import net.minecraft.SharedConstants;
+import net.minecraft.network.ConnectionProtocol;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.server.MinecraftServer;
+import net.neoforged.fml.loading.FMLPaths;
+import net.neoforged.neoforge.network.payload.ModdedNetworkQueryComponent;
+import net.neoforged.neoforge.network.payload.ModdedNetworkQueryPayload;
+import net.neoforged.neoforge.network.registration.NetworkRegistry;
+import net.neoforged.neoforge.network.registration.PayloadRegistration;
+
+/** Owns the isolated Node/Mineflayer process. The control API is loopback-only and token authenticated. */
+public final class MineAstrAgentManager implements AutoCloseable {
+    private static final String RUNTIME_RESOURCE = "/mineastr-agent/runtime.zip";
+    private static final String NODE_VERSION = "22.19.0";
+    private static final int MIN_NODE_MAJOR = 22;
+    private static final int MAX_CONTROL_BODY_CHARS = 512 * 1024;
+    private static final Set<String> NEOFORGE_COMPATIBILITY_CHANNELS = Set.of(
+            "neoforge:extensible_enum_data", "neoforge:extensible_enum_ack",
+            "neoforge:feature_flags", "neoforge:feature_flags_ack");
+    private static final Map<String, NodeArtifact> NODE_ARTIFACTS = Map.of(
+            "linux-x86_64", new NodeArtifact(
+                    "https://nodejs.org/dist/v" + NODE_VERSION + "/node-v" + NODE_VERSION + "-linux-x64.tar.gz",
+                    "d36e56998220085782c0ca965f9d51b7726335aed2f5fc7321c6c0ad233aa96d", "tar.gz", "bin/node"),
+            "linux-aarch64", new NodeArtifact(
+                    "https://nodejs.org/dist/v" + NODE_VERSION + "/node-v" + NODE_VERSION + "-linux-arm64.tar.gz",
+                    "d32817b937219b8f131a28546035183d79e7fd17a86e38ccb8772901a7cd9009", "tar.gz", "bin/node"),
+            "windows-x86_64", new NodeArtifact(
+                    "https://nodejs.org/dist/v" + NODE_VERSION + "/node-v" + NODE_VERSION + "-win-x64.zip",
+                    "ea3fad0e67a991d8477d8c01344b56e69c676ccb733f065b22436994b1253f86", "zip", "node.exe"));
+
+    private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+    private volatile ExecutorService ioExecutor = newIoExecutor();
+    private final AtomicReference<State> state = new AtomicReference<>(State.DISABLED);
+    private final AtomicInteger controlPort = new AtomicInteger();
+    private final AtomicInteger restartCount = new AtomicInteger();
+
+    private volatile MinecraftServer server;
+    private volatile Process process;
+    private volatile String token = "";
+    private volatile String nodeVersion = "";
+    private volatile String lastError = "";
+    private volatile long startedAtMs;
+    private volatile JsonObject lastAgentStatus = new JsonObject();
+    private volatile boolean stopping;
+    private volatile int neoForgeComponentCount;
+
+    private static ExecutorService newIoExecutor() {
+        return Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable, "MineAstr-Agent-IO");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    public synchronized void start(MinecraftServer currentServer) {
+        this.server = currentServer;
+        this.stopping = false;
+        this.lastError = "";
+        this.lastAgentStatus = new JsonObject();
+        this.controlPort.set(0);
+        if (!currentServer.isDedicatedServer()) {
+            disable("Agent 只在独立服务器中运行。");
+            return;
+        }
+        if (!MineAstrConfig.ENABLE_AGENT.getAsBoolean()) {
+            state.set(State.DISABLED);
+            return;
+        }
+        if (process != null && process.isAlive()) return;
+        if (ioExecutor == null || ioExecutor.isShutdown()) ioExecutor = newIoExecutor();
+        restartCount.set(0);
+        state.set(State.STARTING);
+        CompletableFuture.runAsync(this::startProcess, ioExecutor);
+    }
+
+    private void startProcess() {
+        try {
+            MinecraftServer activeServer = server;
+            ExecutorService executor = ioExecutor;
+            if (stopping || activeServer == null || executor == null || executor.isShutdown()) return;
+            Path runtime = prepareRuntime();
+            Path executable = resolveNodeExecutable();
+            nodeVersion = validateNode(executable);
+            token = UUID.randomUUID().toString() + UUID.randomUUID();
+            Path dataDir = activeServer.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
+                    .resolve("data").resolve("mineastr").resolve("agent").toAbsolutePath().normalize();
+            Files.createDirectories(dataDir);
+            ProcessBuilder builder = new ProcessBuilder(executable.toString(), runtime.resolve("index.js").toString());
+            builder.directory(runtime.toFile());
+            builder.redirectErrorStream(true);
+            Map<String, String> environment = builder.environment();
+            environment.put("MINEASTR_AGENT_TOKEN", token);
+            environment.put("MINEASTR_AGENT_DATA_DIR", dataDir.toString());
+            environment.put("MINEASTR_MC_HOST", MineAstrConfig.AGENT_SERVER_HOST.get());
+            environment.put("MINEASTR_MC_PORT", Integer.toString(MineAstrConfig.AGENT_SERVER_PORT.getAsInt()));
+            environment.put("MINEASTR_MC_VERSION", SharedConstants.getCurrentVersion().getName());
+            environment.put("MINEASTR_AGENT_USERNAME", MineAstrConfig.AGENT_USERNAME.get());
+            environment.put("MINEASTR_AGENT_AUTH", MineAstrConfig.AGENT_ACCOUNT_MODE.get().toLowerCase(Locale.ROOT));
+            environment.put("MINEASTR_FORBIDDEN_REGIONS", String.join("\n", MineAstrConfig.AGENT_FORBIDDEN_REGIONS.get()));
+            if (MineAstrConfig.AGENT_NEOFORGE_COMPATIBILITY.getAsBoolean()
+                    && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get())) {
+                NeoForgeManifest manifest = buildNeoForgeManifest();
+                environment.put("MINEASTR_NEOFORGE_QUERY_B64", manifest.encodedQuery());
+                environment.put("MINEASTR_NEOFORGE_COMPONENT_COUNT", Integer.toString(manifest.componentCount()));
+                neoForgeComponentCount = manifest.componentCount();
+            } else {
+                neoForgeComponentCount = 0;
+            }
+            if (stopping || server != activeServer) return;
+            Process started = builder.start();
+            synchronized (this) {
+                if (stopping || server != activeServer) {
+                    started.destroyForcibly();
+                    return;
+                }
+                process = started;
+                startedAtMs = System.currentTimeMillis();
+                state.set(State.WAITING_FOR_CONTROL);
+                executor.execute(() -> readOutput(started));
+                started.onExit().thenAcceptAsync(this::onProcessExit, executor);
+            }
+        } catch (Exception exc) {
+            if (!stopping) fail("Agent 启动失败：" + safeMessage(exc));
+        }
+    }
+
+    private Path prepareRuntime() throws IOException {
+        String resourceHash;
+        try (InputStream raw = MineAstrAgentManager.class.getResourceAsStream(RUNTIME_RESOURCE)) {
+            if (raw == null) throw new IOException("JAR 中缺少内嵌 Agent runtime.zip");
+            resourceHash = sha256(raw);
+        }
+        Path root = FMLPaths.GAMEDIR.get().resolve("config").resolve("mineastr")
+                .resolve("agent-runtime").resolve(MineAstr.MOD_VERSION + "-" + resourceHash.substring(0, 12))
+                .toAbsolutePath().normalize();
+        Path marker = root.resolve(".complete");
+        if (Files.isRegularFile(marker) && Files.isRegularFile(root.resolve("index.js"))) return root;
+        Path temporary = root.resolveSibling(root.getFileName() + ".tmp-" + UUID.randomUUID());
+        Files.createDirectories(temporary);
+        try (InputStream raw = MineAstrAgentManager.class.getResourceAsStream(RUNTIME_RESOURCE)) {
+            if (raw == null) throw new IOException("JAR 中缺少内嵌 Agent runtime.zip");
+            unzip(raw, temporary);
+        } catch (Exception exc) {
+            deleteTree(temporary);
+            throw exc;
+        }
+        Files.writeString(temporary.resolve(".complete"), resourceHash, StandardCharsets.UTF_8);
+        Files.createDirectories(root.getParent());
+        if (!Files.exists(root)) {
+            Files.move(temporary, root, StandardCopyOption.ATOMIC_MOVE);
+        } else {
+            deleteTree(temporary);
+        }
+        return root;
+    }
+
+    private Path resolveNodeExecutable() throws Exception {
+        String configured = MineAstrConfig.AGENT_NODE_EXECUTABLE.get().strip();
+        Path candidate = Path.of(configured);
+        try {
+            validateNode(candidate);
+            return candidate;
+        } catch (Exception configuredFailure) {
+            if (!MineAstrConfig.AGENT_AUTO_DOWNLOAD_NODE.getAsBoolean()) {
+                throw new IOException("未找到 Node.js 22+：" + configured
+                        + "。请安装 Node、设置 agentNodeExecutable，或显式启用 agentAutoDownloadNode。", configuredFailure);
+            }
+        }
+        return downloadNode();
+    }
+
+    private String validateNode(Path executable) throws Exception {
+        Process validation = new ProcessBuilder(executable.toString(), "--version").redirectErrorStream(true).start();
+        String output;
+        try (InputStream stream = validation.getInputStream()) {
+            output = new String(stream.readNBytes(128), StandardCharsets.UTF_8).strip();
+        }
+        if (!validation.waitFor(5, TimeUnit.SECONDS)) {
+            validation.destroyForcibly();
+            throw new IOException("Node 版本检查超时");
+        }
+        if (validation.exitValue() != 0 || !output.matches("v\\d+(?:\\.\\d+){1,2}.*")) {
+            throw new IOException("无法识别 Node 版本：" + output);
+        }
+        int major = Integer.parseInt(output.substring(1, output.indexOf('.')));
+        if (major < MIN_NODE_MAJOR) throw new IOException("MineAstr Agent 要求 Node.js 22+，当前为 " + output);
+        return output;
+    }
+
+    private Path downloadNode() throws Exception {
+        String platform = platformKey();
+        NodeArtifact artifact = NODE_ARTIFACTS.get(platform);
+        if (artifact == null) throw new IOException("自动下载不支持当前平台：" + platform);
+        Path nodeRoot = FMLPaths.GAMEDIR.get().resolve("config").resolve("mineastr")
+                .resolve("node").resolve(NODE_VERSION + "-" + platform).toAbsolutePath().normalize();
+        Path executable = nodeRoot.resolve(artifact.executablePath);
+        if (Files.isRegularFile(executable)) {
+            validateNode(executable);
+            return executable;
+        }
+        Files.createDirectories(nodeRoot.getParent());
+        Path archive = Files.createTempFile(nodeRoot.getParent(), "node-", ".download");
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(artifact.url))
+                    .timeout(Duration.ofMinutes(3)).GET().build();
+            HttpResponse<Path> response = client.send(request, HttpResponse.BodyHandlers.ofFile(archive));
+            if (response.statusCode() != 200) throw new IOException("Node 下载返回 HTTP " + response.statusCode());
+            String actualHash = sha256(archive);
+            if (!artifact.sha256.equals(actualHash)) throw new IOException("Node 下载文件 SHA-256 不匹配");
+            Path temporary = nodeRoot.resolveSibling(nodeRoot.getFileName() + ".tmp-" + UUID.randomUUID());
+            Files.createDirectories(temporary);
+            if ("zip".equals(artifact.format)) {
+                try (InputStream input = Files.newInputStream(archive)) {
+                    unzipStrippingFirstDirectory(input, temporary);
+                }
+            } else {
+                try (InputStream input = new GZIPInputStream(new BufferedInputStream(Files.newInputStream(archive)))) {
+                    untarStrippingFirstDirectory(input, temporary);
+                }
+            }
+            if (!Files.exists(nodeRoot)) Files.move(temporary, nodeRoot, StandardCopyOption.ATOMIC_MOVE);
+            else deleteTree(temporary);
+            executable.toFile().setExecutable(true, true);
+            validateNode(executable);
+            return executable;
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
+    private void readOutput(Process activeProcess) {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(activeProcess.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String safeLine = line.length() > 2000 ? line.substring(0, 2000) : line;
+                try {
+                    JsonObject payload = JsonParser.parseString(safeLine).getAsJsonObject();
+                    String type = payload.has("type") ? payload.get("type").getAsString() : "";
+                    if ("ready".equals(type) && payload.has("port")) {
+                        controlPort.set(payload.get("port").getAsInt());
+                        state.set(State.RUNNING);
+                        MineAstr.LOGGER.info("MineAstr Agent 控制端已就绪：127.0.0.1:{}", controlPort.get());
+                    } else if ("bot_error".equals(type) || "bot_incompatible".equals(type)
+                            || "uncaught_exception".equals(type)) {
+                        lastError = payload.has("error") ? payload.get("error").getAsString() : type;
+                        MineAstr.LOGGER.warn("MineAstr Agent：{}", lastError);
+                    } else {
+                        MineAstr.LOGGER.debug("MineAstr Agent：{}", safeLine);
+                    }
+                } catch (RuntimeException ignored) {
+                    MineAstr.LOGGER.debug("MineAstr Agent 输出：{}", safeLine.replaceAll("[\\r\\n]", " "));
+                }
+            }
+        } catch (IOException exc) {
+            if (!stopping) MineAstr.LOGGER.debug("MineAstr Agent 输出流已关闭：{}", safeMessage(exc));
+        }
+    }
+
+    private void onProcessExit(Process exited) {
+        if (process != exited) return;
+        process = null;
+        controlPort.set(0);
+        if (stopping) {
+            state.set(State.STOPPED);
+            return;
+        }
+        int exitCode = exited.exitValue();
+        fail("Agent 进程意外退出，代码 " + exitCode);
+        if (System.currentTimeMillis() - startedAtMs >= 60_000L) restartCount.set(0);
+        if (restartCount.incrementAndGet() <= 3 && server != null && MineAstrConfig.ENABLE_AGENT.getAsBoolean()) {
+            try {
+                TimeUnit.SECONDS.sleep(5L * restartCount.get());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!stopping) startProcess();
+        } else if (restartCount.get() > 3) {
+            lastError += "；连续重启超过上限，已熔断至下次服务端重启。";
+        }
+    }
+
+    public JsonObject status() {
+        JsonObject result = new JsonObject();
+        result.addProperty("ok", true);
+        result.addProperty("enabled", MineAstrConfig.ENABLE_AGENT.getAsBoolean());
+        result.addProperty("state", state.get().name().toLowerCase(Locale.ROOT));
+        result.addProperty("node_version", nodeVersion);
+        result.addProperty("control_ready", controlPort.get() > 0);
+        result.addProperty("started_at_ms", startedAtMs);
+        result.addProperty("restart_count", restartCount.get());
+        result.addProperty("neoforge_compatibility_enabled", MineAstrConfig.AGENT_NEOFORGE_COMPATIBILITY.getAsBoolean());
+        result.addProperty("neoforge_manifest_components", neoForgeComponentCount);
+        Process current = process;
+        if (current != null) result.addProperty("pid", current.pid());
+        if (!lastError.isBlank()) result.addProperty("last_error", lastError);
+        if (lastAgentStatus != null && !lastAgentStatus.isEmpty()) result.add("agent", lastAgentStatus.deepCopy());
+        result.addProperty("renderer_configured", !MineAstrConfig.AGENT_CLIENT_INSTANCE_PATH.get().isBlank());
+        result.addProperty("renderer_min_free_memory_mb", MineAstrConfig.AGENT_RENDERER_MIN_FREE_MEMORY_MB.getAsInt());
+        JsonObject rendererGate = new JsonObject();
+        long freeMemoryMb = freePhysicalMemoryMb();
+        double averageMspt = averageMspt();
+        boolean pathReady = rendererInstanceReady();
+        boolean memoryReady = freeMemoryMb < 0
+                || freeMemoryMb >= MineAstrConfig.AGENT_RENDERER_MIN_FREE_MEMORY_MB.getAsInt();
+        boolean tickReady = averageMspt < 0 || averageMspt < 47.5;
+        rendererGate.addProperty("eligible", pathReady && memoryReady && tickReady);
+        rendererGate.addProperty("instance_ready", pathReady);
+        rendererGate.addProperty("free_physical_memory_mb", freeMemoryMb);
+        rendererGate.addProperty("average_mspt", averageMspt);
+        rendererGate.addProperty("memory_ready", memoryReady);
+        rendererGate.addProperty("tick_ready", tickReady);
+        rendererGate.addProperty("max_session_minutes", MineAstrConfig.AGENT_RENDERER_MAX_MINUTES.getAsInt());
+        if (!pathReady) rendererGate.addProperty("reason", "未配置有效的独立客户端实例目录");
+        else if (!memoryReady) rendererGate.addProperty("reason", "可用内存低于渲染熔断阈值");
+        else if (!tickReady) rendererGate.addProperty("reason", "服务端 MSPT 接近过载阈值");
+        result.add("renderer_gate", rendererGate);
+        return result;
+    }
+
+    private boolean rendererInstanceReady() {
+        String configured = MineAstrConfig.AGENT_CLIENT_INSTANCE_PATH.get().strip();
+        if (configured.isBlank()) return false;
+        try {
+            Path path = Path.of(configured).toAbsolutePath().normalize();
+            return Files.isDirectory(path) && Files.isDirectory(path.resolve("mods"));
+        } catch (RuntimeException exc) {
+            return false;
+        }
+    }
+
+    private long freePhysicalMemoryMb() {
+        try {
+            if (ManagementFactory.getOperatingSystemMXBean() instanceof com.sun.management.OperatingSystemMXBean bean) {
+                return bean.getFreeMemorySize() / (1024L * 1024L);
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return -1;
+    }
+
+    private double averageMspt() {
+        MinecraftServer current = server;
+        if (current == null) return -1;
+        try {
+            return Math.round((current.getAverageTickTimeNanos() / 1_000_000.0) * 100.0) / 100.0;
+        } catch (RuntimeException ignored) {
+            return -1;
+        }
+    }
+
+    public CompletableFuture<JsonObject> request(String endpoint, JsonObject body, Duration timeout) {
+        if (!endpoint.matches("/(?:status|observe|task|cancel|waypoints)")) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("不支持的 Agent 端点"));
+        }
+        int port = controlPort.get();
+        if (state.get() != State.RUNNING || port <= 0) {
+            return CompletableFuture.failedFuture(new IllegalStateException(lastError.isBlank() ? "Agent 尚未就绪" : lastError));
+        }
+        try {
+            validateRequest(endpoint, body == null ? new JsonObject() : body);
+        } catch (RuntimeException exc) {
+            return CompletableFuture.failedFuture(exc);
+        }
+        if ("/task".equals(endpoint)) {
+            String taskId = jsonString(body, "task_id", "auto");
+            String taskType = jsonString(body, "task_type", "unknown");
+            String requester = jsonString(body, "requester_name", jsonString(body, "requester_id", "unknown"));
+            MineAstr.LOGGER.info("MineAstr Agent 任务审计：id={} type={} requester={}",
+                    sanitizeAudit(taskId), sanitizeAudit(taskType), sanitizeAudit(requester));
+        }
+        HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + endpoint))
+                .header("Authorization", "Bearer " + token)
+                .header("Content-Type", "application/json")
+                .timeout(timeout)
+                .POST(HttpRequest.BodyPublishers.ofString(body == null ? "{}" : body.toString(), StandardCharsets.UTF_8))
+                .build();
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .thenApply(response -> {
+                    if (response.body().length() > MAX_CONTROL_BODY_CHARS) throw new IllegalStateException("Agent 响应过大");
+                    JsonObject parsed = JsonParser.parseString(response.body()).getAsJsonObject();
+                    if (response.statusCode() >= 400) {
+                        String error = parsed.has("error") ? parsed.get("error").getAsString() : "HTTP " + response.statusCode();
+                        throw new IllegalStateException(error);
+                    }
+                    if ("/status".equals(endpoint) || "/observe".equals(endpoint)) lastAgentStatus = parsed.deepCopy();
+                    return parsed;
+                });
+    }
+
+    private static void validateRequest(String endpoint, JsonObject body) {
+        if (!"/task".equals(endpoint)) return;
+        if (!MineAstrConfig.AGENT_FULL_AUTONOMY.getAsBoolean()
+                && (!body.has("approved_by_admin") || !body.get("approved_by_admin").getAsBoolean())) {
+            throw new IllegalStateException("服务端已关闭 Agent 完全自主模式；任务需要管理员审批。");
+        }
+        String type = body.has("task_type") ? body.get("task_type").getAsString().toLowerCase(Locale.ROOT) : "";
+        if (!Set.of("chat", "crouch_greet", "goto", "goto_waypoint", "follow_player", "look_at",
+                "wait", "eat", "interact_block", "use_item").contains(type)) {
+            throw new IllegalArgumentException("服务端不允许任务类型：" + type);
+        }
+        JsonObject args = body.has("args") && body.get("args").isJsonObject()
+                ? body.getAsJsonObject("args") : new JsonObject();
+        if ("chat".equals(type) && args.has("message") && args.get("message").getAsString().length() > 256) {
+            throw new IllegalArgumentException("Agent 聊天内容超过 256 字符");
+        }
+        if (Set.of("goto", "look_at", "interact_block").contains(type)) {
+            int x = requiredCoordinate(args, "x");
+            int y = requiredCoordinate(args, "y");
+            int z = requiredCoordinate(args, "z");
+            String dimension = args.has("dimension") ? args.get("dimension").getAsString() : "minecraft:overworld";
+            if (insideForbiddenRegion(dimension, x, y, z)) throw new IllegalStateException("目标坐标位于 Agent 禁区内");
+        }
+    }
+
+    private static int requiredCoordinate(JsonObject args, String name) {
+        if (!args.has(name)) throw new IllegalArgumentException("任务缺少坐标 " + name);
+        int value = args.get(name).getAsInt();
+        if (Math.abs((long) value) > 30_000_000L) throw new IllegalArgumentException("坐标超出世界边界：" + name);
+        return value;
+    }
+
+    private static boolean insideForbiddenRegion(String dimension, int x, int y, int z) {
+        for (String configured : MineAstrConfig.AGENT_FORBIDDEN_REGIONS.get()) {
+            String[] fields = configured.split(",");
+            if (fields.length != 7) continue;
+            try {
+                if (!fields[0].strip().equals(dimension)) continue;
+                int minX = Math.min(Integer.parseInt(fields[1].strip()), Integer.parseInt(fields[4].strip()));
+                int minY = Math.min(Integer.parseInt(fields[2].strip()), Integer.parseInt(fields[5].strip()));
+                int minZ = Math.min(Integer.parseInt(fields[3].strip()), Integer.parseInt(fields[6].strip()));
+                int maxX = Math.max(Integer.parseInt(fields[1].strip()), Integer.parseInt(fields[4].strip()));
+                int maxY = Math.max(Integer.parseInt(fields[2].strip()), Integer.parseInt(fields[5].strip()));
+                int maxZ = Math.max(Integer.parseInt(fields[3].strip()), Integer.parseInt(fields[6].strip()));
+                if (x >= minX && x <= maxX && y >= minY && y <= maxY && z >= minZ && z <= maxZ) return true;
+            } catch (NumberFormatException ignored) {
+                // Invalid administrator entries are reported in status by the configuration UI; they never grant access.
+            }
+        }
+        return false;
+    }
+
+    private void disable(String error) {
+        lastError = error;
+        state.set(State.DISABLED);
+        MineAstr.LOGGER.info("MineAstr Agent 已禁用：{}", error);
+    }
+
+    private void fail(String error) {
+        lastError = error;
+        state.set(State.ERROR);
+        MineAstr.LOGGER.warn("{}", error);
+    }
+
+    @Override
+    public synchronized void close() {
+        stopping = true;
+        state.set(State.STOPPING);
+        Process active = process;
+        process = null;
+        controlPort.set(0);
+        if (active != null && active.isAlive()) {
+            active.destroy();
+            try {
+                if (!active.waitFor(3, TimeUnit.SECONDS)) active.destroyForcibly();
+            } catch (InterruptedException exc) {
+                Thread.currentThread().interrupt();
+                active.destroyForcibly();
+            }
+        }
+        state.set(State.STOPPED);
+        server = null;
+        ExecutorService executor = ioExecutor;
+        ioExecutor = null;
+        if (executor != null) executor.shutdownNow();
+    }
+
+    private static boolean isLoopbackHost(String value) {
+        String host = value.strip().toLowerCase(Locale.ROOT);
+        return "127.0.0.1".equals(host) || "localhost".equals(host) || "::1".equals(host)
+                || "[::1]".equals(host);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static NeoForgeManifest buildNeoForgeManifest() throws Exception {
+        Field registrationsField = NetworkRegistry.class.getDeclaredField("PAYLOAD_REGISTRATIONS");
+        registrationsField.setAccessible(true);
+        Map<ConnectionProtocol, Map<?, PayloadRegistration<?>>> registrations =
+                (Map<ConnectionProtocol, Map<?, PayloadRegistration<?>>>) registrationsField.get(null);
+        Map<ConnectionProtocol, Set<ModdedNetworkQueryComponent>> selected = new IdentityHashMap<>();
+        int count = 0;
+        for (Map.Entry<ConnectionProtocol, Map<?, PayloadRegistration<?>>> protocol : registrations.entrySet()) {
+            Set<ModdedNetworkQueryComponent> components = new HashSet<>();
+            for (PayloadRegistration<?> registration : protocol.getValue().values()) {
+                if (!registration.optional() || NEOFORGE_COMPATIBILITY_CHANNELS.contains(registration.id().toString())) {
+                    components.add(new ModdedNetworkQueryComponent(registration));
+                    count++;
+                }
+            }
+            selected.put(protocol.getKey(), components);
+        }
+        FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            ModdedNetworkQueryPayload.STREAM_CODEC.encode(buffer, new ModdedNetworkQueryPayload(selected));
+            byte[] bytes = new byte[buffer.readableBytes()];
+            buffer.getBytes(buffer.readerIndex(), bytes);
+            return new NeoForgeManifest(Base64.getEncoder().encodeToString(bytes), count);
+        } finally {
+            buffer.release();
+        }
+    }
+
+    private static String jsonString(JsonObject body, String name, String fallback) {
+        try {
+            return body != null && body.has(name) ? body.get(name).getAsString() : fallback;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static String sanitizeAudit(String value) {
+        String sanitized = value == null ? "unknown" : value.replaceAll("[\\r\\n\\t]", " ");
+        return sanitized.substring(0, Math.min(100, sanitized.length()));
+    }
+
+    private static void unzip(InputStream input, Path target) throws IOException {
+        try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(input))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                Path resolved = safeResolve(target, entry.getName());
+                if (entry.isDirectory()) Files.createDirectories(resolved);
+                else {
+                    Files.createDirectories(resolved.getParent());
+                    Files.copy(zip, resolved, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private static void unzipStrippingFirstDirectory(InputStream input, Path target) throws IOException {
+        try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(input))) {
+            ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                String name = stripFirstDirectory(entry.getName());
+                if (name.isBlank()) continue;
+                Path resolved = safeResolve(target, name);
+                if (entry.isDirectory()) Files.createDirectories(resolved);
+                else {
+                    Files.createDirectories(resolved.getParent());
+                    Files.copy(zip, resolved, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private static void untarStrippingFirstDirectory(InputStream input, Path target) throws IOException {
+        byte[] header = new byte[512];
+        while (true) {
+            int read = input.readNBytes(header, 0, header.length);
+            if (read == 0) return;
+            if (read != header.length) throw new IOException("Node tar 文件被截断");
+            boolean empty = true;
+            for (byte value : header) if (value != 0) { empty = false; break; }
+            if (empty) return;
+            String originalName = tarString(header, 0, 100);
+            String name = stripFirstDirectory(originalName);
+            long size = parseTarOctal(header, 124, 12);
+            int type = header[156] & 0xff;
+            if (!name.isBlank()) {
+                Path resolved = safeResolve(target, name);
+                if (type == '5') Files.createDirectories(resolved);
+                else if (type == 0 || type == '0') {
+                    Files.createDirectories(resolved.getParent());
+                    try (var output = Files.newOutputStream(resolved)) {
+                        copyExactly(input, output, size);
+                    }
+                } else {
+                    input.skipNBytes(size);
+                }
+            } else input.skipNBytes(size);
+            long padding = (512 - (size % 512)) % 512;
+            if (padding > 0) input.skipNBytes(padding);
+        }
+    }
+
+    private static Path safeResolve(Path root, String entryName) throws IOException {
+        Path resolved = root.resolve(entryName.replace('\\', '/')).normalize();
+        if (!resolved.startsWith(root)) throw new IOException("压缩包包含不安全路径");
+        return resolved;
+    }
+
+    private static String stripFirstDirectory(String value) {
+        String normalized = value.replace('\\', '/');
+        int slash = normalized.indexOf('/');
+        return slash < 0 ? "" : normalized.substring(slash + 1);
+    }
+
+    private static String tarString(byte[] header, int offset, int length) {
+        int end = offset;
+        while (end < offset + length && header[end] != 0) end++;
+        return new String(header, offset, end - offset, StandardCharsets.US_ASCII);
+    }
+
+    private static long parseTarOctal(byte[] header, int offset, int length) {
+        String value = tarString(header, offset, length).strip();
+        return value.isEmpty() ? 0 : Long.parseLong(value, 8);
+    }
+
+    private static String sha256(Path path) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream input = Files.newInputStream(path)) {
+            updateDigest(digest, input);
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    private static String sha256(InputStream input) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            updateDigest(digest, input);
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IOException("当前 Java 运行时缺少 SHA-256", impossible);
+        }
+    }
+
+    private static void updateDigest(MessageDigest digest, InputStream input) throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        int read;
+        while ((read = input.read(buffer)) >= 0) if (read > 0) digest.update(buffer, 0, read);
+    }
+
+    private static String platformKey() {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
+        String osPart = os.contains("win") ? "windows" : os.contains("linux") ? "linux" : os.replaceAll("[^a-z0-9]", "");
+        String archPart = switch (arch) {
+            case "amd64", "x86_64" -> "x86_64";
+            case "aarch64", "arm64" -> "aarch64";
+            default -> arch;
+        };
+        return osPart + "-" + archPart;
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root)) return;
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        }
+    }
+
+    private static String safeMessage(Throwable throwable) {
+        String value = throwable.getMessage();
+        if (value == null || value.isBlank()) value = throwable.getClass().getSimpleName();
+        String sanitized = value.replaceAll("[\\r\\n\\t]+", " ")
+                .replaceAll("(?i)(token|password|secret)\\s*[:=]\\s*\\S+", "$1=[redacted]");
+        return sanitized.substring(0, Math.min(300, sanitized.length()));
+    }
+
+    private static void copyExactly(InputStream input, java.io.OutputStream output, long length) throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        long remaining = length;
+        while (remaining > 0) {
+            int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+            if (read < 0) throw new IOException("tar 条目被截断");
+            output.write(buffer, 0, read);
+            remaining -= read;
+        }
+    }
+
+    private enum State { DISABLED, STARTING, WAITING_FOR_CONTROL, RUNNING, ERROR, STOPPING, STOPPED }
+
+    private record NodeArtifact(String url, String sha256, String format, String executablePath) {}
+
+    private record NeoForgeManifest(String encodedQuery, int componentCount) {}
+
+}

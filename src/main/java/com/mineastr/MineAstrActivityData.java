@@ -35,6 +35,7 @@ public final class MineAstrActivityData extends SavedData {
 
     private final Map<ActivityKey, ActivityEntry> activity = new HashMap<>();
     private final Set<UUID> optedOut = new HashSet<>();
+    private final Set<UUID> learningOptedOut = new HashSet<>();
     private List<Region> regions = List.of();
     private long lastAnalysisMs;
     private int analysisVersion;
@@ -52,6 +53,11 @@ public final class MineAstrActivityData extends SavedData {
         for (int index = 0; index < optouts.size(); index++) {
             CompoundTag item = optouts.getCompound(index);
             if (item.hasUUID("uuid")) data.optedOut.add(item.getUUID("uuid"));
+        }
+        ListTag learningOptouts = tag.getList("learning_optouts", Tag.TAG_COMPOUND);
+        for (int index = 0; index < learningOptouts.size(); index++) {
+            CompoundTag item = learningOptouts.getCompound(index);
+            if (item.hasUUID("uuid")) data.learningOptedOut.add(item.getUUID("uuid"));
         }
         ListTag entries = tag.getList("activity", Tag.TAG_COMPOUND);
         for (int index = 0; index < entries.size(); index++) {
@@ -94,6 +100,13 @@ public final class MineAstrActivityData extends SavedData {
             optouts.add(item);
         });
         tag.put("optouts", optouts);
+        ListTag learningOptouts = new ListTag();
+        learningOptedOut.stream().sorted().forEach(uuid -> {
+            CompoundTag item = new CompoundTag();
+            item.putUUID("uuid", uuid);
+            learningOptouts.add(item);
+        });
+        tag.put("learning_optouts", learningOptouts);
         ListTag entries = new ListTag();
         activity.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(row -> {
             ActivityKey key = row.getKey();
@@ -138,6 +151,16 @@ public final class MineAstrActivityData extends SavedData {
         } else {
             optedOut.remove(player);
         }
+        setDirty();
+    }
+
+    public boolean isLearningOptedOut(UUID player) {
+        return learningOptedOut.contains(player);
+    }
+
+    public void setLearningOptedOut(UUID player, boolean value) {
+        if (value) learningOptedOut.add(player);
+        else learningOptedOut.remove(player);
         setDirty();
     }
 

@@ -20,8 +20,46 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
 sourceSets.main.resources {
     srcDir('src/generated/resources')
+    srcDir(layout.buildDirectory.dir('generated/agentResources'))
     exclude("**/*.bbmodel")
     exclude("src/generated/**/.cache")
+}
+
+def agentSourceDir = layout.projectDirectory.dir('src/agent')
+def agentInstallDir = layout.buildDirectory.dir('agent-runtime')
+
+tasks.register('installAgentDependencies', Exec) {
+    inputs.files(agentSourceDir.files('package.json', 'package-lock.json', 'index.js'))
+    outputs.dir(agentInstallDir.map { it.dir('node_modules') })
+    workingDir agentSourceDir
+    commandLine 'npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'
+    doFirst {
+        copy {
+            from agentSourceDir
+            include 'package.json', 'package-lock.json', 'index.js'
+            into agentInstallDir
+        }
+    }
+    doLast {
+        copy {
+            from agentSourceDir.dir('node_modules')
+            into agentInstallDir.map { it.dir('node_modules') }
+        }
+    }
+}
+
+tasks.register('packageAgentRuntime', Zip) {
+    dependsOn tasks.named('installAgentDependencies')
+    archiveFileName = 'runtime.zip'
+    destinationDirectory = layout.buildDirectory.dir('generated/agentResources/mineastr-agent')
+    from agentInstallDir
+    exclude '**/test/**', '**/tests/**', '**/examples/**', '**/.github/**', '**/*.md', '**/*.map'
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+tasks.named('processResources').configure {
+    dependsOn tasks.named('packageAgentRuntime')
 }
 
 repositories.clear()

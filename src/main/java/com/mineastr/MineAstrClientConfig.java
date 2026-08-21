@@ -27,25 +27,25 @@ public final class MineAstrClientConfig {
             .comment(
                     "发送给 AstrBot 的截图最大宽度。",
                     "数值越大越清晰，但会占用更多网络和模型上下文。")
-            .defineInRange("screenshotMaxWidth", 240, 64, 1024);
+            .defineInRange("screenshotMaxWidth", 1280, 64, 3840);
 
     public static final ModConfigSpec.IntValue SCREENSHOT_MAX_HEIGHT = BUILDER
             .comment(
                     "发送给 AstrBot 的截图最大高度。",
                     "建议保持较低数值，避免暴露过多画面细节。")
-            .defineInRange("screenshotMaxHeight", 135, 36, 1024);
+            .defineInRange("screenshotMaxHeight", 720, 36, 2160);
 
     public static final ModConfigSpec.DoubleValue SCREENSHOT_JPEG_QUALITY = BUILDER
             .comment(
                     "截图 JPEG 质量，范围 0.10 到 0.95。",
-                    "数值越高越清晰，文件也越大；默认 0.35 适合低清晰度问答。")
-            .defineInRange("screenshotJpegQuality", 0.35, 0.10, 0.95);
+                    "数值越高越清晰，文件也越大；默认 0.75 适合方块和机器识别。")
+            .defineInRange("screenshotJpegQuality", 0.75, 0.10, 0.95);
 
     public static final ModConfigSpec.IntValue SCREENSHOT_MAX_BYTES = BUILDER
             .comment(
                     "单张截图编码后的最大字节数。",
                     "超过限制时客户端会自动降低质量和尺寸后再发送。")
-            .defineInRange("screenshotMaxBytes", 131072, 8192, 524288);
+            .defineInRange("screenshotMaxBytes", 1048576, 8192, 1572864);
 
     static final ModConfigSpec SPEC = BUILDER.build();
 

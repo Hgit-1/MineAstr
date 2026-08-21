@@ -27,6 +27,17 @@ public final class MineAstrCommands {
                                 .executes(context -> tracking(context.getSource(), bridge, true)))
                         .then(Commands.literal("optin")
                                 .executes(context -> tracking(context.getSource(), bridge, false))))
+                .then(Commands.literal("learning")
+                        .then(Commands.literal("status")
+                                .executes(context -> learningStatus(context.getSource(), bridge)))
+                        .then(Commands.literal("optout")
+                                .executes(context -> learning(context.getSource(), bridge, true)))
+                        .then(Commands.literal("optin")
+                                .executes(context -> learning(context.getSource(), bridge, false))))
+                .then(Commands.literal("agent")
+                        .requires(source -> source.hasPermission(2))
+                        .then(Commands.literal("status")
+                                .executes(context -> agentStatus(context.getSource(), bridge))))
                 .then(Commands.literal("regions")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("analyze-now")
@@ -89,6 +100,34 @@ public final class MineAstrCommands {
         source.sendSuccess(() -> Component.literal(optout
                 ? "已退出 MineAstr 活动统计，并删除保留期内可归属于你的原始活动数据。"
                 : "已重新加入 MineAstr 活动统计；从现在开始记录。"), false);
+        return 1;
+    }
+
+    private static int learningStatus(CommandSourceStack source, MineAstrBridge bridge) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        boolean active = MineAstrConfig.ENABLE_PASSIVE_SKILL_LEARNING.getAsBoolean()
+                && !bridge.isLearningOptedOut(player.getUUID());
+        source.sendSuccess(() -> Component.literal("MineAstr 设备技能学习："
+                + (active ? "正在采集高信息量设备交互" : "未采集") + "。"), false);
+        return 1;
+    }
+
+    private static int learning(CommandSourceStack source, MineAstrBridge bridge, boolean optout) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        bridge.setLearningOptedOut(player.getUUID(), optout);
+        source.sendSuccess(() -> Component.literal(optout
+                ? "已退出 MineAstr 设备技能学习；之后不会使用你的设备交互生成候选技能。"
+                : "已重新加入 MineAstr 设备技能学习；仅在服主启用功能后采集高信息量设备交互。"), false);
+        return 1;
+    }
+
+    private static int agentStatus(CommandSourceStack source, MineAstrBridge bridge) {
+        var status = bridge.agentStatus();
+        String state = status.has("state") ? status.get("state").getAsString() : "unknown";
+        String node = status.has("node_version") ? status.get("node_version").getAsString() : "";
+        source.sendSuccess(() -> Component.literal("MineAstr Agent：" + state
+                + "；Node=" + (node.isBlank() ? "未检测" : node)), false);
+        if (status.has("last_error")) source.sendFailure(Component.literal(status.get("last_error").getAsString()));
         return 1;
     }
 

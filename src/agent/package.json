@@ -1,0 +1,22 @@
+{
+  "name": "mineastr-server-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MineAstr server-managed Mineflayer runtime",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mineflayer": "4.37.1",
+    "mineflayer-pathfinder": "2.4.5",
+    "vec3": "0.1.10"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

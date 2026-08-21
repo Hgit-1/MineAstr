@@ -8,7 +8,7 @@
   "commands.mineastr.reconnect": "MineAstr 已请求重新连接。",
   "commands.mineastr.reconnect.unavailable": "MineAstr 尚未启动或已禁用；本地世界请先开启服务端桥接。",
   "screen.mineastr.screenshot.title": "MineAstr 截图请求",
-  "screen.mineastr.screenshot.message": "AstrBot 想查看你的当前画面来回答问题。\n原因：%s\n截图会在本地压缩为低清晰度 JPEG 后发送；不会写入你的本地截图目录。",
+  "screen.mineastr.screenshot.message": "AstrBot 想查看你的当前画面来回答问题。\n原因：%s\n截图会在本地压缩并按配置限制清晰度后发送；不会写入你的本地截图目录。",
   "screen.mineastr.screenshot.allow": "仅本次发送",
   "screen.mineastr.screenshot.deny": "不发送",
   "screen.mineastr.screenshot.privacy_badge": "隐私确认 · 本地压缩 · 不写入截图目录",
