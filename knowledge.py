@@ -20,7 +20,7 @@ from astrbot.api import logger
 KNOWLEDGE_DIR = Path("data") / "mineastr" / "knowledge"
 KNOWLEDGE_CATEGORIES = ("mods", "items", "blocks", "entities", "fluids", "recipes")
 MODRINTH_API = "https://api.modrinth.com/v2"
-USER_AGENT = "MineAstr/1.0.0 (https://github.com/Hgit-1/MineAstr)"
+USER_AGENT = "MineAstr/0.10.0 (https://github.com/Hgit-1/MineAstr)"
 MAX_REMOTE_TEXT_BYTES = 512 * 1024
 MAX_SITE_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_SITE_PAGES = 12
