@@ -602,7 +602,9 @@ public final class MineAstrAgentManager implements AutoCloseable {
             boolean empty = true;
             for (byte value : header) if (value != 0) { empty = false; break; }
             if (empty) return;
-            String originalName = tarString(header, 0, 100);
+            String entryName = tarString(header, 0, 100);
+            String prefix = tarString(header, 345, 155);
+            String originalName = prefix.isBlank() ? entryName : prefix + "/" + entryName;
             String name = stripFirstDirectory(originalName);
             long size = parseTarOctal(header, 124, 12);
             int type = header[156] & 0xff;
