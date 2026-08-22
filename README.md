@@ -264,6 +264,10 @@ Agent 会把实际加载过的区块按每方块 2-bit 分类为空气、固体�
 
 0.10.3 起，`agentNavigationAllowDigging` 与 `agentNavigationAllowPlacing` 对新配置默认均为 `true`，使坐标/路径点寻路可像真实玩家一样挖掘挡路方块或消耗背包方块搭路。Mineflayer 会把挖掘、放置、液体和实体代价纳入 A*：挖掘成本还会结合当前背包中最佳工具、附魔、状态效果及方块实际挖掘时间；`agentNavigationDigCost=12` 对应 pathfinder 的 1x 基准倍率，避免普通树干因内部单步成本上限被误判为不可挖掘；放置会检查可识别的脚手材料并按 `agentNavigationPlaceCost` 惩罚。禁区对通行、挖掘和放置三者都生效，容器和常见机器/存储方块不会被自动挖掉。
 
+0.11.5 进一步把开门从“放置方块”状态中分离：双格门不会再先挖上半部分，开门不消耗脚手材料，已开启的门不会被重复关闭，失败交互会在独立短超时内触发重规划。`agentNavigationStructureBreakCost=70` 会根据门、围合空间、连续墙地顶和方块实体等几何特征提高疑似建筑的破坏成本；判断并不要求建筑使用木板、砖块等人造材质，因此石头或原木建筑同样可受保护，但确实无路可走时仍保留高成本挖掘能力。
+
+服务端还会向同机 Agent 提供附近 Mod 方块的权威碰撞、树叶标签、开门状态和结构置信度。关键位置按距离和碰撞优先级选择，不再按固定坐标顺序截断；这些数据只用于当前局部寻路，结构评分仅在内存短时缓存，不记录玩家长期放置历史。
+
 NeoForge Mod 物品数据处于 `degraded_mod_data=true` 时不会假定存在材料，因此不会凭空规划放置。从 0.10.2 升级且配置文件已经保存了两个 `false` 的服务器需要由服主显式改为 `true`；MineAstr 不会擅自覆盖旧服务器的世界编辑选择。
 
 Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_change_pending`。因按需待机主动退出时，`last_session_exit.expected=true` 且 `code=idle_standby`；被踢出、登录超时或网络错误则会保留为非预期原因，避免 AI 再把正常待机误报为进程重启。

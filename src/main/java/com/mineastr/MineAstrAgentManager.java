@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.Locale;
@@ -46,6 +47,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.network.ConnectionProtocol;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.PacketFlow;
@@ -61,6 +63,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.FenceGateBlock;
 import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.loading.FMLPaths;
@@ -108,6 +111,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private volatile JsonObject serverAwareness = new JsonObject();
     private volatile long nextServerAwarenessAtMs;
     private volatile long lastServerFoodUseAtMs;
+    private final Map<String, StructureScoreCache> navigationStructureCache = new HashMap<>();
     private volatile String lastServerFoodItem = "";
     private volatile long lastServerUnembedAtMs;
     private volatile boolean stopping;
@@ -180,6 +184,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     Boolean.toString(MineAstrConfig.AGENT_NAVIGATION_ALLOW_PLACING.getAsBoolean()));
             environment.put("MINEASTR_NAV_DIG_COST",
                     Integer.toString(MineAstrConfig.AGENT_NAVIGATION_DIG_COST.getAsInt()));
+            environment.put("MINEASTR_NAV_STRUCTURE_BREAK_COST",
+                    Integer.toString(MineAstrConfig.AGENT_NAVIGATION_STRUCTURE_BREAK_COST.getAsInt()));
             environment.put("MINEASTR_NAV_PLACE_COST",
                     Integer.toString(MineAstrConfig.AGENT_NAVIGATION_PLACE_COST.getAsInt()));
             environment.put("MINEASTR_NAV_LIQUID_COST",
@@ -384,13 +390,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 && diagnostics.get("server_authority").isJsonObject()
                                 ? safeLogText(diagnostics.getAsJsonObject("server_authority").toString()) : "none";
                         MineAstr.LOGGER.warn(
-                                "MineAstr Agent 寻路看门狗触发：attempt={} code={} position={} moving={} mining={} building={} reset={} path={} server={}",
+                                "MineAstr Agent 寻路看门狗触发：attempt={} code={} position={} moving={} mining={} building={} interacting={} reset={} path={} server={}",
                                 sanitizeAudit(jsonString(payload, "attempt", "?")),
                                 sanitizeAudit(jsonString(payload, "code", "unknown")),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
                                 jsonString(diagnostics, "moving", "false"),
                                 jsonString(diagnostics, "mining", "false"),
                                 jsonString(diagnostics, "building", "false"),
+                                jsonString(diagnostics, "interacting", "false"),
                                 safeLogText(jsonString(diagnostics, "last_path_reset", "none")),
                                 pathUpdate,
                                 serverAuthority);
@@ -550,6 +557,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         navigation.addProperty("allow_digging", MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean());
         navigation.addProperty("allow_placing", MineAstrConfig.AGENT_NAVIGATION_ALLOW_PLACING.getAsBoolean());
         navigation.addProperty("dig_cost", MineAstrConfig.AGENT_NAVIGATION_DIG_COST.getAsInt());
+        navigation.addProperty("structure_break_cost",
+                MineAstrConfig.AGENT_NAVIGATION_STRUCTURE_BREAK_COST.getAsInt());
         navigation.addProperty("place_cost", MineAstrConfig.AGENT_NAVIGATION_PLACE_COST.getAsInt());
         navigation.addProperty("liquid_cost", MineAstrConfig.AGENT_NAVIGATION_LIQUID_COST.getAsInt());
         navigation.addProperty("cache_max_chunks", MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt());
@@ -966,38 +975,214 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 possible.effect().getEffect().value().getCategory() == MobEffectCategory.HARMFUL);
     }
 
-    private static JsonArray scanNearbyBlocks(ServerPlayer player) {
-        JsonArray blocks = new JsonArray();
+    private JsonArray scanNearbyBlocks(ServerPlayer player) {
         BlockPos origin = player.blockPosition();
-        for (int y = -3; y <= 3 && blocks.size() < 96; y++) {
-            for (int x = -6; x <= 6 && blocks.size() < 96; x++) {
-                for (int z = -6; z <= 6 && blocks.size() < 96; z++) {
+        AABB playerBox = player.getBoundingBox().inflate(1.0E-6D);
+        ArrayList<NavigationBlockCandidate> candidates = new ArrayList<>();
+        for (int y = -3; y <= 3; y++) {
+            for (int x = -6; x <= 6; x++) {
+                for (int z = -6; z <= 6; z++) {
                     BlockPos position = origin.offset(x, y, z);
                     BlockState state = player.serverLevel().getBlockState(position);
                     if (state.isAir()) continue;
                     String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
                     boolean modded = !id.startsWith("minecraft:");
-                    boolean openable = state.getBlock() instanceof DoorBlock
-                            || state.getBlock() instanceof TrapDoorBlock || state.getBlock() instanceof FenceGateBlock;
+                    boolean openable = isOpenable(state);
+                    boolean leaf = state.is(BlockTags.LEAVES)
+                            || id.matches(".*(?:leaves|leaf|foliage).*?");
                     boolean hazard = id.matches(".*(?:lava|fire|magma|cactus|acid|poison|blade|saw|drill).*?");
-                    boolean protectedBlock = modded && (state.hasBlockEntity()
-                            || id.matches(".*(?:machine|controller|storage|drive|terminal|interface|chest|tank).*?"));
-                    if (!modded && !openable && !hazard) continue;
-                    JsonObject entry = new JsonObject();
-                    entry.addProperty("id", id);
-                    entry.addProperty("x", position.getX());
-                    entry.addProperty("y", position.getY());
-                    entry.addProperty("z", position.getZ());
+                    boolean protectedBlock = openable || state.hasBlockEntity()
+                            || id.matches(".*(?:machine|controller|storage|drive|terminal|interface|chest|tank).*?");
+                    boolean colliding = intersects(state, player, position, playerBox);
+                    boolean critical = colliding || position.equals(origin) || position.equals(origin.above())
+                            || position.equals(origin.below());
+                    int structureConfidence = structureConfidence(player, position, state);
+                    if (!critical && !modded && !openable && !leaf && !hazard && structureConfidence < 45) continue;
+
+                    JsonObject entry = blockNavigationDiagnostic(player, position, state);
                     entry.addProperty("modded", modded);
                     entry.addProperty("openable", openable);
+                    entry.addProperty("open", openable && state.hasProperty(BlockStateProperties.OPEN)
+                            && state.getValue(BlockStateProperties.OPEN));
+                    entry.addProperty("hand_openable", handOpenable(state));
+                    entry.addProperty("leaf", leaf);
                     entry.addProperty("hazard", hazard);
                     entry.addProperty("protected", protectedBlock);
-                    entry.addProperty("collision", !state.getCollisionShape(player.serverLevel(), position).isEmpty());
-                    blocks.add(entry);
+                    entry.addProperty("structure_confidence", structureConfidence);
+                    double priority = navigationCandidatePriority(
+                            position.distSqr(origin), critical, openable, hazard);
+                    candidates.add(new NavigationBlockCandidate(entry, priority));
                 }
             }
         }
-        return blocks;
+        candidates.sort(Comparator.comparingDouble(NavigationBlockCandidate::priority));
+        JsonArray result = new JsonArray();
+        for (int index = 0; index < Math.min(192, candidates.size()); index++) {
+            result.add(candidates.get(index).entry());
+        }
+        return result;
+    }
+
+    private static JsonObject blockNavigationDiagnostic(ServerPlayer player, BlockPos position, BlockState state) {
+        JsonObject result = blockDiagnostic(player, position);
+        var boxes = state.getCollisionShape(player.serverLevel(), position).toAabbs();
+        JsonArray collisionBoxes = new JsonArray();
+        for (int index = 0; index < Math.min(6, boxes.size()); index++) {
+            AABB box = boxes.get(index);
+            JsonArray values = new JsonArray();
+            values.add(box.minX); values.add(box.minY); values.add(box.minZ);
+            values.add(box.maxX); values.add(box.maxY); values.add(box.maxZ);
+            collisionBoxes.add(values);
+        }
+        result.add("collision_boxes", collisionBoxes);
+        AABB center = new AABB(0.2D, 0.0D, 0.2D, 0.8D, 1.0D, 0.8D);
+        result.addProperty("center_passable", boxes.stream().noneMatch(box -> box.intersects(center)));
+        return result;
+    }
+
+    static double navigationCandidatePriority(double distanceSquared, boolean critical,
+            boolean openable, boolean hazard) {
+        return distanceSquared - (critical ? 10_000.0D : 0.0D)
+                - (openable ? 5_000.0D : 0.0D) - (hazard ? 2_000.0D : 0.0D);
+    }
+
+    private int structureConfidence(ServerPlayer player, BlockPos position, BlockState state) {
+        String dimension = player.serverLevel().dimension().location().toString();
+        String key = dimension + ":" + position.asLong();
+        int fingerprint = navigationFingerprint(player, position, state);
+        long now = System.currentTimeMillis();
+        StructureScoreCache cached = navigationStructureCache.get(key);
+        if (cached != null && cached.fingerprint() == fingerprint && now - cached.updatedAtMs() < 300_000L) {
+            return cached.score();
+        }
+        int score = computeStructureConfidence(player, position, state);
+        navigationStructureCache.put(key, new StructureScoreCache(score, fingerprint, now));
+        if (navigationStructureCache.size() > 4096) {
+            navigationStructureCache.entrySet().removeIf(entry -> now - entry.getValue().updatedAtMs() >= 300_000L);
+            while (navigationStructureCache.size() > 4096) {
+                String oldest = navigationStructureCache.entrySet().stream()
+                        .min(Comparator.comparingLong(entry -> entry.getValue().updatedAtMs()))
+                        .map(Map.Entry::getKey).orElse(null);
+                if (oldest == null) break;
+                navigationStructureCache.remove(oldest);
+            }
+        }
+        return score;
+    }
+
+    private static int navigationFingerprint(ServerPlayer player, BlockPos position, BlockState state) {
+        int fingerprint = state.hashCode();
+        for (Direction direction : Direction.values()) {
+            fingerprint = 31 * fingerprint + player.serverLevel().getBlockState(position.relative(direction)).hashCode();
+        }
+        return fingerprint;
+    }
+
+    private static int computeStructureConfidence(ServerPlayer player, BlockPos position, BlockState state) {
+        if (isOpenable(state)) return 100;
+        int score = state.hasBlockEntity() ? 55 : 0;
+        var level = player.serverLevel();
+        boolean vertical = hasCollision(level.getBlockState(position.above()), level, position.above())
+                && hasCollision(level.getBlockState(position.below()), level, position.below());
+        boolean lineX = hasCollision(level.getBlockState(position.east()), level, position.east())
+                && hasCollision(level.getBlockState(position.west()), level, position.west());
+        boolean lineZ = hasCollision(level.getBlockState(position.north()), level, position.north())
+                && hasCollision(level.getBlockState(position.south()), level, position.south());
+        if (vertical) score += 12;
+        if (lineX || lineZ) score += 15;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            BlockPos inside = position.relative(direction);
+            if (!isNavigableColumn(player, inside)) continue;
+            score = Math.max(score, enclosureConfidence(player, inside));
+        }
+        String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+        if (MineAstrTools.isLikelyConstructed(id)) score += 5;
+        return Math.min(100, score);
+    }
+
+    private static int enclosureConfidence(ServerPlayer player, BlockPos inside) {
+        var level = player.serverLevel();
+        int walls = 0;
+        boolean nearbyDoor = false;
+        for (Direction direction : Direction.Plane.HORIZONTAL) {
+            for (int distance = 1; distance <= 8; distance++) {
+                BlockPos cursor = inside.relative(direction, distance);
+                BlockState state = level.getBlockState(cursor);
+                if (isOpenable(state) && distance <= 4) nearbyDoor = true;
+                if (hasCollision(state, level, cursor)
+                        || hasCollision(level.getBlockState(cursor.above()), level, cursor.above())) {
+                    walls++;
+                    break;
+                }
+            }
+        }
+        int roofDistance = 0;
+        for (int distance = 2; distance <= 8; distance++) {
+            BlockPos roof = inside.above(distance);
+            if (hasCollision(level.getBlockState(roof), level, roof)) {
+                roofDistance = distance;
+                break;
+            }
+        }
+        return enclosureConfidence(walls, roofDistance, nearbyDoor);
+    }
+
+    static int enclosureConfidence(int walls, int roofDistance, boolean nearbyDoor) {
+        if (walls < 3 || roofDistance <= 0) return nearbyDoor ? 55 : 20;
+        int score = 35 + Math.min(4, walls) * 10 + (roofDistance <= 5 ? 10 : 5);
+        if (nearbyDoor) score += 15;
+        return Math.min(100, score);
+    }
+
+    private static boolean isNavigableColumn(ServerPlayer player, BlockPos position) {
+        var level = player.serverLevel();
+        return !hasCollision(level.getBlockState(position), level, position)
+                && !hasCollision(level.getBlockState(position.above()), level, position.above())
+                && hasCollision(level.getBlockState(position.below()), level, position.below());
+    }
+
+    private static boolean hasCollision(BlockState state, net.minecraft.world.level.LevelReader level, BlockPos position) {
+        return !state.getCollisionShape(level, position).isEmpty();
+    }
+
+    private static boolean intersects(BlockState state, ServerPlayer player, BlockPos position, AABB box) {
+        return state.getCollisionShape(player.serverLevel(), position).toAabbs().stream()
+                .map(shape -> shape.move(position))
+                .anyMatch(shape -> shape.intersects(box));
+    }
+
+    private static boolean isOpenable(BlockState state) {
+        return state.getBlock() instanceof DoorBlock || state.getBlock() instanceof TrapDoorBlock
+                || state.getBlock() instanceof FenceGateBlock;
+    }
+
+    private static boolean handOpenable(BlockState state) {
+        if (state.getBlock() instanceof DoorBlock door) return door.type().canOpenByHand();
+        if (state.getBlock() instanceof TrapDoorBlock) {
+            String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+            return !id.matches(".*[:_]iron_(?:trapdoor|door)$");
+        }
+        return state.getBlock() instanceof FenceGateBlock;
+    }
+
+    public void invalidateNavigationStructure(String dimension, BlockPos changed) {
+        if (dimension == null || changed == null || navigationStructureCache.isEmpty()) return;
+        String prefix = dimension + ":";
+        navigationStructureCache.entrySet().removeIf(entry -> {
+            if (!entry.getKey().startsWith(prefix)) return false;
+            try {
+                long packed = Long.parseLong(entry.getKey().substring(prefix.length()));
+                return BlockPos.of(packed).distSqr(changed) <= 100.0D;
+            } catch (NumberFormatException ignored) {
+                return true;
+            }
+        });
+    }
+
+    private record NavigationBlockCandidate(JsonObject entry, double priority) {
+    }
+
+    private record StructureScoreCache(int score, int fingerprint, long updatedAtMs) {
     }
 
     private static String resolveAgentUsername(String displayName) {

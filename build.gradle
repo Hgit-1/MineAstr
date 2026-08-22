@@ -29,14 +29,14 @@ def agentSourceDir = layout.projectDirectory.dir('src/agent')
 def agentInstallDir = layout.buildDirectory.dir('agent-runtime')
 
 tasks.register('installAgentDependencies', Exec) {
-    inputs.files(agentSourceDir.files('package.json', 'package-lock.json', 'index.js', 'navigation.js', 'navigation-policy.js', 'chunk-cache.js', 'road-network.js', 'task-store.js', 'task-lifecycle.js', 'join-commands.js', 'combat.js'))
+    inputs.files(agentSourceDir.files('package.json', 'package-lock.json', 'patch-pathfinder.js', 'index.js', 'navigation.js', 'navigation-policy.js', 'chunk-cache.js', 'road-network.js', 'task-store.js', 'task-lifecycle.js', 'join-commands.js', 'combat.js'))
     outputs.dir(agentInstallDir.map { it.dir('node_modules') })
     workingDir agentSourceDir
     commandLine 'npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'
     doFirst {
         copy {
             from agentSourceDir
-            include 'package.json', 'package-lock.json', 'index.js', 'navigation.js', 'navigation-policy.js', 'chunk-cache.js', 'road-network.js', 'task-store.js', 'task-lifecycle.js', 'join-commands.js', 'combat.js'
+            include 'package.json', 'package-lock.json', 'patch-pathfinder.js', 'index.js', 'navigation.js', 'navigation-policy.js', 'chunk-cache.js', 'road-network.js', 'task-store.js', 'task-lifecycle.js', 'join-commands.js', 'combat.js'
             into agentInstallDir
         }
     }
@@ -48,8 +48,22 @@ tasks.register('installAgentDependencies', Exec) {
     }
 }
 
-tasks.register('packageAgentRuntime', Zip) {
+tasks.register('patchAgentDependencies', Exec) {
     dependsOn tasks.named('installAgentDependencies')
+    inputs.file(agentSourceDir.file('patch-pathfinder.js'))
+    outputs.file(agentInstallDir.map { it.file('node_modules/mineflayer-pathfinder/lib/move.js') })
+    workingDir agentSourceDir
+    commandLine 'node', 'patch-pathfinder.js'
+    doLast {
+        copy {
+            from agentSourceDir.dir('node_modules/mineflayer-pathfinder')
+            into agentInstallDir.map { it.dir('node_modules/mineflayer-pathfinder') }
+        }
+    }
+}
+
+tasks.register('packageAgentRuntime', Zip) {
+    dependsOn tasks.named('patchAgentDependencies')
     archiveFileName = 'runtime.zip'
     destinationDirectory = layout.buildDirectory.dir('generated/agentResources/mineastr-agent')
     from agentInstallDir

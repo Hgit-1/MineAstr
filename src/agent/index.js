@@ -51,6 +51,7 @@ const maxBodyBytes = 128 * 1024
 const navigationAllowDigging = process.env.MINEASTR_NAV_ALLOW_DIGGING === 'true'
 const navigationAllowPlacing = process.env.MINEASTR_NAV_ALLOW_PLACING === 'true'
 const navigationDigCost = parseInteger(process.env.MINEASTR_NAV_DIG_COST, 12, 1, 99)
+const navigationStructureBreakCost = parseInteger(process.env.MINEASTR_NAV_STRUCTURE_BREAK_COST, 70, 1, 99)
 const navigationPlaceCost = parseInteger(process.env.MINEASTR_NAV_PLACE_COST, 18, 1, 99)
 const navigationLiquidCost = parseInteger(process.env.MINEASTR_NAV_LIQUID_COST, 8, 1, 99)
 const roadWeaverRoutingEnabled = process.env.MINEASTR_ROADWEAVER_ROUTING_ENABLED !== 'false'
@@ -365,6 +366,7 @@ function connectBot() {
           allowDigging: navigationAllowDigging,
           allowPlacing: navigationAllowPlacing,
           digCost: navigationDigCost,
+          structureBreakCost: navigationStructureBreakCost,
           placeCost: navigationPlaceCost,
           liquidCost: navigationLiquidCost,
           isForbidden,
@@ -414,7 +416,8 @@ function connectBot() {
         emit,
         isForbidden,
         shouldPause: () => bot !== created || !sessionReady || sessionDisconnecting || eating || retreating || hunting
-          || created.isUsingHeldItem || created.pathfinder?.isMining?.() || created.pathfinder?.isBuilding?.(),
+          || created.isUsingHeldItem || created.pathfinder?.isMining?.() || created.pathfinder?.isBuilding?.()
+          || created.pathfinder?.isInteracting?.(),
         onDanger: (threat, reason) => handleCombatDanger(threat, reason)
       })
       combatController.start()
@@ -606,6 +609,7 @@ function status() {
       allow_digging: navigationAllowDigging,
       allow_placing: navigationAllowPlacing,
       dig_cost: navigationDigCost,
+      structure_break_cost: navigationStructureBreakCost,
       place_cost: navigationPlaceCost,
       liquid_cost: navigationLiquidCost,
       cache: navigationCache.status(),

@@ -141,6 +141,10 @@ public final class MineAstrBridge implements WebSocket.Listener {
         return server != null && !stopping;
     }
 
+    public void invalidateAgentNavigationStructure(String dimension, net.minecraft.core.BlockPos position) {
+        agentManager.invalidateNavigationStructure(dimension, position);
+    }
+
     public boolean isConnecting() {
         return connecting.get();
     }

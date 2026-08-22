@@ -3,7 +3,8 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const {
-  applyNavigationPolicy, isLeafLike, isOpenableBlock, isProtectedNavigationBlock, pathfinderDigMultiplier
+  applyNavigationPolicy, estimateLocalStructureConfidence, isLeafLike, isOpenableBlock,
+  isProtectedNavigationBlock, pathfinderDigMultiplier
 } = require('../navigation-policy')
 
 function fakeMovements() {
@@ -90,4 +91,47 @@ test('penalizes tree canopies and protects server-described Mod machinery', () =
   assert.equal(movements.exclusionAreasStep[1]({ name: 'oak_leaves' }), 24)
   assert.equal(movements.exclusionAreasStep[1]({ name: 'unknown', position }), 6)
   assert.equal(movements.exclusionAreasBreak[0]({ name: 'unknown', position }), 100)
+})
+
+test('uses geometry confidence rather than material names for structure break cost', () => {
+  const position = { x: 4, y: 70, z: 9 }
+  const movements = applyNavigationPolicy(fakeMovements(), null, {
+    allowDigging: true, allowPlacing: true, digCost: 12, structureBreakCost: 70,
+    placeCost: 18, liquidCost: 8,
+    blockAwareness: candidate => candidate === position
+      ? { structure_confidence: 100, protected: false, hazard: false } : null
+  })
+  assert.equal(movements.exclusionAreasBreak[0]({ name: 'stone', position }), 70)
+})
+
+test('authoritative Mod collision overrides a locally passable unknown block', () => {
+  const position = { x: 2, y: 65, z: 3 }
+  const base = {
+    ...fakeMovements(),
+    getBlock() {
+      return { name: 'unknown', position, safe: true, physical: false, replaceable: true }
+    }
+  }
+  const movements = applyNavigationPolicy(base, null, {
+    allowDigging: true, allowPlacing: true, digCost: 12, structureBreakCost: 70,
+    placeCost: 18, liquidCost: 8,
+    blockAwareness: () => ({ modded: true, collision: true, leaf: true })
+  })
+  const block = movements.getBlock(position, 0, 0, 0)
+  assert.equal(block.serverAuthoritative, true)
+  assert.equal(block.physical, true)
+  assert.equal(block.safe, false)
+  assert.equal(block.leaf, true)
+})
+
+test('recognizes an enclosed stone room without relying on artificial materials', () => {
+  const bot = {
+    blockAt(position) {
+      const wall = position.x === 0 || position.x === 5 || position.z === -2 || position.z === 2
+      const floor = position.y === 63
+      const roof = position.y === 68
+      return { name: wall || floor || roof ? 'stone' : 'air', boundingBox: wall || floor || roof ? 'block' : 'empty' }
+    }
+  }
+  assert.ok(estimateLocalStructureConfidence(bot, { x: 0, y: 64, z: 0 }) >= 80)
 })

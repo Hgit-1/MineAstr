@@ -69,6 +69,9 @@ async function navigateTo(bot, goals, target, options = {}) {
   const actionStallTimeoutMilliseconds = boundedInteger(
     options.actionStallTimeoutMilliseconds, 30_000, stallTimeoutMilliseconds, 120_000
   )
+  const interactionStallTimeoutMilliseconds = boundedInteger(
+    options.interactionStallTimeoutMilliseconds, 2_500, 500, 10_000
+  )
   const segmentTimeoutMilliseconds = boundedInteger(options.segmentTimeoutMilliseconds, 45_000, 1_000, 120_000)
   const watchdogIntervalMilliseconds = boundedInteger(options.watchdogIntervalMilliseconds, 500, 25, 5_000)
   const unstuckMovementMilliseconds = boundedInteger(options.unstuckMovementMilliseconds, 900, 100, 2_000)
@@ -178,6 +181,7 @@ async function navigateTo(bot, goals, target, options = {}) {
           ),
           stallTimeoutMilliseconds,
           actionStallTimeoutMilliseconds,
+          interactionStallTimeoutMilliseconds,
           watchdogIntervalMilliseconds,
           assertActive,
           emit,
@@ -193,7 +197,7 @@ async function navigateTo(bot, goals, target, options = {}) {
       let pathfinderMovedBeforeRecovery = null
       let stalledAvoidancePoint = null
       if (pathError?.code === 'NAVIGATION_STALLED') {
-        const interaction = await activateNearbyOpenable(bot, options.blockAwareness, emit)
+        const interaction = await activateNearbyOpenable(bot, options.blockAwareness, emit, checkpoint)
         if (interaction.activated) {
           consecutiveStalls = Math.max(0, consecutiveStalls - 1)
           continue
@@ -392,14 +396,16 @@ function planGlobalRoute(start, target, options) {
   const terrain = longDistance
     ? options.cache?.planLongDistanceCorridor?.(start, target, options.dimension) || []
     : options.cache?.planChunkCorridor?.(start, target, options.dimension) || []
-  const canopyExit = findCanopyExit(options.bot, start, target)
-  const points = canopyExit ? [canopyExit, ...terrain] : terrain
+  const canopyPath = findCanopyExitPath(options.bot, start, target, options.blockAwareness)
+  const canopyExit = canopyPath.at(-1) || null
+  const points = canopyPath.length ? [...canopyPath, ...terrain] : terrain
   return {
     backend: terrain.length
       ? (longDistance ? 'hierarchical-chunk-a-star' : 'chunk-corridor')
       : 'direct-local-a-star',
     points,
-    canopy_exit: canopyExit || null
+    canopy_exit: canopyExit,
+    canopy_path_points: canopyPath.length
   }
 }
 
@@ -413,35 +419,96 @@ function isLeafLike(block) {
 }
 
 function findCanopyExit(bot, current, target) {
-  if (!bot?.entity || !isLeafLike(safeBlockAt(bot, {
-    x: Math.floor(current.x), y: Math.floor(current.y) - 1, z: Math.floor(current.z)
-  }))) return null
-  const originY = Math.floor(Number(current.y))
-  const candidates = []
-  for (let radius = 2; radius <= 18; radius += 2) {
-    for (let step = 0; step < 24; step++) {
-      const angle = (Math.PI * 2 * step) / 24
-      const x = Math.floor(Number(current.x) + Math.cos(angle) * radius)
-      const z = Math.floor(Number(current.z) + Math.sin(angle) * radius)
-      for (let y = originY + 2; y >= originY - 16; y--) {
-        const point = { x, y, z }
-        if (!isSafeStandPosition(bot, point)) continue
-        const support = safeBlockAt(bot, { x, y: y - 1, z })
-        if (isLeafLike(support)) continue
-        const drop = Math.max(0, originY - y)
-        const targetGain = horizontalDistance(current, target) - horizontalDistance(point, target)
-        candidates.push({ point, score: radius + drop * 1.5 - targetGain * 0.15 })
-        break
-      }
-    }
-    if (candidates.length >= 3) break
-  }
-  candidates.sort((left, right) => left.score - right.score)
-  const selected = candidates[0]?.point
-  return selected ? { ...selected, require_y: true, purpose: 'canopy_exit' } : null
+  return findCanopyExitPath(bot, current, target).at(-1) || null
 }
 
-async function activateNearbyOpenable(bot, blockAwareness, emit = () => {}) {
+function findCanopyExitPath(bot, current, target, blockAwareness = null) {
+  if (!bot?.entity) return []
+  const awareness = typeof blockAwareness === 'function' ? blockAwareness : () => null
+  const start = floorNode(current)
+  const startSupport = { x: start.x, y: start.y - 1, z: start.z }
+  if (!isLeafSupport(safeBlockAt(bot, startSupport), awareness(startSupport))) return []
+  const queue = [{ point: start, cost: 0 }]
+  const best = new Map([[nodeKey(start), 0]])
+  const cameFrom = new Map()
+  let selected = null
+  let expanded = 0
+  while (queue.length && expanded < 2048) {
+    queue.sort((left, right) => left.cost - right.cost)
+    const currentNode = queue.shift()
+    const node = currentNode.point
+    if (currentNode.cost !== best.get(nodeKey(node))) continue
+    expanded += 1
+    const supportPos = { x: node.x, y: node.y - 1, z: node.z }
+    if (horizontalDistance(start, node) >= 2
+        && !isLeafSupport(safeBlockAt(bot, supportPos), awareness(supportPos))) {
+      selected = node
+      break
+    }
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const x = node.x + dx
+      const z = node.z + dz
+      if (horizontalDistance(start, { x, z }) > 18) continue
+      let next = null
+      for (let y = node.y + 1; y >= node.y - 3; y--) {
+        const candidate = { x, y, z }
+        if (isSafeStandPositionAuthoritative(bot, candidate, awareness)) {
+          next = candidate
+          break
+        }
+      }
+      if (!next) continue
+      const nextSupport = { x: next.x, y: next.y - 1, z: next.z }
+      const leafPenalty = isLeafSupport(safeBlockAt(bot, nextSupport), awareness(nextSupport)) ? 6 : 0
+      const verticalPenalty = Math.max(0, node.y - next.y) * 0.5
+      const targetGain = horizontalDistance(node, target) - horizontalDistance(next, target)
+      const cost = currentNode.cost + 1 + leafPenalty + verticalPenalty - targetGain * 0.1
+      const key = nodeKey(next)
+      if (cost >= (best.get(key) ?? Infinity)) continue
+      best.set(key, cost)
+      cameFrom.set(key, node)
+      queue.push({ point: next, cost })
+    }
+  }
+  if (!selected) return []
+  const path = []
+  let cursor = selected
+  while (nodeKey(cursor) !== nodeKey(start)) {
+    path.push({ ...cursor, require_y: true, purpose: 'canopy_exit' })
+    cursor = cameFrom.get(nodeKey(cursor))
+    if (!cursor) return []
+  }
+  path.reverse()
+  return path.filter((point, index) => index === path.length - 1 || index % 3 === 2
+    || point.y !== path[Math.max(0, index - 1)].y)
+}
+
+function nodeKey(point) {
+  return `${Math.floor(point.x)},${Math.floor(point.y)},${Math.floor(point.z)}`
+}
+
+function isLeafSupport(block, known) {
+  return known?.leaf === true || isLeafLike(block)
+}
+
+function isSafeStandPositionAuthoritative(bot, point, awareness) {
+  const supportPos = { x: point.x, y: point.y - 1, z: point.z }
+  const headPos = { x: point.x, y: point.y + 1, z: point.z }
+  const supportKnown = awareness(supportPos)
+  const feetKnown = awareness(point)
+  const headKnown = awareness(headPos)
+  const support = safeBlockAt(bot, supportPos)
+  const feet = safeBlockAt(bot, point)
+  const head = safeBlockAt(bot, headPos)
+  const supportSolid = supportKnown ? supportKnown.collision === true : support?.boundingBox !== 'empty'
+  const feetPassable = feetKnown ? feetKnown.collision === false
+    || (feetKnown.open === true && feetKnown.center_passable !== false) : passable(feet)
+  const headPassable = headKnown ? headKnown.collision === false
+    || (headKnown.open === true && headKnown.center_passable !== false) : passable(head)
+  return supportSolid && feetPassable && headPassable && !supportKnown?.hazard
+}
+
+async function activateNearbyOpenable(bot, blockAwareness, emit = () => {}, target = null) {
   if (!bot?.entity?.position || typeof bot.activateBlock !== 'function') return { activated: false }
   const awareness = typeof blockAwareness === 'function' ? blockAwareness : () => null
   const origin = floorNode(bot.entity.position)
@@ -455,20 +522,48 @@ async function activateNearbyOpenable(bot, blockAwareness, emit = () => {}) {
         const known = awareness(position)
         if (!known?.openable && !/(?:door|trapdoor|fence_gate)$/.test(name)) continue
         if (/(?:^|_)iron_(?:door|trapdoor)$/.test(name)) continue
-        candidates.push({ block, position, distance: spatialDistance(origin, position), known })
+        if (known?.hand_openable === false || known?.open === true || blockOpen(block) === true) continue
+        const distance = spatialDistance(origin, position)
+        let directionPenalty = 0
+        if (target) {
+          const tx = Number(target.x) - Number(origin.x)
+          const tz = Number(target.z) - Number(origin.z)
+          const bx = Number(position.x) - Number(origin.x)
+          const bz = Number(position.z) - Number(origin.z)
+          if (tx * bx + tz * bz <= 0) continue
+          directionPenalty = Math.abs(tx * bz - tz * bx) / (Math.hypot(tx, tz) || 1)
+        }
+        candidates.push({ block, position, distance, score: distance + directionPenalty, known })
       }
     }
   }
-  candidates.sort((left, right) => left.distance - right.distance)
+  candidates.sort((left, right) => left.score - right.score)
   const candidate = candidates[0]
   if (!candidate?.block) return { activated: false }
   try {
     await bot.activateBlock(candidate.block)
+    await sleep(1_100)
+    const refreshed = safeBlockAt(bot, candidate.position)
+    const refreshedKnown = awareness(candidate.position)
+    if (blockOpen(refreshed) !== true && refreshedKnown?.open !== true) {
+      emit({ type: 'navigation_openable_unchanged', position: vectorJson(candidate.position),
+        block: candidate.known?.id || candidate.block.name || null })
+      return { activated: false, error: 'openable state unchanged' }
+    }
     emit({ type: 'navigation_openable_activated', position: vectorJson(candidate.position),
       block: candidate.known?.id || candidate.block.name || null })
     return { activated: true, position: candidate.position }
   } catch (error) {
     return { activated: false, error: safeMessage(error) }
+  }
+}
+
+function blockOpen(block) {
+  try {
+    const value = block?.getProperties?.()?.open
+    return typeof value === 'boolean' ? value : null
+  } catch (_) {
+    return null
   }
 }
 
@@ -534,7 +629,7 @@ function findEscapeCheckpoint(bot, current, target, lateralOffset, roadNetwork =
         const verticalPenalty = Math.abs(y - originY) * 1.5
         const roadDistance = Math.min(32, Number(roadNetwork?.distanceToRoad?.(point) ?? 32))
         const support = safeBlockAt(bot, { x, y: y - 1, z })
-        const leafPenalty = /leaves/i.test(String(support?.name || '')) ? 6 : 0
+        const leafPenalty = isLeafLike(support) ? 6 : 0
         candidates.push({ point, score: targetGain * 2 - desiredDistance - verticalPenalty - roadDistance * 0.15 - leafPenalty })
         break
       }
@@ -604,6 +699,7 @@ function runPathfinderSegment(bot, goal, options) {
       bot.removeListener?.('path_update', onPathUpdate)
       bot.removeListener?.('path_reset', onPathReset)
       bot.removeListener?.('goal_reached', onGoalReached)
+      bot.removeListener?.('path_interaction_failed', onInteractionFailed)
       if (error) reject(error)
       else resolve(value)
     }
@@ -627,6 +723,10 @@ function runPathfinderSegment(bot, goal, options) {
       } catch (_) {}
       finish(error)
     }
+    const onInteractionFailed = error => stopWith(
+      'NAVIGATION_INTERACTION_FAILED', `方块交互失败：${safeMessage(error)}`, { interaction_failed: true }
+    )
+    bot.on?.('path_interaction_failed', onInteractionFailed)
 
     let pathPromise
     try {
@@ -701,19 +801,21 @@ function runPathfinderSegment(bot, goal, options) {
         lastPosition = { ...current }
         lastProgressAt = now
       }
+      const activeInteraction = Boolean(bot.pathfinder.isInteracting?.())
       const activeBlockAction = Boolean(bot.pathfinder.isMining?.() || bot.pathfinder.isBuilding?.())
       if (activeBlockAction && blockActionStartedAt == null) blockActionStartedAt = now
       if (!activeBlockAction) blockActionStartedAt = null
-      const allowedIdle = activeBlockAction
-        ? options.actionStallTimeoutMilliseconds
-        : options.stallTimeoutMilliseconds
-      const idleReferenceAt = activeBlockAction
+      const allowedIdle = activeInteraction
+        ? options.interactionStallTimeoutMilliseconds
+        : activeBlockAction ? options.actionStallTimeoutMilliseconds : options.stallTimeoutMilliseconds
+      const idleReferenceAt = activeInteraction || activeBlockAction
         ? Math.max(lastProgressAt, blockActionStartedAt)
         : lastProgressAt
       if (now - idleReferenceAt >= allowedIdle) {
         stopWith('NAVIGATION_STALLED', '局部寻路长时间没有产生实际位移', {
           inactive_ms: now - idleReferenceAt,
-          block_action_active: activeBlockAction
+          block_action_active: activeBlockAction,
+          interaction_active: activeInteraction
         })
       }
     }, options.watchdogIntervalMilliseconds)
@@ -738,7 +840,7 @@ function distanceToGoal(goal, position) {
 
 function summarizePathUpdate(bot, results) {
   const path = Array.isArray(results?.path) ? results.path : []
-  const action = path.find(node => node?.toBreak?.length || node?.toPlace?.length)
+  const action = path.find(node => node?.toBreak?.length || node?.toPlace?.length || node?.toUse?.length)
   return {
     status: String(results?.status || 'unknown').slice(0, 40),
     path_length: path.length,
@@ -747,7 +849,8 @@ function summarizePathUpdate(bot, results) {
     first_action: action ? {
       position: vectorJson(action),
       to_break: (action.toBreak || []).slice(0, 3).map(position => blockDiagnostic(bot, position)),
-      to_place_count: Array.isArray(action.toPlace) ? action.toPlace.length : 0
+      to_place_count: Array.isArray(action.toPlace) ? action.toPlace.length : 0,
+      to_use: (action.toUse || []).slice(0, 3).map(position => blockDiagnostic(bot, position))
     } : null
   }
 }
@@ -763,6 +866,7 @@ function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve 
     moving: Boolean(bot?.pathfinder?.isMoving?.()),
     mining: Boolean(bot?.pathfinder?.isMining?.()),
     building: Boolean(bot?.pathfinder?.isBuilding?.()),
+    interacting: Boolean(bot?.pathfinder?.isInteracting?.()),
     controls: {
       forward: Boolean(bot?.controlState?.forward),
       jump: Boolean(bot?.controlState?.jump),
@@ -844,6 +948,7 @@ module.exports = {
   recoveryCheckpoint,
   findEscapeCheckpoint,
   findCanopyExit,
+  findCanopyExitPath,
   isSafeStandPosition,
   planGlobalRoute,
   activateNearbyOpenable,

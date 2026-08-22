@@ -278,6 +278,11 @@ function buildCategoryLookup(registry) {
   const water = new Set(['water', 'bubble_column'].map(name => registry.blocksByName?.[name]?.id).filter(Number.isFinite))
   const avoid = new Set(['lava', 'fire', 'soul_fire', 'magma_block', 'cactus', 'sweet_berry_bush', 'cobweb', 'powder_snow']
     .map(name => registry.blocksByName?.[name]?.id).filter(Number.isFinite))
+  for (const block of registry.blocksArray || []) {
+    if (Number.isFinite(block?.id) && /(?:^|_)(?:leaves|leaf|foliage)(?:$|_)/i.test(String(block.name || ''))) {
+      avoid.add(block.id)
+    }
+  }
   return type => air.has(type) ? AIR : water.has(type) ? WATER : avoid.has(type) ? AVOID : SOLID
 }
 

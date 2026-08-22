@@ -16,6 +16,7 @@ import net.neoforged.neoforge.event.ServerChatEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.AdvancementEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -24,7 +25,7 @@ import org.slf4j.Logger;
 @Mod(MineAstr.MODID)
 public final class MineAstr {
     public static final String MODID = "mineastr";
-    public static final String MOD_VERSION = "0.11.4";
+    public static final String MOD_VERSION = "0.11.5";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     private static MineAstrBridge activeBridge;
@@ -127,6 +128,20 @@ public final class MineAstr {
     public void onAdvancementEarned(AdvancementEvent.AdvancementEarnEvent event) {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
             bridge.forwardPlayerAdvancement(player, event.getAdvancement());
+        }
+    }
+
+    @SubscribeEvent
+    public void onBlockBroken(BlockEvent.BreakEvent event) {
+        if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
+            bridge.invalidateAgentNavigationStructure(level.dimension().location().toString(), event.getPos());
+        }
+    }
+
+    @SubscribeEvent
+    public void onBlockPlaced(BlockEvent.EntityPlaceEvent event) {
+        if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
+            bridge.invalidateAgentNavigationStructure(level.dimension().location().toString(), event.getPos());
         }
     }
 }

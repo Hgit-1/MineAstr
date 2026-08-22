@@ -4,8 +4,9 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const {
-  activateNearbyOpenable, applyPathfinderCollisionCompatibility, findCanopyExit, findEscapeCheckpoint,
-  localAvoidanceCost, navigateTo, obstaclePoint, performPhysicalUnstuck, planGlobalRoute, recoveryStrategy
+  activateNearbyOpenable, applyPathfinderCollisionCompatibility, findCanopyExit, findCanopyExitPath, findEscapeCheckpoint,
+  localAvoidanceCost, navigateTo, obstaclePoint, performPhysicalUnstuck, planGlobalRoute, recoveryStrategy,
+  runPathfinderSegment
 } = require('../navigation')
 
 class GoalNear {
@@ -368,18 +369,22 @@ test('plans an explicit three-dimensional exit when standing on a tree canopy', 
   const bot = {
     entity: { position: { x: 0, y: 72, z: 0 } },
     blockAt(position) {
-      if (position.x === 4 && position.z === 0 && position.y === 63) {
-        return { name: 'grass_block', boundingBox: 'block' }
+      const supports = new Map([[0, 71], [1, 71], [2, 69], [3, 66], [4, 63]])
+      const supportY = position.z === 0 ? supports.get(position.x) : null
+      if (position.y === supportY) {
+        return { name: position.x === 4 ? 'grass_block' : 'oak_leaves', boundingBox: 'block' }
       }
-      if (position.x === 4 && position.z === 0 && (position.y === 64 || position.y === 65)) {
+      if (supportY != null && (position.y === supportY + 1 || position.y === supportY + 2)) {
         return { name: 'air', boundingBox: 'empty' }
       }
-      if (position.y === 71) return { name: 'oak_leaves', boundingBox: 'block' }
       return { name: 'oak_log', boundingBox: 'block' }
     }
   }
   const exit = findCanopyExit(bot, bot.entity.position, { x: 100, y: 64, z: 0 })
   assert.deepEqual(exit, { x: 4, y: 64, z: 0, require_y: true, purpose: 'canopy_exit' })
+  const path = findCanopyExitPath(bot, bot.entity.position, { x: 100, y: 64, z: 0 })
+  assert.ok(path.length >= 3)
+  for (let index = 1; index < path.length; index++) assert.ok(path[index - 1].y - path[index].y <= 3)
 })
 
 test('uses hierarchical A-star for routes longer than 512 blocks', () => {
@@ -392,13 +397,14 @@ test('uses hierarchical A-star for routes longer than 512 blocks', () => {
 
 test('activates a nearby wooden or server-described Mod door', async () => {
   const activated = []
+  let open = false
   const bot = {
     entity: { position: { x: 0, y: 64, z: 0 } },
     blockAt(position) {
       return position.x === 1 && position.y === 64 && position.z === 0
-        ? { name: 'mod_door', position } : { name: 'air', position }
+        ? { name: 'mod_door', position, getProperties: () => ({ open }) } : { name: 'air', position }
     },
-    async activateBlock(block) { activated.push(block.position) }
+    async activateBlock(block) { activated.push(block.position); open = true }
   }
   const result = await activateNearbyOpenable(bot, position =>
     position.x === 1 && position.y === 64 && position.z === 0 ? { openable: true, id: 'mod:door' } : null)
@@ -449,6 +455,34 @@ test('grants a longer no-movement budget while pathfinder is mining', async () =
   })
   assert.equal(result.remaining_distance, 0)
   assert.equal(bot.pathfinder.cancellations, 0)
+})
+
+test('uses the short interaction watchdog instead of the building timeout', async () => {
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => new Promise(() => {}))
+  bot.pathfinder.isInteracting = () => true
+  const startedAt = Date.now()
+  await assert.rejects(runPathfinderSegment(bot, new GoalNear(4, 64, 0, 1), {
+    deadlineMilliseconds: 1_000,
+    stallTimeoutMilliseconds: 500,
+    actionStallTimeoutMilliseconds: 800,
+    interactionStallTimeoutMilliseconds: 100,
+    watchdogIntervalMilliseconds: 25,
+    assertActive() {}, emit() {}, attempt: 1
+  }), error => error.code === 'NAVIGATION_STALLED' && error.diagnostics.interacting === true)
+  assert.ok(Date.now() - startedAt < 400)
+})
+
+test('fails and replans immediately when an openable reports no state change', async () => {
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => new Promise(() => {}))
+  setTimeout(() => bot.emit('path_interaction_failed', new Error('openable state unchanged')), 30)
+  await assert.rejects(runPathfinderSegment(bot, new GoalNear(4, 64, 0, 1), {
+    deadlineMilliseconds: 1_000,
+    stallTimeoutMilliseconds: 500,
+    actionStallTimeoutMilliseconds: 800,
+    interactionStallTimeoutMilliseconds: 100,
+    watchdogIntervalMilliseconds: 25,
+    assertActive() {}, emit() {}, attempt: 1
+  }), error => error.code === 'NAVIGATION_INTERACTION_FAILED')
 })
 
 test('cancels an in-flight local path as soon as the task is canceled', async () => {

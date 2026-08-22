@@ -1,11 +1,12 @@
 {
   "name": "mineastr-server-agent",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "private": true,
   "description": "MineAstr server-managed Mineflayer runtime",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
+    "pretest": "node patch-pathfinder.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {

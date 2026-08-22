@@ -300,6 +300,12 @@ public final class MineAstrConfig {
             .comment("寻路中挖掘的基础成本；12 表示 Mineflayer 原生 1x 倍率，实际成本还会按最佳可用工具和方块挖掘时间增加。")
             .defineInRange("agentNavigationDigCost", 12, 1, 99);
 
+    public static final ModConfigSpec.IntValue AGENT_NAVIGATION_STRUCTURE_BREAK_COST = BUILDER
+            .comment(
+                    "寻路破坏疑似人工结构方块时增加的成本。默认 70，会强烈优先开门和绕行，但在确实无路时仍允许挖掘。",
+                    "结构判断使用围合空间、连续墙地顶、门和方块实体等几何信号，不仅依赖方块材质。")
+            .defineInRange("agentNavigationStructureBreakCost", 70, 1, 99);
+
     public static final ModConfigSpec.IntValue AGENT_NAVIGATION_PLACE_COST = BUILDER
             .comment("寻路中放置一个方块的成本；值越高越倾向绕路并节省材料。")
             .defineInRange("agentNavigationPlaceCost", 18, 1, 99);
