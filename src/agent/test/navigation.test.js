@@ -4,8 +4,8 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const {
-  applyPathfinderCollisionCompatibility, findEscapeCheckpoint, localAvoidanceCost, navigateTo, obstaclePoint,
-  performPhysicalUnstuck
+  activateNearbyOpenable, applyPathfinderCollisionCompatibility, findCanopyExit, findEscapeCheckpoint,
+  localAvoidanceCost, navigateTo, obstaclePoint, performPhysicalUnstuck, planGlobalRoute
 } = require('../navigation')
 
 class GoalNear {
@@ -293,6 +293,48 @@ test('three-dimensional recovery prefers safe ground over repeating a tree colli
   }
   const escape = findEscapeCheckpoint(bot, { x: 0, y: 64, z: 0 }, { x: 20, y: 64, z: 0 }, 3)
   assert.deepEqual(escape, { x: 3, y: 64, z: 0 })
+})
+
+test('plans an explicit three-dimensional exit when standing on a tree canopy', () => {
+  const bot = {
+    entity: { position: { x: 0, y: 72, z: 0 } },
+    blockAt(position) {
+      if (position.x === 4 && position.z === 0 && position.y === 63) {
+        return { name: 'grass_block', boundingBox: 'block' }
+      }
+      if (position.x === 4 && position.z === 0 && (position.y === 64 || position.y === 65)) {
+        return { name: 'air', boundingBox: 'empty' }
+      }
+      if (position.y === 71) return { name: 'oak_leaves', boundingBox: 'block' }
+      return { name: 'oak_log', boundingBox: 'block' }
+    }
+  }
+  const exit = findCanopyExit(bot, bot.entity.position, { x: 100, y: 64, z: 0 })
+  assert.deepEqual(exit, { x: 4, y: 64, z: 0, require_y: true, purpose: 'canopy_exit' })
+})
+
+test('uses hierarchical A-star for routes longer than 512 blocks', () => {
+  const route = planGlobalRoute({ x: 0, y: 64, z: 0 }, { x: 800, y: 64, z: 0 }, {
+    cache: { planLongDistanceCorridor: () => [{ x: 400, y: 64, z: 0 }, { x: 800, y: 64, z: 0 }] }
+  })
+  assert.equal(route.backend, 'hierarchical-chunk-a-star')
+  assert.equal(route.points.length, 2)
+})
+
+test('activates a nearby wooden or server-described Mod door', async () => {
+  const activated = []
+  const bot = {
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    blockAt(position) {
+      return position.x === 1 && position.y === 64 && position.z === 0
+        ? { name: 'mod_door', position } : { name: 'air', position }
+    },
+    async activateBlock(block) { activated.push(block.position) }
+  }
+  const result = await activateNearbyOpenable(bot, position =>
+    position.x === 1 && position.y === 64 && position.z === 0 ? { openable: true, id: 'mod:door' } : null)
+  assert.equal(result.activated, true)
+  assert.deepEqual(activated, [{ x: 1, y: 64, z: 0 }])
 })
 
 test('does not treat steady slow movement as a stall', async () => {

@@ -316,6 +316,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     }
 
     public void tickActivity(MinecraftServer currentServer) {
+        agentManager.tickServerAwareness(currentServer);
         roadNetworkSnapshot.tick(currentServer);
         MineAstrActivityData data = activityData;
         if (data == null || !MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) return;

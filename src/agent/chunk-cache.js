@@ -149,33 +149,96 @@ class ChunkNavigationCache {
     }
     const goalKey = pointKey(targetChunk.x, targetChunk.z)
     const startKey = pointKey(startChunk.x, startChunk.z)
-    const open = new Map([[startKey, { ...startChunk, g: 0, f: heuristic(startChunk, targetChunk) }]])
+    const open = new MinHeap()
+    open.push({ ...startChunk, g: 0, f: octileHeuristic(startChunk, targetChunk) })
     const cameFrom = new Map()
     const best = new Map([[startKey, 0]])
     let expanded = 0
 
     while (open.size && expanded < 8192) {
-      let currentKey = null
-      let current = null
-      for (const [key, node] of open) {
-        if (!current || node.f < current.f) { currentKey = key; current = node }
-      }
-      open.delete(currentKey)
+      const current = open.pop()
+      const currentKey = pointKey(current.x, current.z)
+      if (current.g !== best.get(currentKey)) continue
       if (currentKey === goalKey) return simplifyCorridor(reconstruct(cameFrom, currentKey), target)
       expanded += 1
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (const [dx, dz] of NEIGHBORS_8) {
         const x = current.x + dx
         const z = current.z + dz
         if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) continue
         const key = pointKey(x, z)
-        const tentative = current.g + this.chunkTraversalCost(dimension, x, z)
+        const stepLength = dx !== 0 && dz !== 0 ? Math.SQRT2 : 1
+        const tentative = current.g + this.chunkTraversalCost(dimension, x, z) * stepLength
         if (tentative >= (best.get(key) ?? Infinity)) continue
         cameFrom.set(key, currentKey)
         best.set(key, tentative)
-        open.set(key, { x, z, g: tentative, f: tentative + heuristic({ x, z }, targetChunk) })
+        open.push({ x, z, g: tentative, f: tentative + octileHeuristic({ x, z }, targetChunk) })
       }
     }
     return []
+  }
+
+  planLongDistanceCorridor(start, target, dimension) {
+    const cellSizeChunks = 4
+    const startCell = {
+      x: Math.floor(start.x / (16 * cellSizeChunks)), z: Math.floor(start.z / (16 * cellSizeChunks))
+    }
+    const targetCell = {
+      x: Math.floor(target.x / (16 * cellSizeChunks)), z: Math.floor(target.z / (16 * cellSizeChunks))
+    }
+    if (startCell.x === targetCell.x && startCell.z === targetCell.z) {
+      return this.planChunkCorridor(start, target, dimension)
+    }
+    const margin = 6
+    const bounds = {
+      minX: Math.min(startCell.x, targetCell.x) - margin,
+      maxX: Math.max(startCell.x, targetCell.x) + margin,
+      minZ: Math.min(startCell.z, targetCell.z) - margin,
+      maxZ: Math.max(startCell.z, targetCell.z) + margin
+    }
+    const startKey = pointKey(startCell.x, startCell.z)
+    const goalKey = pointKey(targetCell.x, targetCell.z)
+    const open = new MinHeap()
+    open.push({ ...startCell, g: 0, f: octileHeuristic(startCell, targetCell) })
+    const best = new Map([[startKey, 0]])
+    const cameFrom = new Map()
+    let expanded = 0
+    while (open.size && expanded < 16384) {
+      const current = open.pop()
+      const currentKey = pointKey(current.x, current.z)
+      if (current.g !== best.get(currentKey)) continue
+      if (currentKey === goalKey) {
+        const cells = reconstruct(cameFrom, currentKey)
+        return simplifyWorldCorridor(cells.map(cell => ({
+          x: cell.x * cellSizeChunks * 16 + cellSizeChunks * 8,
+          y: target.y,
+          z: cell.z * cellSizeChunks * 16 + cellSizeChunks * 8
+        })), target)
+      }
+      expanded += 1
+      for (const [dx, dz] of NEIGHBORS_8) {
+        const x = current.x + dx
+        const z = current.z + dz
+        if (x < bounds.minX || x > bounds.maxX || z < bounds.minZ || z > bounds.maxZ) continue
+        const key = pointKey(x, z)
+        const stepLength = dx !== 0 && dz !== 0 ? Math.SQRT2 : 1
+        const tentative = current.g + this.cellTraversalCost(dimension, x, z, cellSizeChunks) * stepLength
+        if (tentative >= (best.get(key) ?? Infinity)) continue
+        cameFrom.set(key, currentKey)
+        best.set(key, tentative)
+        open.push({ x, z, g: tentative, f: tentative + octileHeuristic({ x, z }, targetCell) })
+      }
+    }
+    return []
+  }
+
+  cellTraversalCost(dimension, cellX, cellZ, sizeChunks = 4) {
+    let sum = 0
+    for (let dz = 0; dz < sizeChunks; dz++) {
+      for (let dx = 0; dx < sizeChunks; dx++) {
+        sum += this.chunkTraversalCost(dimension, cellX * sizeChunks + dx, cellZ * sizeChunks + dz)
+      }
+    }
+    return sum / (sizeChunks * sizeChunks)
   }
 
   chunkTraversalCost(dimension, chunkX, chunkZ) {
@@ -268,6 +331,54 @@ function simplifyCorridor(chunks, target) {
   return result
 }
 
+function simplifyWorldCorridor(points, target) {
+  if (points.length <= 2) return [{ x: target.x, y: target.y, z: target.z }]
+  const result = []
+  let previousDirection = null
+  for (let index = 1; index < points.length; index++) {
+    const dx = Math.sign(points[index].x - points[index - 1].x)
+    const dz = Math.sign(points[index].z - points[index - 1].z)
+    const direction = `${dx},${dz}`
+    if (previousDirection && direction !== previousDirection) result.push(points[index - 1])
+    previousDirection = direction
+  }
+  result.push({ x: target.x, y: target.y, z: target.z })
+  return result
+}
+
+class MinHeap {
+  constructor() { this.items = [] }
+  get size() { return this.items.length }
+  push(value) {
+    this.items.push(value)
+    let index = this.items.length - 1
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (this.items[parent].f <= value.f) break
+      this.items[index] = this.items[parent]
+      index = parent
+    }
+    this.items[index] = value
+  }
+  pop() {
+    const root = this.items[0]
+    const tail = this.items.pop()
+    if (this.items.length && tail) {
+      let index = 0
+      while (true) {
+        let child = index * 2 + 1
+        if (child >= this.items.length) break
+        if (child + 1 < this.items.length && this.items[child + 1].f < this.items[child].f) child += 1
+        if (this.items[child].f >= tail.f) break
+        this.items[index] = this.items[child]
+        index = child
+      }
+      this.items[index] = tail
+    }
+    return root
+  }
+}
+
 function setPacked2Bit(buffer, index, value) {
   const byte = index >> 2
   const shift = (index & 3) * 2
@@ -291,7 +402,12 @@ function chunkRelativePath(dimension, x, z) {
 
 function cacheKey(dimension, x, z) { return `${normalizeDimension(dimension)}:${x}:${z}` }
 function pointKey(x, z) { return `${x},${z}` }
-function heuristic(left, right) { return Math.abs(left.x - right.x) + Math.abs(left.z - right.z) }
+const NEIGHBORS_8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
+function octileHeuristic(left, right) {
+  const dx = Math.abs(left.x - right.x)
+  const dz = Math.abs(left.z - right.z)
+  return Math.max(dx, dz) + (Math.SQRT2 - 1) * Math.min(dx, dz)
+}
 function normalizeDimension(value) { return String(value || 'minecraft:overworld') }
 function round(value) { return Math.round(Number(value) * 10000) / 10000 }
 function boundedInteger(value, fallback, min, max) {

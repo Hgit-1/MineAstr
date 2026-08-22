@@ -84,7 +84,7 @@ async function navigateTo(bot, goals, target, options = {}) {
   let consecutiveStalls = 0
   let recoveryOffset = 0
   const recoveryOffsets = [3, -3, 5]
-  let globalRoute = planGlobalRoute(bot.entity.position, target, options)
+  let globalRoute = planGlobalRoute(bot.entity.position, target, { ...options, bot })
   let corridor = globalRoute.points
   let routeBackend = globalRoute.backend
   let corridorIndex = 0
@@ -105,12 +105,14 @@ async function navigateTo(bot, goals, target, options = {}) {
     while (true) {
       assertActive()
       const current = bot.entity.position
-      while (corridorIndex < corridor.length - 1 && horizontalDistance(current, corridor[corridorIndex]) <= 5) corridorIndex += 1
+      while (corridorIndex < corridor.length - 1 && corridorPointReached(current, corridor[corridorIndex])) corridorIndex += 1
       const stitchedTarget = corridor[corridorIndex] || target
       if (routeBackend === 'roadweaver-hybrid' && standPositionState(bot, stitchedTarget) === 'invalid') {
         options.roadNetwork?.invalidateNear?.(stitchedTarget)
         globalReroutes += 1
-        globalRoute = planGlobalRoute(current, target, globalReroutes <= 3 ? options : { ...options, roadNetwork: null })
+        globalRoute = planGlobalRoute(current, target, {
+          ...(globalReroutes <= 3 ? options : { ...options, roadNetwork: null }), bot
+        })
         corridor = globalRoute.points
         routeBackend = globalRoute.backend
         corridorIndex = 0
@@ -138,7 +140,7 @@ async function navigateTo(bot, goals, target, options = {}) {
       }
       const goal = finalGoal
         ? new goals.GoalNear(target.x, target.y, target.z, tolerance)
-        : recoverySegment
+        : recoverySegment || checkpoint.require_y
           ? new goals.GoalNear(checkpoint.x, checkpoint.y, checkpoint.z, 1)
           : new goals.GoalNearXZ(checkpoint.x, checkpoint.z, 3)
 
@@ -187,6 +189,11 @@ async function navigateTo(bot, goals, target, options = {}) {
       let physicalRecovery = null
       let stalledAvoidancePoint = null
       if (pathError?.code === 'NAVIGATION_STALLED') {
+        const interaction = await activateNearbyOpenable(bot, options.blockAwareness, emit)
+        if (interaction.activated) {
+          consecutiveStalls = Math.max(0, consecutiveStalls - 1)
+          continue
+        }
         const stalledAt = { ...bot.entity.position }
         stalledAvoidancePoint = obstaclePoint(stalledAt, checkpoint)
         addAvoidanceZone(localAvoidanceZones, stalledAvoidancePoint)
@@ -251,7 +258,7 @@ async function navigateTo(bot, goals, target, options = {}) {
       if (consecutiveStalls > recoveryOffsets.length && routeBackend === 'roadweaver-hybrid' && globalReroutes < 3) {
         globalReroutes += 1
         options.roadNetwork?.invalidateNear?.(actual)
-        globalRoute = planGlobalRoute(actual, target, options)
+        globalRoute = planGlobalRoute(actual, target, { ...options, bot })
         corridor = globalRoute.points
         routeBackend = globalRoute.backend
         corridorIndex = 0
@@ -341,8 +348,88 @@ async function performPhysicalUnstuck(bot, target, options = {}) {
 function planGlobalRoute(start, target, options) {
   const road = options.roadNetwork?.plan?.(start, target, options.dimension)
   if (road?.points?.length > 1) return road
-  const terrain = options.cache?.planChunkCorridor?.(start, target, options.dimension) || []
-  return { backend: terrain.length ? 'chunk-corridor' : 'direct-local-a-star', points: terrain }
+  const longDistance = horizontalDistance(start, target) >= 512
+  const terrain = longDistance
+    ? options.cache?.planLongDistanceCorridor?.(start, target, options.dimension) || []
+    : options.cache?.planChunkCorridor?.(start, target, options.dimension) || []
+  const canopyExit = findCanopyExit(options.bot, start, target)
+  const points = canopyExit ? [canopyExit, ...terrain] : terrain
+  return {
+    backend: terrain.length
+      ? (longDistance ? 'hierarchical-chunk-a-star' : 'chunk-corridor')
+      : 'direct-local-a-star',
+    points,
+    canopy_exit: canopyExit || null
+  }
+}
+
+function corridorPointReached(current, point) {
+  return point?.require_y ? spatialDistance(current, point) <= 3 : horizontalDistance(current, point) <= 5
+}
+
+function isLeafLike(block) {
+  const name = String(block?.name || block?.displayName || '').toLowerCase()
+  return /(?:^|_)(?:leaves|leaf|foliage)(?:$|_)/.test(name) || /leaves$/.test(name)
+}
+
+function findCanopyExit(bot, current, target) {
+  if (!bot?.entity || !isLeafLike(safeBlockAt(bot, {
+    x: Math.floor(current.x), y: Math.floor(current.y) - 1, z: Math.floor(current.z)
+  }))) return null
+  const originY = Math.floor(Number(current.y))
+  const candidates = []
+  for (let radius = 2; radius <= 18; radius += 2) {
+    for (let step = 0; step < 24; step++) {
+      const angle = (Math.PI * 2 * step) / 24
+      const x = Math.floor(Number(current.x) + Math.cos(angle) * radius)
+      const z = Math.floor(Number(current.z) + Math.sin(angle) * radius)
+      for (let y = originY + 2; y >= originY - 16; y--) {
+        const point = { x, y, z }
+        if (!isSafeStandPosition(bot, point)) continue
+        const support = safeBlockAt(bot, { x, y: y - 1, z })
+        if (isLeafLike(support)) continue
+        const drop = Math.max(0, originY - y)
+        const targetGain = horizontalDistance(current, target) - horizontalDistance(point, target)
+        candidates.push({ point, score: radius + drop * 1.5 - targetGain * 0.15 })
+        break
+      }
+    }
+    if (candidates.length >= 3) break
+  }
+  candidates.sort((left, right) => left.score - right.score)
+  const selected = candidates[0]?.point
+  return selected ? { ...selected, require_y: true, purpose: 'canopy_exit' } : null
+}
+
+async function activateNearbyOpenable(bot, blockAwareness, emit = () => {}) {
+  if (!bot?.entity?.position || typeof bot.activateBlock !== 'function') return { activated: false }
+  const awareness = typeof blockAwareness === 'function' ? blockAwareness : () => null
+  const origin = floorNode(bot.entity.position)
+  const candidates = []
+  for (let y = -1; y <= 2; y++) {
+    for (let x = -2; x <= 2; x++) {
+      for (let z = -2; z <= 2; z++) {
+        const position = { x: origin.x + x, y: origin.y + y, z: origin.z + z }
+        const block = safeBlockAt(bot, position)
+        const name = String(block?.name || '').toLowerCase()
+        const known = awareness(position)
+        if (!known?.openable && !/(?:door|trapdoor|fence_gate)$/.test(name)) continue
+        if (/(?:^|_)iron_(?:door|trapdoor)$/.test(name)) continue
+        candidates.push({ block, position, distance: spatialDistance(origin, position), known })
+      }
+    }
+  }
+  candidates.sort((left, right) => left.distance - right.distance)
+  const candidate = candidates[0]
+  if (!candidate?.block) return { activated: false }
+  try {
+    await bot.activateBlock(candidate.block)
+    emit({ type: 'navigation_openable_activated', position: vectorJson(candidate.position),
+      block: candidate.known?.id || candidate.block.name || null })
+    return { activated: true, position: candidate.position }
+  } catch (error) {
+    return { activated: false, error: safeMessage(error) }
+  }
 }
 
 function obstaclePoint(current, target) {
@@ -709,7 +796,10 @@ module.exports = {
   performPhysicalUnstuck,
   recoveryCheckpoint,
   findEscapeCheckpoint,
+  findCanopyExit,
   isSafeStandPosition,
+  planGlobalRoute,
+  activateNearbyOpenable,
   runPathfinderSegment,
   spatialDistance
 }

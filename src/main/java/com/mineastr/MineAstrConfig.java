@@ -264,6 +264,26 @@ public final class MineAstrConfig {
             .comment("Agent 近战攻击间隔（毫秒），用于避免无效高频挥击。")
             .defineInRange("agentCombatAttackCooldownMs", 650, 250, 2000);
 
+    public static final ModConfigSpec.BooleanValue AGENT_SERVER_SIDE_SURVIVAL_ENABLED = BUILDER
+            .comment(
+                    "是否由服务端权威背包数据帮助 Agent 自动进食。默认开启。",
+                    "该机制能识别带 FOOD 数据组件的 Mod 食物，解决兼容模式下 Mineflayer 无法解析 Mod 背包的问题。")
+            .define("agentServerSideSurvivalEnabled", true);
+
+    public static final ModConfigSpec.IntValue AGENT_AUTO_EAT_FOOD_THRESHOLD = BUILDER
+            .comment("Agent 开始自动使用背包食物的饱食度阈值。")
+            .defineInRange("agentAutoEatFoodThreshold", 14, 1, 19);
+
+    public static final ModConfigSpec.BooleanValue AGENT_EMERGENCY_HUNTING_ENABLED = BUILDER
+            .comment(
+                    "背包没有食物且饱食度极低时，是否允许 Agent 捕猎未命名、未驯服的成年常见食用动物。",
+                    "该行为有独立审计记录；不会攻击玩家、宠物、幼年或命名生物。")
+            .define("agentEmergencyHuntingEnabled", true);
+
+    public static final ModConfigSpec.IntValue AGENT_HUNTING_FOOD_THRESHOLD = BUILDER
+            .comment("允许紧急捕猎的饱食度阈值；只有背包无可食物时才生效。")
+            .defineInRange("agentHuntingFoodThreshold", 6, 1, 12);
+
     public static final ModConfigSpec.BooleanValue AGENT_NAVIGATION_ALLOW_DIGGING = BUILDER
             .comment(
                     "是否允许 Agent 在明确的寻路任务中挖掘挡路方块。默认开启。",

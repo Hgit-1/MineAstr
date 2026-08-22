@@ -1,5 +1,6 @@
 package com.mineastr;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.netty.buffer.Unpooled;
@@ -39,10 +40,24 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import net.minecraft.SharedConstants;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.ConnectionProtocol;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.TamableAnimal;
+import net.minecraft.world.effect.MobEffectCategory;
+import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.FenceGateBlock;
+import net.minecraft.world.level.block.TrapDoorBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.network.payload.ModdedNetworkQueryComponent;
 import net.neoforged.neoforge.network.payload.ModdedNetworkQueryPayload;
@@ -85,6 +100,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private volatile String previousAgentUsername = "";
     private volatile long startedAtMs;
     private volatile JsonObject lastAgentStatus = new JsonObject();
+    private volatile JsonObject serverAwareness = new JsonObject();
+    private volatile long nextServerAwarenessAtMs;
+    private volatile long lastServerFoodUseAtMs;
+    private volatile String lastServerFoodItem = "";
     private volatile boolean stopping;
     private volatile int neoForgeComponentCount;
 
@@ -101,6 +120,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         this.stopping = false;
         this.lastError = "";
         this.lastAgentStatus = new JsonObject();
+        this.serverAwareness = new JsonObject();
+        this.nextServerAwarenessAtMs = 0L;
         this.controlPort.set(0);
         this.previousAgentUsername = this.preferredAgentUsername;
         this.preferredAgentUsername = resolveAgentUsername(MineAstrConfig.BOT_DISPLAY_NAME.get());
@@ -501,6 +522,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("human_player_count", humanPlayerCount.get());
         result.addProperty("idle_disconnect_seconds", MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt());
         result.addProperty("preferred_username", preferredAgentUsername);
+        result.add("server_side_awareness", serverAwareness.deepCopy());
         JsonObject joinCommands = new JsonObject();
         joinCommands.addProperty("configured_count", Math.min(5, MineAstrConfig.AGENT_JOIN_COMMANDS.get().size()));
         joinCommands.addProperty("command_delay_ms", MineAstrConfig.AGENT_JOIN_COMMAND_DELAY_MS.getAsInt());
@@ -524,6 +546,12 @@ public final class MineAstrAgentManager implements AutoCloseable {
         combat.addProperty("minimum_health", MineAstrConfig.AGENT_COMBAT_MIN_HEALTH.getAsInt());
         combat.addProperty("attack_cooldown_ms", MineAstrConfig.AGENT_COMBAT_ATTACK_COOLDOWN_MS.getAsInt());
         result.add("combat_config", combat);
+        JsonObject survival = new JsonObject();
+        survival.addProperty("server_side_enabled", MineAstrConfig.AGENT_SERVER_SIDE_SURVIVAL_ENABLED.getAsBoolean());
+        survival.addProperty("auto_eat_food_threshold", MineAstrConfig.AGENT_AUTO_EAT_FOOD_THRESHOLD.getAsInt());
+        survival.addProperty("emergency_hunting_enabled", MineAstrConfig.AGENT_EMERGENCY_HUNTING_ENABLED.getAsBoolean());
+        survival.addProperty("hunting_food_threshold", MineAstrConfig.AGENT_HUNTING_FOOD_THRESHOLD.getAsInt());
+        result.add("survival_config", survival);
         Process current = process;
         if (current != null) result.addProperty("pid", current.pid());
         if (!lastError.isBlank()) result.addProperty("last_error", lastError);
@@ -641,6 +669,147 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 || (!previousAgentUsername.isBlank() && playerName.equalsIgnoreCase(previousAgentUsername)));
     }
 
+    /**
+     * Uses the authoritative server registry and inventory for data that a
+     * protocol-only client cannot decode safely on a heavily modded server.
+     */
+    public void tickServerAwareness(MinecraftServer currentServer) {
+        if (!MineAstrConfig.ENABLE_AGENT.getAsBoolean()) return;
+        long now = System.currentTimeMillis();
+        if (now < nextServerAwarenessAtMs) return;
+        nextServerAwarenessAtMs = now + 1_000L;
+        ServerPlayer player = currentServer.getPlayerList().getPlayers().stream()
+                .filter(candidate -> isAgentUsername(candidate.getGameProfile().getName()))
+                .findFirst().orElse(null);
+        if (player == null) {
+            JsonObject offline = new JsonObject();
+            offline.addProperty("online", false);
+            offline.addProperty("updated_at_ms", now);
+            serverAwareness = offline;
+            return;
+        }
+
+        JsonObject awareness = new JsonObject();
+        awareness.addProperty("online", true);
+        awareness.addProperty("updated_at_ms", now);
+        awareness.addProperty("health", player.getHealth());
+        awareness.addProperty("food", player.getFoodData().getFoodLevel());
+        awareness.addProperty("server_side_survival_enabled",
+                MineAstrConfig.AGENT_SERVER_SIDE_SURVIVAL_ENABLED.getAsBoolean());
+        int edibleCount = 0;
+        int bestSlot = -1;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            FoodProperties food = stack.get(DataComponents.FOOD);
+            if (stack.isEmpty() || food == null) continue;
+            edibleCount += stack.getCount();
+            boolean safe = !hasHarmfulFoodEffect(food);
+            double score = food.nutrition() * 4.0 + food.saturation() * 2.0 + (safe ? 100.0 : 0.0);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSlot = slot;
+            }
+        }
+        awareness.addProperty("edible_count", edibleCount);
+        int foodLevel = player.getFoodData().getFoodLevel();
+        boolean hungry = foodLevel <= MineAstrConfig.AGENT_AUTO_EAT_FOOD_THRESHOLD.getAsInt()
+                || player.getHealth() <= MineAstrConfig.AGENT_COMBAT_MIN_HEALTH.getAsInt();
+        if (MineAstrConfig.AGENT_SERVER_SIDE_SURVIVAL_ENABLED.getAsBoolean() && hungry && bestSlot >= 0
+                && now - lastServerFoodUseAtMs >= 2_000L && !player.isDeadOrDying()
+                && !player.isCreative() && !player.isSpectator()) {
+            ItemStack source = player.getInventory().getItem(bestSlot);
+            FoodProperties food = source.get(DataComponents.FOOD);
+            if (food != null && player.canEat(food.canAlwaysEat()) && (!hasHarmfulFoodEffect(food)
+                    || foodLevel <= MineAstrConfig.AGENT_HUNTING_FOOD_THRESHOLD.getAsInt())) {
+                String itemId = BuiltInRegistries.ITEM.getKey(source.getItem()).toString();
+                ItemStack result = player.eat(player.serverLevel(), source, food);
+                player.getInventory().setItem(bestSlot, result);
+                player.getInventory().setChanged();
+                player.containerMenu.broadcastChanges();
+                lastServerFoodUseAtMs = now;
+                lastServerFoodItem = itemId;
+                awareness.addProperty("last_consumed_item", itemId);
+                awareness.addProperty("last_consumed_at_ms", now);
+                MineAstr.LOGGER.info("MineAstr Agent 服务端自主进食：item={} food_before={} health={}",
+                        itemId, foodLevel, player.getHealth());
+            }
+        }
+        if (!lastServerFoodItem.isBlank() && !awareness.has("last_consumed_item")) {
+            awareness.addProperty("last_consumed_item", lastServerFoodItem);
+            awareness.addProperty("last_consumed_at_ms", lastServerFoodUseAtMs);
+        }
+
+        boolean huntingNeeded = MineAstrConfig.AGENT_EMERGENCY_HUNTING_ENABLED.getAsBoolean()
+                && foodLevel <= MineAstrConfig.AGENT_HUNTING_FOOD_THRESHOLD.getAsInt() && edibleCount == 0;
+        awareness.addProperty("hunting_needed", huntingNeeded);
+        JsonArray prey = new JsonArray();
+        if (huntingNeeded) {
+            AABB range = player.getBoundingBox().inflate(24.0);
+            for (Animal animal : player.serverLevel().getEntitiesOfClass(Animal.class, range, candidate ->
+                    !candidate.isBaby() && !(candidate instanceof TamableAnimal)
+                            && !candidate.hasCustomName() && isPermittedFoodAnimal(candidate))) {
+                JsonObject entry = new JsonObject();
+                entry.addProperty("entity_id", animal.getId());
+                entry.addProperty("type", BuiltInRegistries.ENTITY_TYPE.getKey(animal.getType()).toString());
+                entry.addProperty("x", animal.getX());
+                entry.addProperty("y", animal.getY());
+                entry.addProperty("z", animal.getZ());
+                prey.add(entry);
+                if (prey.size() >= 8) break;
+            }
+        }
+        awareness.add("permitted_prey", prey);
+        awareness.add("nearby_blocks", scanNearbyBlocks(player));
+        serverAwareness = awareness;
+        syncSessionPresence();
+    }
+
+    private static boolean isPermittedFoodAnimal(Animal animal) {
+        String id = BuiltInRegistries.ENTITY_TYPE.getKey(animal.getType()).toString();
+        return Set.of("minecraft:cow", "minecraft:pig", "minecraft:sheep", "minecraft:chicken",
+                "minecraft:rabbit", "minecraft:mooshroom").contains(id);
+    }
+
+    private static boolean hasHarmfulFoodEffect(FoodProperties food) {
+        return food.effects().stream().anyMatch(possible ->
+                possible.effect().getEffect().value().getCategory() == MobEffectCategory.HARMFUL);
+    }
+
+    private static JsonArray scanNearbyBlocks(ServerPlayer player) {
+        JsonArray blocks = new JsonArray();
+        BlockPos origin = player.blockPosition();
+        for (int y = -3; y <= 3 && blocks.size() < 96; y++) {
+            for (int x = -6; x <= 6 && blocks.size() < 96; x++) {
+                for (int z = -6; z <= 6 && blocks.size() < 96; z++) {
+                    BlockPos position = origin.offset(x, y, z);
+                    BlockState state = player.serverLevel().getBlockState(position);
+                    if (state.isAir()) continue;
+                    String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+                    boolean modded = !id.startsWith("minecraft:");
+                    boolean openable = state.getBlock() instanceof DoorBlock
+                            || state.getBlock() instanceof TrapDoorBlock || state.getBlock() instanceof FenceGateBlock;
+                    boolean hazard = id.matches(".*(?:lava|fire|magma|cactus|acid|poison|blade|saw|drill).*?");
+                    boolean protectedBlock = modded && (state.hasBlockEntity()
+                            || id.matches(".*(?:machine|controller|storage|drive|terminal|interface|chest|tank).*?"));
+                    if (!modded && !openable && !hazard) continue;
+                    JsonObject entry = new JsonObject();
+                    entry.addProperty("id", id);
+                    entry.addProperty("x", position.getX());
+                    entry.addProperty("y", position.getY());
+                    entry.addProperty("z", position.getZ());
+                    entry.addProperty("modded", modded);
+                    entry.addProperty("openable", openable);
+                    entry.addProperty("hazard", hazard);
+                    entry.addProperty("protected", protectedBlock);
+                    entry.addProperty("collision", !state.getCollisionShape(player.serverLevel(), position).isEmpty());
+                    blocks.add(entry);
+                }
+            }
+        }
+        return blocks;
+    }
+
     private static String resolveAgentUsername(String displayName) {
         return MineAstrAgentIdentity.resolve(
                 MineAstrConfig.AGENT_USE_BOT_DISPLAY_NAME_AS_USERNAME.getAsBoolean(),
@@ -654,6 +823,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         JsonObject body = new JsonObject();
         body.addProperty("human_player_count", humanPlayerCount.get());
         body.addProperty("preferred_username", preferredAgentUsername);
+        body.add("server_awareness", serverAwareness.deepCopy());
         request("/session", body, Duration.ofSeconds(3)).whenComplete((ignored, throwable) -> {
             if (throwable != null && !stopping) {
                 Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();

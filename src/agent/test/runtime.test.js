@@ -36,7 +36,7 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(response.status, 200)
     const status = await response.json()
     assert.equal(status.ok, true)
-    assert.equal(status.runtime_version, '0.11.2')
+    assert.equal(status.runtime_version, '0.11.3')
     assert.equal(status.username, 'MineAstrTest')
     assert.equal(status.state, 'standby')
     assert.equal(status.connection_attempts, 0)
@@ -47,7 +47,11 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(JSON.stringify(status).includes('runtime-secret-must-not-leak'), false)
 
     const presence = await postJson(port, '/session', {
-      human_player_count: 1, preferred_username: 'Aria'
+      human_player_count: 1, preferred_username: 'Aria',
+      server_awareness: {
+        online: false, food: 6, hunting_needed: true,
+        nearby_blocks: [{ id: 'create:mechanical_press', x: 1, y: 64, z: 2, modded: true, protected: true }]
+      }
     }, 'test-token')
     assert.equal(presence.status, 200)
     await delay(100)
@@ -57,6 +61,8 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(presentButIdle.username, 'Aria')
     assert.equal(presentButIdle.state, 'standby')
     assert.equal(presentButIdle.connection_attempts, 0)
+    assert.equal(presentButIdle.server_awareness.hunting_needed, true)
+    assert.equal(presentButIdle.server_awareness.nearby_blocks[0].id, 'create:mechanical_press')
 
     const accepted = await postJson(port, '/task', {
       task_id: 'offline-chat', task_type: 'chat', args: { message: 'hello' }

@@ -88,6 +88,9 @@ let navigationCompatibility = null
 let combatController = null
 let eating = false
 let retreating = false
+let hunting = false
+let serverAwareness = {}
+let nearbyBlockAwareness = new Map()
 let survivalTimer = null
 let selfCareRunning = false
 let neoForgeNegotiated = false
@@ -215,7 +218,12 @@ function taskNeedsSession() {
 }
 
 function maintenanceNeedsSession() {
-  return eating || retreating
+  return eating || retreating || hunting
+}
+
+function awarenessAt(position) {
+  if (!position) return null
+  return nearbyBlockAwareness.get(`${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`) || null
 }
 
 function desiredWakeReason() {
@@ -359,7 +367,8 @@ function connectBot() {
           digCost: navigationDigCost,
           placeCost: navigationPlaceCost,
           liquidCost: navigationLiquidCost,
-          isForbidden
+          isForbidden,
+          blockAwareness: awarenessAt
         })
         created.pathfinder.setMovements(movements)
       } catch (error) {
@@ -404,7 +413,7 @@ function connectBot() {
         attackCooldownMilliseconds: combatAttackCooldownMilliseconds,
         emit,
         isForbidden,
-        shouldPause: () => bot !== created || !sessionReady || sessionDisconnecting || eating || retreating
+        shouldPause: () => bot !== created || !sessionReady || sessionDisconnecting || eating || retreating || hunting
           || created.isUsingHeldItem || created.pathfinder?.isMining?.() || created.pathfinder?.isBuilding?.(),
         onDanger: (threat, reason) => handleCombatDanger(threat, reason)
       })
@@ -560,7 +569,8 @@ function status() {
     idle_disconnect_seconds: idleDisconnectSeconds,
     idle_disconnect_at_ms: idleDisconnectAt || null,
     join_commands: joinCommandState,
-    maintenance_state: retreating ? 'retreating_from_threat' : eating ? 'eating' : 'idle',
+    maintenance_state: retreating ? 'retreating_from_threat' : hunting ? 'emergency_hunting' : eating ? 'eating' : 'idle',
+    server_awareness: serverAwareness,
     combat: combatController?.status() || {
       enabled: combatEnabled,
       state: 'idle',
@@ -588,6 +598,10 @@ function status() {
       backend: roadNetwork.status().available ? 'roadweaver-hybrid' : 'mineflayer-pathfinder-a-star',
       segmented: true,
       stitched_chunk_corridor: true,
+      hierarchical_long_distance_a_star: true,
+      canopy_exit_planning: true,
+      openable_block_interaction: true,
+      mod_block_awareness: true,
       tool_aware_dig_cost: true,
       allow_digging: navigationAllowDigging,
       allow_placing: navigationAllowPlacing,
@@ -696,6 +710,8 @@ async function selfCare() {
       await retreatFromThreat(nearbyThreat, 'low_health')
     } else if (!ate && nearbyThreat) {
       await retreatFromThreat(nearbyThreat, 'navigation_safety')
+    } else if (!ate && serverAwareness?.hunting_needed) {
+      await huntForFood()
     }
     tryResumeSuspendedNavigation()
   } finally {
@@ -744,7 +760,7 @@ function nearbySurvivalThreat(radius = combatRadius + 2) {
 
 function tryResumeSuspendedNavigation() {
   if (!activeTask || activeTask.state !== 'suspended' || !RESUMABLE_TYPES.has(activeTask.task_type)
-      || !bot || state !== 'online' || !sessionReady || retreating || eating) return false
+      || !bot || state !== 'online' || !sessionReady || retreating || eating || hunting) return false
   const safeHealth = Math.min(20, combatMinimumHealth + 2)
   if (Number(bot.health) < safeHealth || nearbySurvivalThreat()) return false
   activeTask = resumeNavigationRecord(activeTask, { runId: ++taskGeneration })
@@ -801,6 +817,59 @@ async function autoEat(force = false) {
   }
 }
 
+async function huntForFood() {
+  if (!bot?.entity || hunting || eating || retreating || !serverAwareness?.hunting_needed) return false
+  const permitted = Array.isArray(serverAwareness.permitted_prey) ? serverAwareness.permitted_prey : []
+  const candidates = permitted.map(entry => ({ entry, entity: bot.entities?.[Number(entry.entity_id)] }))
+    .filter(candidate => candidate.entity?.position && !isForbidden(candidate.entity.position))
+    .sort((left, right) => left.entity.position.distanceTo(bot.entity.position) - right.entity.position.distanceTo(bot.entity.position))
+  const selected = candidates[0]
+  if (!selected) return false
+  if (activeTask?.state === 'running' && RESUMABLE_TYPES.has(activeTask.task_type)) {
+    suspendNavigationTask('自主生存保护：背包无食物，开始受控紧急捕猎', selected.entity, 'hunger', false)
+  }
+  hunting = true
+  const targetId = Number(selected.entry.entity_id)
+  emit({
+    type: 'autonomous_hunt_started', entity_id: targetId, entity_type: selected.entry.type || null,
+    reason: 'critical_hunger_no_food', food: serverAwareness.food ?? bot.food ?? null
+  })
+  reconcileSession()
+  const deadline = Date.now() + 30_000
+  let attacks = 0
+  try {
+    while (Date.now() < deadline && attacks < 16) {
+      const entity = bot.entities?.[targetId]
+      if (!entity?.position) break
+      const distance = entity.position.distanceTo(bot.entity.position)
+      if (distance > 3.2) {
+        bot.pathfinder.setGoal(new goals.GoalFollow(entity, 2), true)
+        await delay(350)
+        continue
+      }
+      bot.pathfinder.setGoal(null)
+      await bot.lookAt(entity.position.offset(0, Math.max(0.5, entity.height || 1) * 0.6, 0), true)
+      bot.attack(entity)
+      attacks += 1
+      await delay(Math.max(650, combatAttackCooldownMilliseconds))
+    }
+    bot.pathfinder.setGoal(null)
+    await delay(1500)
+    emit({ type: 'autonomous_hunt_finished', entity_id: targetId, attacks,
+      food: serverAwareness.food ?? bot.food ?? null })
+    return attacks > 0
+  } catch (error) {
+    lastError = `紧急捕猎失败：${safeError(error)}`
+    emit({ type: 'autonomous_hunt_failed', entity_id: targetId, attacks, error: safeError(error) })
+    return false
+  } finally {
+    try { bot.pathfinder.setGoal(null) } catch (_) {}
+    hunting = false
+    tryResumeSuspendedNavigation()
+    reconcileSession()
+  }
+}
+
 function finishTask(runId, ok, message, data = null) {
   if (!activeTask || activeTask.run_id !== runId
       || !['waiting_for_connection', 'running'].includes(activeTask.state)) return false
@@ -820,7 +889,7 @@ function finishTask(runId, ok, message, data = null) {
 }
 
 async function runTask(input) {
-  if (retreating) throw new Error('Bot 正在执行自主生存避险，请稍后重试')
+  if (retreating || hunting) throw new Error('Bot 正在执行自主生存维护，请稍后重试')
   const taskId = String(input.task_id || `task-${Date.now()}-${++taskSequence}`).slice(0, 80)
   const type = String(input.task_type || '').toLowerCase()
   const args = input.args && typeof input.args === 'object' ? input.args : {}
@@ -948,6 +1017,7 @@ async function navigateTask(target, args, runId) {
     isForbidden: position => isForbidden(position, args.dimension || bot?.game?.dimension),
     cache: navigationCache,
     roadNetwork,
+    blockAwareness: awarenessAt,
     onCheckpoint: checkpoint => {
       if (!activeTask || activeTask.run_id !== runId) return
       activeTask = { ...activeTask, navigation_checkpoint: checkpoint, updated_at_ms: Date.now() }
@@ -1025,6 +1095,13 @@ function updateSession(input) {
       type: 'agent_identity_updated', previous_username: previous,
       preferred_username: username, applies_after_reconnect: Boolean(bot)
     })
+  }
+  serverAwareness = input.server_awareness && typeof input.server_awareness === 'object'
+    ? input.server_awareness : {}
+  nearbyBlockAwareness = new Map()
+  for (const block of Array.isArray(serverAwareness.nearby_blocks) ? serverAwareness.nearby_blocks : []) {
+    if (![block?.x, block?.y, block?.z].every(Number.isFinite)) continue
+    nearbyBlockAwareness.set(`${Math.floor(block.x)},${Math.floor(block.y)},${Math.floor(block.z)}`, block)
   }
   emit({
     type: 'session_presence', human_player_count: humanPlayerCount,

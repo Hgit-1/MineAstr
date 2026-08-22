@@ -42,6 +42,21 @@ test('cached dangerous chunks influence the coarse stitched corridor', () => {
   }
 })
 
+test('hierarchical long-distance A-star produces a bounded stitched route', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mineastr-nav-long-'))
+  try {
+    const cache = new ChunkNavigationCache(root, { maxChunks: 64 })
+    const corridor = cache.planLongDistanceCorridor(
+      { x: 0, y: 70, z: 0 }, { x: 1600, y: 80, z: 800 }, 'minecraft:overworld'
+    )
+    assert.ok(corridor.length >= 1)
+    assert.ok(corridor.length < 32, JSON.stringify(corridor))
+    assert.deepEqual(corridor.at(-1), { x: 1600, y: 80, z: 800 })
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 function fakeRegistry() {
   return {
     blocksByName: {

@@ -226,7 +226,7 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 `agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的必需频道、MineAstr 已实现确认的四个 NeoForge 核心配置握手频道，以及可由服务端在玩家进入世界后发送的可选 PLAY 频道，交给受监管的 Mineflayer 进程完成逐项协商。其他可选 CONFIGURATION 频道不会声明，避免触发 Mineflayer 无法确认的 Mod 专用配置任务；Mineflayer 不解析的 PLAY 自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
-在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。移动、观察、聊天和不依赖背包的任务仍可使用；自动进食和物品使用只有在后续加载了匹配服务器注册表的 codec 后才应视为可用，不能据此声称已完整支持 Mod 食品。
+在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。从 0.11.3 起，服务端 Mod 会用权威背包与 `FOOD` 数据组件完成自动进食，因而普通 Mod 食品不再依赖该 codec；但通用 Mod GUI、复杂物品主动使用与自定义效果语义仍不能视为完整支持。
 
 0.10.4 将私服二次认证正式纳入 Agent 就绪流程。如果服务器要求 `/login`，在 `config/mineastr-common.toml` 中配置：
 
@@ -256,6 +256,8 @@ Mineflayer 每次进入世界后会先等待 `agentJoinCommandDelayMs`，按顺�
 
 `agentCombatEnabled=true` 时，Agent 会周期检查 `agentCombatRadius` 内的明确敌对生物，在正常近战触及距离内选择背包中识别到的较优武器并按攻击冷却反击。该机制永不主动攻击玩家，并排除宠物、中立生物和可条件敌对的生物；苦力怕、监守者、凋灵和末影龙会触发撤退而不是迎战。生命值低于 `agentCombatMinHealth` 时同样优先撤退/进食；防卫时不会打断正在进行的挖掘、放置或物品使用。
 
+`agentServerSideSurvivalEnabled=true` 时，饱食度低于 `agentAutoEatFoodThreshold=14` 的 Agent 会从服务端真实背包中选择高营养、无有害效果的可食用物，其中包含使用原版 `FOOD` 数据组件的 Mod 食品。背包无食物且饱食度不高于 `agentHuntingFoodThreshold=6` 时，`agentEmergencyHuntingEnabled=true` 允许受控捕猎成年、未命名、未驯服的牛/猪/羊/鸡/兔/哞菇；此行为有单独审计事件，也可完全关闭。
+
 0.10.2 的坐标与路径点移动不再直接信任上游 `goto()` 的 Promise：长距离会先用已知区块生成粗粒度 A* 走廊，再拼接为约 24 格的局部路段；每段及最终目标都校验 Bot 实际位置，连续无进展或总预算超时会返回目标、当前位置和剩余距离，不再误报完成。路径预算会按距离在 2–15 分钟间调整。
 
 Agent 会把实际加载过的区块按每方块 2-bit 分类为空气、固体、水体或危险，并使用 deflate 持久化到 `world/data/mineastr/agent/navigation-cache/`。缓存不保存方块 ID、方块实体、NBT、容器、告示牌、玩家或聊天内容；索引只保留区块坐标、地表高度离散度和类别比例。默认最多 2048 个区块，超过后删除最旧项。方块变化会延迟刷新对应区块，缓存损坏或写入失败只会降级为直线分段，不会阻断 Agent。
@@ -281,6 +283,10 @@ Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_cha
 0.11.2 修复 pathfinder 持有移动目标但玩家实体被树干、树叶或地形边缘碰撞卡住时反复重规划的问题。看门狗确认无实际位移后，Agent 会封锁碰撞点，选择安全脱困方向，执行一次受限的转向、跳跃和冲刺，再将控制交回 A* 规划。物理脱困会继承 Agent 禁区边界，并在状态中上报可核对的 runtime 版本。
 
 同版本把树木/坡面恢复改为 3–12 格三维安全点扫描：树叶仍是可站立方块，但树冠死胡同会增加成本，优先寻找可下降地面或道路接入点。`goto`/`goto_waypoint` 会原子保存在 `world/data/mineastr/agent/tasks.json`；`agentResumeInterruptedNavigation=true` 时，24 小时内的未完成导航可在进程或服务端重启后经维度、坐标和禁区重检后自动续行。
+
+0.11.3 把树冠离开点提升为显式三维导航检查点：开始位于树叶上时会先搜索非树叶支撑的安全地面，不再因水平坐标接近就误判“已到达”。木门、活板门和栅栏门进入路径动作；卡住时会主动尝试打开附近的原版或服务端已识别 Mod 可交互方块。
+
+同版本在 512 格以上使用“4×4 区块粗粒度八方向 A* → 区块八方向 A* → Mineflayer 局部 A*”的分层路线，并用优先队列替换线性扫描的开集合。服务端会向 Agent 提供附近 Mod 方块的真实碰撞、危险、可交互和机器/容器保护摘要；未知 Mod 几何会保守加权，而不是被当作空气或随意破坏。RoadWeaver 仍优先，无 API/无数据时自动回退该分层 A*。
 
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
 
