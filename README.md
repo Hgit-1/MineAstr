@@ -120,7 +120,7 @@ pip install -r requirements.txt
 | `agent_require_admin_approval` | `false` | 需要人工审批时设为 `true`；默认允许 AI 在服务端类型白名单和禁区内自主行动。状态、观察和紧急取消不受影响。 |
 | `agent_observation_distance` | `8` | Agent 结构化视场与附近实体的默认观察距离，范围 1–32 格。 |
 
-服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。
+服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。0.10.4 的服务端 Mod 可在 Bot 每次进入世界后先执行 `/login` 等前置指令，全部发送并等待认证完成后才放行 AI 任务；密码仅配置在 Minecraft 服务端 TOML 中，不应填写到 AstrBot 插件设置或聊天中。
 
 ## 服务器事件推送
 
