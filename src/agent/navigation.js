@@ -71,6 +71,7 @@ async function navigateTo(bot, goals, target, options = {}) {
   )
   const segmentTimeoutMilliseconds = boundedInteger(options.segmentTimeoutMilliseconds, 45_000, 1_000, 120_000)
   const watchdogIntervalMilliseconds = boundedInteger(options.watchdogIntervalMilliseconds, 500, 25, 5_000)
+  const unstuckMovementMilliseconds = boundedInteger(options.unstuckMovementMilliseconds, 900, 100, 2_000)
   const startedAt = Date.now()
   const initialDistance = horizontalDistance(bot.entity.position, target)
   const timeoutMilliseconds = boundedInteger(
@@ -183,6 +184,24 @@ async function navigateTo(bot, goals, target, options = {}) {
       }
       assertActive()
 
+      let physicalRecovery = null
+      let stalledAvoidancePoint = null
+      if (pathError?.code === 'NAVIGATION_STALLED') {
+        const stalledAt = { ...bot.entity.position }
+        stalledAvoidancePoint = obstaclePoint(stalledAt, checkpoint)
+        addAvoidanceZone(localAvoidanceZones, stalledAvoidancePoint)
+        physicalRecovery = await performPhysicalUnstuck(bot, stitchedTarget, {
+          durationMilliseconds: unstuckMovementMilliseconds,
+          lateralOffset: recoveryOffset || (attempts % 2 === 0 ? -3 : 3),
+          assertActive,
+          emit,
+          attempt: attempts,
+          roadNetwork: options.roadNetwork,
+          isForbidden: options.isForbidden
+        })
+        assertActive()
+      }
+
       const actual = bot.entity.position
       if (goalReached(goal, actual)) {
         consecutiveStalls = 0
@@ -212,8 +231,8 @@ async function navigateTo(bot, goals, target, options = {}) {
       } else {
         consecutiveStalls += 1
         recoveryOffset = recoveryOffsets[Math.min(consecutiveStalls - 1, recoveryOffsets.length - 1)]
-        avoidancePoint = obstaclePoint(actual, checkpoint)
-        localAvoidanceZones.push(avoidancePoint)
+        avoidancePoint = stalledAvoidancePoint || obstaclePoint(actual, checkpoint)
+        addAvoidanceZone(localAvoidanceZones, avoidancePoint)
       }
 
       emit({
@@ -224,6 +243,7 @@ async function navigateTo(bot, goals, target, options = {}) {
         moved_distance: round(moved),
         target_progress: round(progress),
         pathfinder_error: pathError ? safeMessage(pathError) : null,
+        physical_recovery: physicalRecovery,
         consecutive_stalls: consecutiveStalls,
         avoidance_point: avoidancePoint ? vectorJson(avoidancePoint) : null
       })
@@ -255,6 +275,67 @@ async function navigateTo(bot, goals, target, options = {}) {
   } finally {
     removeLocalAvoidance()
   }
+}
+
+function addAvoidanceZone(zones, point) {
+  if (!point || zones.some(existing => spatialDistance(existing, point) < 0.75)) return false
+  zones.push(point)
+  while (zones.length > 64) zones.shift()
+  return true
+}
+
+async function performPhysicalUnstuck(bot, target, options = {}) {
+  if (!bot?.entity?.position || typeof bot.setControlState !== 'function'
+      || typeof bot.clearControlStates !== 'function') return { attempted: false, reason: 'controls_unavailable' }
+  const start = { ...bot.entity.position }
+  const escape = findEscapeCheckpoint(
+    bot, start, target, Number(options.lateralOffset) || 3, options.roadNetwork
+  )
+  if (typeof options.isForbidden === 'function') {
+    const midpoint = {
+      x: (Number(start.x) + Number(escape.x)) / 2,
+      y: (Number(start.y) + Number(escape.y)) / 2,
+      z: (Number(start.z) + Number(escape.z)) / 2
+    }
+    if (options.isForbidden(midpoint) || options.isForbidden(escape)) {
+      return { attempted: false, reason: 'forbidden_direction' }
+    }
+  }
+  const dx = Number(escape.x) - Number(start.x)
+  const dz = Number(escape.z) - Number(start.z)
+  if (!Number.isFinite(dx) || !Number.isFinite(dz) || Math.hypot(dx, dz) < 0.5) {
+    return { attempted: false, reason: 'no_safe_direction' }
+  }
+  const durationMilliseconds = boundedInteger(options.durationMilliseconds, 900, 100, 2_000)
+  try {
+    options.assertActive?.()
+    if (typeof bot.look === 'function') {
+      const yaw = Math.atan2(-dx, -dz)
+      await bot.look(yaw, 0, true)
+    }
+    bot.setControlState('forward', true)
+    bot.setControlState('jump', true)
+    bot.setControlState('sprint', true)
+    const deadline = Date.now() + durationMilliseconds
+    while (Date.now() < deadline) {
+      options.assertActive?.()
+      await new Promise(resolve => setTimeout(resolve, Math.min(100, deadline - Date.now())))
+    }
+  } finally {
+    bot.clearControlStates()
+  }
+  const moved = spatialDistance(start, bot.entity.position)
+  const result = {
+    attempted: true,
+    moved_distance: round(moved),
+    start: vectorJson(start),
+    target: vectorJson(escape),
+    position: vectorJson(bot.entity.position)
+  }
+  try {
+    options.emit?.({ type: 'navigation_physical_unstuck', attempt: options.attempt, ...result })
+  } catch (_) {}
+  return result
 }
 
 function planGlobalRoute(start, target, options) {
@@ -625,6 +706,7 @@ module.exports = {
   localAvoidanceCost,
   navigateTo,
   obstaclePoint,
+  performPhysicalUnstuck,
   recoveryCheckpoint,
   findEscapeCheckpoint,
   isSafeStandPosition,

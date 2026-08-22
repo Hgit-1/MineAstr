@@ -379,6 +379,13 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 sanitizeAudit(jsonString(payload, "elapsed_ms", "?")),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
                                 pathUpdate);
+                    } else if ("navigation_physical_unstuck".equals(type)) {
+                        MineAstr.LOGGER.info(
+                                "MineAstr Agent 物理脱困：attempt={} moved={} target={} position={}",
+                                sanitizeAudit(jsonString(payload, "attempt", "?")),
+                                sanitizeAudit(jsonString(payload, "moved_distance", "0")),
+                                safeLogText(payload.has("target") ? payload.get("target").toString() : "unknown"),
+                                safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"));
                     } else if ("navigation_route_planned".equals(type)
                             || "navigation_global_replanned".equals(type)) {
                         MineAstr.LOGGER.info("MineAstr Agent 全局路线：backend={} points={} reroutes={}",

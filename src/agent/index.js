@@ -15,6 +15,7 @@ const { createCombatController, isAttackableHostile, isRetreatThreat } = require
 const { RoadNetwork } = require('./road-network')
 const { RESUMABLE_TYPES, TaskStore } = require('./task-store')
 const { resumeNavigationRecord, suspendNavigationRecord } = require('./task-lifecycle')
+const { version: runtimeVersion } = require('./package.json')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
@@ -93,6 +94,7 @@ let neoForgeNegotiated = false
 let taskGeneration = 0
 const observedCustomChannels = new Set()
 let lastProtocolDiagnostic = null
+let lastPhysicalRecovery = null
 let pendingSessionExit = null
 let lastSessionExit = null
 let lastDeathAt = 0
@@ -203,7 +205,9 @@ function persistTasks(activeOverride = undefined, argsOverride = undefined) {
 }
 
 function emit(record) {
-  process.stdout.write(`${JSON.stringify({ time_ms: Date.now(), ...record })}\n`)
+  const event = { time_ms: Date.now(), ...record }
+  if (record?.type === 'navigation_physical_unstuck') lastPhysicalRecovery = event
+  process.stdout.write(`${JSON.stringify(event)}\n`)
 }
 
 function taskNeedsSession() {
@@ -530,6 +534,7 @@ function status() {
   const entity = bot?.entity
   return {
     ok: true,
+    runtime_version: runtimeVersion,
     state,
     last_error: lastError || null,
     username: bot?.username || username,
@@ -592,7 +597,8 @@ function status() {
       cache: navigationCache.status(),
       road_network: roadNetwork.status(),
       task_persistence: taskStore.status(),
-      collision_compatibility: navigationCompatibility
+      collision_compatibility: navigationCompatibility,
+      last_physical_recovery: lastPhysicalRecovery
     }
   }
 }
@@ -939,6 +945,7 @@ async function navigateTask(target, args, runId) {
     timeoutMilliseconds: parseInteger(args.timeout_seconds, 0, 0, 900) * 1000 || undefined,
     assertActive: () => assertTaskActive(runId),
     dimension: normalizeDimension(args.dimension || bot?.game?.dimension),
+    isForbidden: position => isForbidden(position, args.dimension || bot?.game?.dimension),
     cache: navigationCache,
     roadNetwork,
     onCheckpoint: checkpoint => {
@@ -1158,7 +1165,7 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.11.1' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: runtimeVersion })
   if (restoredNavigationTask && activeTask) {
     emit({ type: 'task_resumed', task: taskStatus(activeTask, false), checkpoint: activeTask.navigation_checkpoint || null })
   }

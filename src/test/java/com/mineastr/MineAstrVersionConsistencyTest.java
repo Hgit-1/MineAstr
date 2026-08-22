@@ -22,7 +22,8 @@ final class MineAstrVersionConsistencyTest {
         var packageJson = JsonParser.parseString(Files.readString(Path.of("src/agent/package.json")))
                 .getAsJsonObject();
         assertEquals(version, packageJson.get("version").getAsString());
-        assertTrue(Files.readString(Path.of("src/agent/index.js"))
-                .contains("runtime_version: '" + version + "'"));
+        String agentSource = Files.readString(Path.of("src/agent/index.js"));
+        assertTrue(agentSource.contains("const { version: runtimeVersion } = require('./package.json')"));
+        assertTrue(agentSource.contains("runtime_version: runtimeVersion"));
     }
 }

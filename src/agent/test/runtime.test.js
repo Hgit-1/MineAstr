@@ -36,6 +36,7 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(response.status, 200)
     const status = await response.json()
     assert.equal(status.ok, true)
+    assert.equal(status.runtime_version, '0.11.2')
     assert.equal(status.username, 'MineAstrTest')
     assert.equal(status.state, 'standby')
     assert.equal(status.connection_attempts, 0)

@@ -4,7 +4,8 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const {
-  applyPathfinderCollisionCompatibility, findEscapeCheckpoint, localAvoidanceCost, navigateTo, obstaclePoint
+  applyPathfinderCollisionCompatibility, findEscapeCheckpoint, localAvoidanceCost, navigateTo, obstaclePoint,
+  performPhysicalUnstuck
 } = require('../navigation')
 
 class GoalNear {
@@ -233,6 +234,52 @@ test('uses a lateral recovery checkpoint after a stuck segment', async () => {
   assert.ok(bot.pathfinder.cancellations >= 1)
   const recovery = events.find(event => event.type === 'navigation_segment_started' && event.recovery_offset === 3)
   assert.deepEqual(recovery.checkpoint, { x: 4, y: 64, z: 3 })
+})
+
+test('uses bounded player controls to escape a collision before replanning', async () => {
+  const events = []
+  let call = 0
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, goal => {
+    call += 1
+    if (call === 1) return new Promise(() => {})
+    bot.entity.position.x = goal.x
+    bot.entity.position.z = goal.z
+    if (goal instanceof GoalNear) bot.entity.position.y = goal.y
+  })
+  bot.look = async () => {}
+  bot.blockAt = position => position.y <= 63
+    ? { name: 'grass_block', boundingBox: 'block' }
+    : { name: 'air', boundingBox: 'empty' }
+  bot.setControlState = (control, enabled) => {
+    if (control === 'forward' && enabled) bot.entity.position.x += 2
+  }
+
+  const result = await navigateTo(bot, fakeGoals, { x: 20, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    stallTimeoutMilliseconds: 100,
+    segmentTimeoutMilliseconds: 1_000,
+    watchdogIntervalMilliseconds: 25,
+    unstuckMovementMilliseconds: 100,
+    emit: event => events.push(event)
+  })
+
+  assert.equal(result.remaining_distance, 0)
+  const recovery = events.find(event => event.type === 'navigation_physical_unstuck')
+  assert.equal(recovery.attempted, true)
+  assert.ok(recovery.moved_distance >= 2)
+  assert.equal(bot.pathfinder.cancellations, 1)
+})
+
+test('physical unstuck never crosses an Agent forbidden region', async () => {
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, async () => {})
+  bot.blockAt = position => position.y <= 63
+    ? { name: 'grass_block', boundingBox: 'block' }
+    : { name: 'air', boundingBox: 'empty' }
+  bot.setControlState = () => assert.fail('forbidden recovery must not apply controls')
+  const result = await performPhysicalUnstuck(bot, { x: 20, y: 64, z: 0 }, {
+    isForbidden: () => true
+  })
+  assert.deepEqual(result, { attempted: false, reason: 'forbidden_direction' })
 })
 
 test('three-dimensional recovery prefers safe ground over repeating a tree collision', () => {
