@@ -200,7 +200,16 @@ function reconcileSession() {
       code: 'idle_standby', expected: true,
       detail: `按需会话闲置 ${idleDisconnectSeconds} 秒后进入待机`
     }
-    emit({ type: 'bot_idle_disconnect', idle_seconds: idleDisconnectSeconds })
+    emit({
+      type: 'bot_idle_disconnect',
+      idle_seconds: idleDisconnectSeconds,
+      last_task: activeTask ? {
+        task_id: activeTask.task_id,
+        task_type: activeTask.task_type,
+        state: activeTask.state,
+        message: activeTask.message || null
+      } : null
+    })
     try { bot.quit('MineAstr on-demand standby') } catch (_) { bot.end?.('MineAstr on-demand standby') }
   }, delayMs)
   idleDisconnectTimer.unref()
@@ -385,8 +394,9 @@ function connectBot() {
       }
       pendingSessionExit = null
       emit({ type: 'bot_offline', session_exit: lastSessionExit })
+      const wakeAfterDisconnect = desiredWakeReason()
       state = stopping ? 'stopped' : connectionBlocked ? 'incompatible_server'
-        : (expectedIdleDisconnect || !desiredWakeReason()) ? 'standby' : 'disconnected'
+        : wakeAfterDisconnect ? 'disconnected' : 'standby'
       if (activeTask?.state === 'running') finishTask(activeTask.run_id, false, `连接中断：${safeError(reason)}`)
       if (!stopping) {
         if (desiredWakeReason()) scheduleConnect()
@@ -454,6 +464,7 @@ function status() {
     position: entity ? vectorJson(entity.position) : null,
     dimension: normalizeDimension(bot?.game?.dimension) || null,
     active_task: activeTask,
+    recent_tasks: Array.from(recentTasks.values()).slice(-10),
     session_policy: sessionPolicy,
     human_player_count: humanPlayerCount,
     wake_reason: wakeReason,
@@ -645,6 +656,13 @@ async function runTask(input) {
     requester_platform: String(input.requester_platform || '').slice(0, 50) || null
   }
   activeTaskArgs = args
+  if (sessionDisconnecting || state === 'disconnecting_idle') {
+    pendingSessionExit = {
+      code: 'idle_disconnect_superseded',
+      expected: true,
+      detail: '闲置断开已开始后收到新任务；会话结束后将自动重连并继续等待任务。'
+    }
+  }
   taskConnectionTimer = setTimeout(() => {
     taskConnectionTimer = null
     finishTask(runId, false, 'Bot 在 90 秒内未能进入服务器，任务已取消')
@@ -663,6 +681,7 @@ function startWaitingTask() {
   const type = activeTask.task_type
   const args = activeTaskArgs || {}
   activeTask = { ...activeTask, state: 'running', started_at_ms: Date.now() }
+  emit({ type: 'task_started', task: activeTask })
   queueMicrotask(async () => {
     try {
       if (type === 'chat') {
@@ -944,6 +963,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.4' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.5' })
   reconcileSession()
 })

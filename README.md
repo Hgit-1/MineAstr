@@ -264,6 +264,8 @@ NeoForge Mod 物品数据处于 `degraded_mod_data=true` 时不会假定存在�
 
 Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_change_pending`。因按需待机主动退出时，`last_session_exit.expected=true` 且 `code=idle_standby`；被踢出、登录超时或网络错误则会保留为非预期原因，避免 AI 再把正常待机误报为进程重启。
 
+0.10.5 修复了任务只返回 `accepted=true` 就被上层误当作完成的问题。AstrBot 插件现在会追踪相同任务 ID，直到单个动作进入 `completed`、`failed` 或 `canceled`；服务端状态保留最近 10 个终态任务，避免极短任务被下一任务覆盖。任务恰好在闲置退出开始后到达时会标记为 `idle_disconnect_superseded`，断开后自动重连继续等待，不再把它表现成无任务待机。服务端 INFO 日志会记录任务 ID、类型、开始、终态和闲置前最后任务，但不记录动作参数或认证指令。
+
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
 
 高信息量设备学习使用独立的 `enablePassiveSkillLearning` 开关，默认关闭。玩家可用 `/mineastr learning optout` 独立退出；该选择不影响活动地区统计。

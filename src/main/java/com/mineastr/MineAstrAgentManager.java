@@ -329,6 +329,30 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 code, expected, detail);
                     } else if ("bot_death".equals(type)) {
                         MineAstr.LOGGER.warn("MineAstr Agent 在游戏中死亡；寻路任务将由生命保护安全中止。");
+                    } else if ("task_started".equals(type) && payload.has("task")
+                            && payload.get("task").isJsonObject()) {
+                        JsonObject task = payload.getAsJsonObject("task");
+                        MineAstr.LOGGER.info("MineAstr Agent 任务开始：id={} type={}",
+                                sanitizeAudit(jsonString(task, "task_id", "unknown")),
+                                sanitizeAudit(jsonString(task, "task_type", "unknown")));
+                    } else if ("task_finished".equals(type) && payload.has("task")
+                            && payload.get("task").isJsonObject()) {
+                        JsonObject task = payload.getAsJsonObject("task");
+                        MineAstr.LOGGER.info("MineAstr Agent 任务结束：id={} type={} state={} detail={}",
+                                sanitizeAudit(jsonString(task, "task_id", "unknown")),
+                                sanitizeAudit(jsonString(task, "task_type", "unknown")),
+                                sanitizeAudit(jsonString(task, "state", "unknown")),
+                                safeLogText(jsonString(task, "message", "")));
+                    } else if ("bot_idle_disconnect".equals(type)) {
+                        String lastTask = "none";
+                        if (payload.has("last_task") && payload.get("last_task").isJsonObject()) {
+                            JsonObject task = payload.getAsJsonObject("last_task");
+                            lastTask = sanitizeAudit(jsonString(task, "task_id", "unknown")) + "/"
+                                    + sanitizeAudit(jsonString(task, "state", "unknown"));
+                        }
+                        MineAstr.LOGGER.info("MineAstr Agent 闲置断开已触发：idle_seconds={} last_task={}",
+                                payload.has("idle_seconds") ? payload.get("idle_seconds").getAsInt() : -1,
+                                lastTask);
                     } else {
                         MineAstr.LOGGER.debug("MineAstr Agent：{}", safeLine);
                     }

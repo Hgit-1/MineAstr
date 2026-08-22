@@ -39,6 +39,7 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(status.session_policy, 'on_demand')
     assert.equal(status.join_commands.configured_count, 1)
     assert.equal(status.join_commands.phase, 'pending')
+    assert.deepEqual(status.recent_tasks, [])
     assert.equal(JSON.stringify(status).includes('runtime-secret-must-not-leak'), false)
 
     const presence = await postJson(port, '/session', {
