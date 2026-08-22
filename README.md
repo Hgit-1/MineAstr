@@ -228,7 +228,17 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。移动、观察、聊天和不依赖背包的任务仍可使用；自动进食和物品使用只有在后续加载了匹配服务器注册表的 codec 后才应视为可用，不能据此声称已完整支持 Mod 食品。
 
-如果私服使用 `/login` 一类二次认证，可在 `agentJoinCommands` 中配置最多 5 条进入世界后执行的命令。该项默认空，不影响普通服务器；命令可能含有认证凭据并以明文保存在服务端 TOML 中，必须限制配置文件读取权限。日志和状态只记录命令序号，不回显命令内容。
+0.10.4 将私服二次认证正式纳入 Agent 就绪流程。如果服务器要求 `/login`，在 `config/mineastr-common.toml` 中配置：
+
+```toml
+agentJoinCommands = ["/login 请替换为专用Bot密码"]
+agentJoinCommandDelayMs = 1000
+agentJoinCommandSettleMs = 1500
+```
+
+Mineflayer 每次进入世界后会先等待 `agentJoinCommandDelayMs`，按顺序发送最多 5 条前置指令，再等待 `agentJoinCommandSettleMs`，之后才允许聊天、移动等 AI 任务开始。需要首次注册时可暂时改为 `agentJoinCommands = ["/register 密码 密码"]`，注册完成后再改回 `/login`；不要长期同时发送注册和登录命令。
+
+普通服务器保持 `agentJoinCommands = []`。指令可能含有认证凭据并以明文保存在服务端 TOML 中，必须限制配置文件读取权限，也不要把真实密码粘贴到聊天、Issue 或日志。状态只返回配置数量、执行阶段、已发送数量和失败序号，不回显指令内容；某条指令在本地发送失败时，会阻止本次 AI 任务继续执行并以安全错误退出会话。
 
 如果服务端安装了 Proxy Protocol Mod，并把 `127.0.0.1` 列为代理来源，同机 Agent 会在 Minecraft 握手前被要求发送 PROXY 头。此时设置 `agentProxyProtocol=true`；没有这类 Mod/代理时必须保持 `false`。MineAstr 只对同机 Agent 允许该选项，且状态工具会显示它是否生效。
 

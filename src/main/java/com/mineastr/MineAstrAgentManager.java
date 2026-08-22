@@ -162,6 +162,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 environment.put("MINEASTR_AGENT_JOIN_COMMANDS", String.join(
                         "\n", MineAstrConfig.AGENT_JOIN_COMMANDS.get().stream().limit(5).toList()));
             }
+            environment.put("MINEASTR_AGENT_JOIN_COMMAND_DELAY_MS",
+                    Integer.toString(MineAstrConfig.AGENT_JOIN_COMMAND_DELAY_MS.getAsInt()));
+            environment.put("MINEASTR_AGENT_JOIN_COMMAND_SETTLE_MS",
+                    Integer.toString(MineAstrConfig.AGENT_JOIN_COMMAND_SETTLE_MS.getAsInt()));
             environment.put("MINEASTR_FORBIDDEN_REGIONS", String.join("\n", MineAstrConfig.AGENT_FORBIDDEN_REGIONS.get()));
             if (MineAstrConfig.AGENT_PROXY_PROTOCOL.getAsBoolean()
                     && isLoopbackHost(MineAstrConfig.AGENT_SERVER_HOST.get())) {
@@ -378,6 +382,11 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("human_player_count", humanPlayerCount.get());
         result.addProperty("idle_disconnect_seconds", MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt());
         result.addProperty("preferred_username", preferredAgentUsername);
+        JsonObject joinCommands = new JsonObject();
+        joinCommands.addProperty("configured_count", Math.min(5, MineAstrConfig.AGENT_JOIN_COMMANDS.get().size()));
+        joinCommands.addProperty("command_delay_ms", MineAstrConfig.AGENT_JOIN_COMMAND_DELAY_MS.getAsInt());
+        joinCommands.addProperty("settle_delay_ms", MineAstrConfig.AGENT_JOIN_COMMAND_SETTLE_MS.getAsInt());
+        result.add("join_command_config", joinCommands);
         JsonObject navigation = new JsonObject();
         navigation.addProperty("allow_digging", MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean());
         navigation.addProperty("allow_placing", MineAstrConfig.AGENT_NAVIGATION_ALLOW_PLACING.getAsBoolean());

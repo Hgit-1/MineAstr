@@ -10,6 +10,7 @@ const { Vec3 } = require('vec3')
 const { navigateTo } = require('./navigation')
 const { ChunkNavigationCache } = require('./chunk-cache')
 const { applyNavigationPolicy } = require('./navigation-policy')
+const { executeJoinCommands, initialJoinCommandState, parseJoinCommands } = require('./join-commands')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
@@ -18,8 +19,9 @@ const port = parseInteger(process.env.MINEASTR_MC_PORT, 25565, 1, 65535)
 let username = validMinecraftUsername(process.env.MINEASTR_AGENT_USERNAME) || 'MineAstrBot'
 const version = process.env.MINEASTR_MC_VERSION || false
 const auth = process.env.MINEASTR_AGENT_AUTH === 'microsoft' ? 'microsoft' : 'offline'
-const joinCommands = String(process.env.MINEASTR_AGENT_JOIN_COMMANDS || '').split(/\r?\n/)
-  .map(command => command.trim()).filter(command => command.startsWith('/') && command.length <= 256).slice(0, 5)
+const joinCommands = parseJoinCommands(process.env.MINEASTR_AGENT_JOIN_COMMANDS)
+const joinCommandDelayMs = parseInteger(process.env.MINEASTR_AGENT_JOIN_COMMAND_DELAY_MS, 1000, 0, 5000)
+const joinCommandSettleMs = parseInteger(process.env.MINEASTR_AGENT_JOIN_COMMAND_SETTLE_MS, 1500, 0, 10000)
 const neoForgeQuery = decodeBase64(process.env.MINEASTR_NEOFORGE_QUERY_B64)
 const neoForgeComponentCount = parseInteger(process.env.MINEASTR_NEOFORGE_COMPONENT_COUNT, 0, 0, 100000)
 const useProxyProtocol = process.env.MINEASTR_PROXY_PROTOCOL === 'true'
@@ -80,6 +82,7 @@ let lastProtocolDiagnostic = null
 let pendingSessionExit = null
 let lastSessionExit = null
 let lastDeathAt = 0
+let joinCommandState = initialJoinCommandState(joinCommands.length)
 
 const waypointFile = path.join(dataDir, 'waypoints.json')
 let waypointData = loadWaypointData()
@@ -216,6 +219,7 @@ function connectBot() {
   if (stopping || bot || !desiredWakeReason()) return
   sessionDisconnecting = false
   sessionReady = false
+  joinCommandState = initialJoinCommandState(joinCommands.length)
   state = 'connecting'
   connectionStartedAt = Date.now()
   connectionAttempts += 1
@@ -294,7 +298,29 @@ function connectBot() {
         created, newBlock?.position, normalizeDimension(created.game?.dimension)
       ))
       navigationCache.captureLoaded(created, normalizeDimension(created.game?.dimension))
-      await runJoinCommands(created)
+      const joinResult = await executeJoinCommands({
+        commands: joinCommands,
+        commandDelayMs: joinCommandDelayMs,
+        settleDelayMs: joinCommandSettleMs,
+        send: command => created.chat(command),
+        isActive: () => bot === created && state === 'online',
+        onState: nextState => {
+          joinCommandState = nextState
+          emit({ type: 'bot_join_command_state', join_commands: nextState })
+        }
+      })
+      if (!joinResult.ok) {
+        if (joinResult.aborted) return
+        const failedNumber = Number.isInteger(joinResult.failed_index) ? joinResult.failed_index + 1 : 0
+        lastError = failedNumber > 0
+          ? `第 ${failedNumber} 条前置指令发送失败；指令内容已隐藏。`
+          : '前置指令发送失败；指令内容已隐藏。'
+        lastDisconnectError = lastError
+        pendingSessionExit = { code: 'join_command_failed', expected: false, detail: lastError }
+        emit({ type: 'bot_join_command_failed', index: joinResult.failed_index, error: 'send_failed' })
+        try { created.quit('MineAstr join command failed') } catch (_) { created.end?.('MineAstr join command failed') }
+        return
+      }
       if (bot !== created || state !== 'online') return
       sessionReady = true
       startWaitingTask()
@@ -375,15 +401,6 @@ function connectBot() {
   }
 }
 
-async function runJoinCommands(created) {
-  for (let index = 0; index < joinCommands.length; index++) {
-    await new Promise(resolve => setTimeout(resolve, 750))
-    if (bot !== created || state !== 'online') return
-    created.chat(joinCommands[index])
-    emit({ type: 'bot_join_command_sent', index })
-  }
-}
-
 function connectWithProxyProtocol(client) {
   const socket = net.connect(port, host)
   socket.prependOnceListener('connect', () => {
@@ -442,6 +459,7 @@ function status() {
     wake_reason: wakeReason,
     idle_disconnect_seconds: idleDisconnectSeconds,
     idle_disconnect_at_ms: idleDisconnectAt || null,
+    join_commands: joinCommandState,
     maintenance_state: retreating ? 'retreating_from_threat' : eating ? 'eating' : 'idle',
     waypoint_count: Object.keys(waypointData.waypoints).length,
     neoforge_compatibility: {
@@ -926,6 +944,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.3' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.4' })
   reconcileSession()
 })

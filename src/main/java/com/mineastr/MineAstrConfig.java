@@ -190,10 +190,23 @@ public final class MineAstrConfig {
 
     public static final ModConfigSpec.ConfigValue<List<? extends String>> AGENT_JOIN_COMMANDS = BUILDER
             .comment(
-                    "Agent 每次进入世界后依次执行的认证命令；默认空。可用于 /login 等私服认证插件。",
-                    "命令可能包含凭据并以明文保存在服务端配置中，请限制文件权限；最多 5 条、每条 256 字符。")
+                    "Agent 每次进入世界后、执行任何 AI 任务前依次发送的前置指令；默认空。",
+                    "可用于 /login、/register 或切换子服。命令可能包含凭据并以明文保存在服务端配置中，",
+                    "请限制文件权限；最多 5 条、每条 256 字符。日志和状态不会回显指令内容。")
             .defineListAllowEmpty("agentJoinCommands", List.of(), value -> value instanceof String text
                     && text.startsWith("/") && text.length() <= 256 && text.indexOf('\n') < 0);
+
+    public static final ModConfigSpec.IntValue AGENT_JOIN_COMMAND_DELAY_MS = BUILDER
+            .comment(
+                    "进入世界后等待多久发送第一条前置指令，以及多条指令之间的间隔（毫秒）。",
+                    "认证插件尚未准备好时可适当调大；范围 0-5000。")
+            .defineInRange("agentJoinCommandDelayMs", 1000, 0, 5000);
+
+    public static final ModConfigSpec.IntValue AGENT_JOIN_COMMAND_SETTLE_MS = BUILDER
+            .comment(
+                    "最后一条前置指令发出后等待多久，才允许 AI 任务开始执行（毫秒）。",
+                    "用于等待 /login 等认证插件完成权限恢复；范围 0-10000。")
+            .defineInRange("agentJoinCommandSettleMs", 1500, 0, 10000);
 
     public static final ModConfigSpec.ConfigValue<String> AGENT_SESSION_POLICY = BUILDER
             .comment(

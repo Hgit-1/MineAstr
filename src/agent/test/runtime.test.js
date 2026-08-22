@@ -16,7 +16,8 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
       MINEASTR_MC_PORT: '9',
       MINEASTR_AGENT_USERNAME: 'MineAstrTest',
       MINEASTR_AGENT_AUTH: 'offline',
-      MINEASTR_MC_VERSION: '1.21.1'
+      MINEASTR_MC_VERSION: '1.21.1',
+      MINEASTR_AGENT_JOIN_COMMANDS: '/login runtime-secret-must-not-leak'
     },
     stdio: ['ignore', 'pipe', 'pipe']
   })
@@ -36,6 +37,9 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(status.state, 'standby')
     assert.equal(status.connection_attempts, 0)
     assert.equal(status.session_policy, 'on_demand')
+    assert.equal(status.join_commands.configured_count, 1)
+    assert.equal(status.join_commands.phase, 'pending')
+    assert.equal(JSON.stringify(status).includes('runtime-secret-must-not-leak'), false)
 
     const presence = await postJson(port, '/session', {
       human_player_count: 1, preferred_username: 'Aria'

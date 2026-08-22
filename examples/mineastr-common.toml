@@ -90,6 +90,14 @@ agentUsername = "MineAstrBot"
 # 优先用 AstrBot 实际显示名作为玩家名（例如 Aria）；不符合 MC 名称规则时回退到上项。
 agentUseBotDisplayNameAsUsername = true
 
+# 进入世界后、AI 任务开始前依次发送的前置指令。普通服务器保持空列表。
+# 登录服示例：agentJoinCommands = ["/login 请替换为专用Bot密码"]
+# 首次注册可临时使用：agentJoinCommands = ["/register 密码 密码"]，注册成功后改回 /login。
+# 指令以明文存储，必须限制本配置文件权限；日志与状态不会回显具体内容。
+agentJoinCommands = []
+agentJoinCommandDelayMs = 1000
+agentJoinCommandSettleMs = 1500
+
 # Mineflayer 会话策略：on_demand（默认，搭话/任务唤醒）、players_online（有人或有任务时在线）、always（常驻）。
 agentSessionPolicy = "on_demand"
 
