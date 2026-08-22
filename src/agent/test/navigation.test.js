@@ -48,11 +48,40 @@ test('applies the upstream collision epsilon only to Minecraft 1.21 physics', ()
 
 test('rejects pathfinder false-positive completion when the bot never moves', async () => {
   const bot = fakeBot({ x: 0, y: 64, z: 0 }, async () => {})
+  const startedAt = Date.now()
   await assert.rejects(
-    navigateTo(bot, fakeGoals, { x: 100, y: 64, z: 0 }, { timeoutMilliseconds: 10_000 }),
-    error => error.code === 'NAVIGATION_FAILED' && /连续无进展/.test(error.message) && /剩余=100/.test(error.message)
+    navigateTo(bot, fakeGoals, { x: 100, y: 64, z: 0 }, {
+      timeoutMilliseconds: 10_000,
+      stallTimeoutMilliseconds: 100,
+      segmentTimeoutMilliseconds: 1_000,
+      watchdogIntervalMilliseconds: 25
+    }),
+    error => error.code === 'NAVIGATION_FAILED' && /局部寻路长时间没有产生实际位移/.test(error.message) && /剩余=100/.test(error.message)
   )
   assert.equal(bot.pathfinder.calls, 4)
+  assert.ok(Date.now() - startedAt >= 300)
+})
+
+test('keeps an early-resolved segment alive until delayed chunks allow the goal to be reached', async () => {
+  const events = []
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, async goal => {
+    setTimeout(() => {
+      bot.entity.position.x = goal.x
+      bot.entity.position.z = goal.z
+      bot.emit('goal_reached', goal)
+    }, 80)
+  })
+  const result = await navigateTo(bot, fakeGoals, { x: 20, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    stallTimeoutMilliseconds: 500,
+    segmentTimeoutMilliseconds: 1_000,
+    watchdogIntervalMilliseconds: 25,
+    emit: event => events.push(event)
+  })
+  assert.equal(result.remaining_distance, 0)
+  assert.equal(bot.pathfinder.calls, 1)
+  assert.equal(events.filter(event => event.type === 'navigation_pathfinder_early_resolve').length, 1)
+  assert.equal(events.filter(event => event.type === 'navigation_segment_incomplete').length, 0)
 })
 
 test('segments a long route and verifies the final three-dimensional goal', async () => {

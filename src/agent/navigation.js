@@ -253,18 +253,27 @@ function runPathfinderSegment(bot, goal, options) {
   const startedAt = Date.now()
   let lastProgressAt = startedAt
   let blockActionStartedAt = null
+  const segmentStartPosition = { ...bot.entity.position }
+  const initialGoalDistance = distanceToGoal(goal, segmentStartPosition)
   let lastPosition = { ...bot.entity.position }
   let settled = false
   let interval = null
   let deadline = null
   let lastPathUpdate = null
   let lastPathReset = null
+  let earlyResolve = null
 
   return new Promise((resolve, reject) => {
     const onPathUpdate = results => { lastPathUpdate = summarizePathUpdate(bot, results) }
     const onPathReset = reason => { lastPathReset = String(reason || 'unknown').slice(0, 80) }
+    const onGoalReached = reachedGoal => {
+      if (reachedGoal === goal || goalReached(goal, bot.entity.position)) {
+        finish(null, { elapsed_ms: Date.now() - startedAt, early_resolve: earlyResolve })
+      }
+    }
     bot.on?.('path_update', onPathUpdate)
     bot.on?.('path_reset', onPathReset)
+    bot.on?.('goal_reached', onGoalReached)
 
     const finish = (error, value) => {
       if (settled) return
@@ -273,11 +282,12 @@ function runPathfinderSegment(bot, goal, options) {
       if (deadline) clearTimeout(deadline)
       bot.removeListener?.('path_update', onPathUpdate)
       bot.removeListener?.('path_reset', onPathReset)
+      bot.removeListener?.('goal_reached', onGoalReached)
       if (error) reject(error)
       else resolve(value)
     }
     const stopWith = (code, message, extra = {}) => {
-      const diagnostics = pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset)
+      const diagnostics = pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve)
       cancelPathfinder(bot)
       const error = new Error(message)
       error.code = code
@@ -302,7 +312,34 @@ function runPathfinderSegment(bot, goal, options) {
       finish(error)
       return
     }
-    Promise.resolve(pathPromise).then(value => finish(null, value), error => finish(error))
+    Promise.resolve(pathPromise).then(value => {
+      if (goalReached(goal, bot.entity.position)) {
+        finish(null, value)
+        return
+      }
+      const goalProgress = initialGoalDistance - distanceToGoal(goal, bot.entity.position)
+      if (horizontalDistance(segmentStartPosition, bot.entity.position) >= 1 && goalProgress >= 0.5) {
+        finish(null, value)
+        return
+      }
+      // mineflayer-pathfinder 2.4.5 resolves goto() when a path_update contains
+      // an empty path, even when the goal has not been reached. This is common
+      // just after login while the surrounding chunks are still arriving. Keep
+      // the goal alive so chunk_loaded can trigger a new plan, and let the real
+      // movement watchdog decide whether this segment is genuinely stalled.
+      earlyResolve = {
+        elapsed_ms: Date.now() - startedAt,
+        position: vectorJson(bot.entity.position),
+        path_update: lastPathUpdate
+      }
+      try {
+        options.emit({
+          type: 'navigation_pathfinder_early_resolve',
+          attempt: options.attempt,
+          ...earlyResolve
+        })
+      } catch (_) {}
+    }, error => finish(error))
 
     interval = setInterval(() => {
       if (settled) return
@@ -346,6 +383,14 @@ function runPathfinderSegment(bot, goal, options) {
   })
 }
 
+function distanceToGoal(goal, position) {
+  if (!position || !Number.isFinite(Number(goal?.x)) || !Number.isFinite(Number(goal?.z))) return Infinity
+  const dx = Number(goal.x) - Number(position.x)
+  const dz = Number(goal.z) - Number(position.z)
+  if (!Number.isFinite(Number(goal?.y))) return Math.hypot(dx, dz)
+  return Math.hypot(dx, Number(goal.y) - Number(position.y), dz)
+}
+
 function summarizePathUpdate(bot, results) {
   const path = Array.isArray(results?.path) ? results.path : []
   const action = path.find(node => node?.toBreak?.length || node?.toPlace?.length)
@@ -362,7 +407,7 @@ function summarizePathUpdate(bot, results) {
   }
 }
 
-function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset) {
+function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve = null) {
   return {
     on_ground: Boolean(bot?.entity?.onGround),
     is_in_water: Boolean(bot?.entity?.isInWater),
@@ -376,7 +421,8 @@ function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset) {
       sprint: Boolean(bot?.controlState?.sprint)
     },
     last_path_reset: lastPathReset,
-    last_path_update: lastPathUpdate
+    last_path_update: lastPathUpdate,
+    early_resolve: earlyResolve
   }
 }
 
