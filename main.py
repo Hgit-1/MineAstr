@@ -51,7 +51,7 @@ MINEASTR_EXTERNAL_HINT_KEYWORDS = (
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
-MINEASTR_VERSION = "0.10.5"
+MINEASTR_VERSION = "0.10.6"
 MINECRAFT_PLATFORM_TYPE = "minecraft"
 MINECRAFT_PLATFORM_ID = "minecraft"
 
@@ -869,7 +869,7 @@ class MineAstrPlugin(Star):
 
     @filter.llm_tool(name="mineastr_get_agent_status")
     async def mineastr_get_agent_status(self, event: AstrMessageEvent, server_id: str = "") -> str:
-        """查询由服务端 Mod 托管的 Mineflayer Agent、Node 运行时和当前任务状态。
+        """查询由服务端 Mod 托管的 Mineflayer Agent、Node 运行时、当前任务和自动防卫状态。
 
         Args:
             server_id(str): 可选服务器 ID；单服时留空。

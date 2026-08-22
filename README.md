@@ -120,7 +120,7 @@ pip install -r requirements.txt
 | `agent_require_admin_approval` | `false` | 需要人工审批时设为 `true`；默认允许 AI 在服务端类型白名单和禁区内自主行动。状态、观察和紧急取消不受影响。 |
 | `agent_observation_distance` | `8` | Agent 结构化视场与附近实体的默认观察距离，范围 1–32 格。 |
 
-服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。0.10.4 的服务端 Mod 可在 Bot 每次进入世界后先执行 `/login` 等前置指令，全部发送并等待认证完成后才放行 AI 任务；密码仅配置在 Minecraft 服务端 TOML 中，不应填写到 AstrBot 插件设置或聊天中。0.10.5 起，Agent 动作工具会继续轮询同一任务，只有收到 `completed` 才向模型报告成功；`failed`、`canceled`、状态链路中断或等待超时不会再被 `accepted=true` 掩盖。
+服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。0.10.4 的服务端 Mod 可在 Bot 每次进入世界后先执行 `/login` 等前置指令，全部发送并等待认证完成后才放行 AI 任务；密码仅配置在 Minecraft 服务端 TOML 中，不应填写到 AstrBot 插件设置或聊天中。0.10.5 起，Agent 动作工具会继续轮询同一任务，只有收到 `completed` 才向模型报告成功；`failed`、`canceled`、状态链路中断或等待超时不会再被 `accepted=true` 掩盖。0.10.6 可透传 Mod 的自动防卫状态，包括当前目标、攻击次数、危险事件和最近错误；攻击选择与执行仍由服务端 Mod 控制。
 
 ## 服务器事件推送
 
@@ -153,7 +153,7 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 | `mineastr_get_topic_context` | 为另一话题插件返回在线玩家名、主要 Mod、确认地区和近期非聊天事件。 |
 | `mineastr_get_knowledge_status` | 查看连接/心跳、扫描、远程来源、RAG 和征集状态。 |
 | `mineastr_rescan_server_knowledge` | 管理员按 local/remote/rag/all 提交单实例重扫任务。 |
-| `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer 按需会话、名称同步、上次退出/死亡原因、当前任务和渲染资源门槛。 |
+| `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer 按需会话、名称同步、上次退出/死亡原因、当前任务、自动防卫状态和渲染资源门槛。 |
 | `mineastr_observe_agent` | 查询 Bot 的生命、饥饿、位置、背包、视线、简单视场和附近实体。 |
 | `mineastr_submit_agent_task` | 提交并在需要时唤醒 Bot 执行聊天、连续下蹲、可验证的分段坐标/路径点移动（可按 Mod 配置挖掘/搭路）、跟随、转向、方块交互、物品使用、等待或进食任务。 |
 | `mineastr_cancel_agent_task` | 紧急取消当前任务；不要求管理员审批。 |
