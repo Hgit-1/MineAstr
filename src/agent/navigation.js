@@ -82,8 +82,10 @@ async function navigateTo(bot, goals, target, options = {}) {
   )
   let attempts = 0
   let consecutiveStalls = 0
+  let zeroMovementRecoveries = 0
+  let lastServerUnembedRequestAt = 0
   let recoveryOffset = 0
-  const recoveryOffsets = [3, -3, 5]
+  const recoveryOffsets = [3, -3, 5, -5]
   let globalRoute = planGlobalRoute(bot.entity.position, target, { ...options, bot })
   let corridor = globalRoute.points
   let routeBackend = globalRoute.backend
@@ -179,7 +181,8 @@ async function navigateTo(bot, goals, target, options = {}) {
           watchdogIntervalMilliseconds,
           assertActive,
           emit,
-          attempt: attempts
+          attempt: attempts,
+          getServerAwareness: options.getServerAwareness
         })
       } catch (error) {
         pathError = error
@@ -187,6 +190,7 @@ async function navigateTo(bot, goals, target, options = {}) {
       assertActive()
 
       let physicalRecovery = null
+      let pathfinderMovedBeforeRecovery = null
       let stalledAvoidancePoint = null
       if (pathError?.code === 'NAVIGATION_STALLED') {
         const interaction = await activateNearbyOpenable(bot, options.blockAwareness, emit)
@@ -195,11 +199,13 @@ async function navigateTo(bot, goals, target, options = {}) {
           continue
         }
         const stalledAt = { ...bot.entity.position }
+        pathfinderMovedBeforeRecovery = spatialDistance(attemptStart, stalledAt)
         stalledAvoidancePoint = obstaclePoint(stalledAt, checkpoint)
         addAvoidanceZone(localAvoidanceZones, stalledAvoidancePoint)
         physicalRecovery = await performPhysicalUnstuck(bot, stitchedTarget, {
           durationMilliseconds: unstuckMovementMilliseconds,
           lateralOffset: recoveryOffset || (attempts % 2 === 0 ? -3 : 3),
+          strategyIndex: consecutiveStalls,
           assertActive,
           emit,
           attempt: attempts,
@@ -207,6 +213,22 @@ async function navigateTo(bot, goals, target, options = {}) {
           isForbidden: options.isForbidden
         })
         assertActive()
+        if (physicalRecovery?.attempted && Number(pathfinderMovedBeforeRecovery || 0) < 0.2
+            && Number(physicalRecovery.moved_distance || 0) < 0.2) {
+          zeroMovementRecoveries += 1
+        } else if (Number(physicalRecovery?.moved_distance || 0) >= 0.2) zeroMovementRecoveries = 0
+        if (zeroMovementRecoveries >= 3 && Date.now() - lastServerUnembedRequestAt >= 10_000) {
+          lastServerUnembedRequestAt = Date.now()
+          emit({
+            type: 'navigation_server_unembed_requested',
+            attempt: attempts,
+            position: vectorJson(bot.entity.position),
+            zero_movement_recoveries: zeroMovementRecoveries,
+            strategy: physicalRecovery?.strategy || null
+          })
+          await sleep(1_250)
+          assertActive()
+        }
       }
 
       const actual = bot.entity.position
@@ -234,6 +256,7 @@ async function navigateTo(bot, goals, target, options = {}) {
       let avoidancePoint = null
       if (moved >= 1 && progress >= 0.5) {
         consecutiveStalls = 0
+        zeroMovementRecoveries = 0
         recoveryOffset = 0
       } else {
         consecutiveStalls += 1
@@ -255,10 +278,12 @@ async function navigateTo(bot, goals, target, options = {}) {
         avoidance_point: avoidancePoint ? vectorJson(avoidancePoint) : null
       })
 
-      if (consecutiveStalls > recoveryOffsets.length && routeBackend === 'roadweaver-hybrid' && globalReroutes < 3) {
+      if (consecutiveStalls > recoveryOffsets.length && globalReroutes < 3) {
         globalReroutes += 1
-        options.roadNetwork?.invalidateNear?.(actual)
-        globalRoute = planGlobalRoute(actual, target, { ...options, bot })
+        if (routeBackend === 'roadweaver-hybrid') options.roadNetwork?.invalidateNear?.(actual)
+        const replanOptions = routeBackend === 'roadweaver-hybrid' && globalReroutes >= 3
+          ? { ...options, roadNetwork: null, bot } : { ...options, bot }
+        globalRoute = planGlobalRoute(actual, target, replanOptions)
         corridor = globalRoute.points
         routeBackend = globalRoute.backend
         corridorIndex = 0
@@ -269,6 +294,7 @@ async function navigateTo(bot, goals, target, options = {}) {
           backend: routeBackend,
           route_points: corridor.length,
           global_reroutes: globalReroutes,
+          reason: 'repeated_local_stall',
           failed_position: vectorJson(actual)
         })
         continue
@@ -314,15 +340,14 @@ async function performPhysicalUnstuck(bot, target, options = {}) {
     return { attempted: false, reason: 'no_safe_direction' }
   }
   const durationMilliseconds = boundedInteger(options.durationMilliseconds, 900, 100, 2_000)
+  const strategy = recoveryStrategy(options.strategyIndex)
   try {
     options.assertActive?.()
     if (typeof bot.look === 'function') {
       const yaw = Math.atan2(-dx, -dz)
       await bot.look(yaw, 0, true)
     }
-    bot.setControlState('forward', true)
-    bot.setControlState('jump', true)
-    bot.setControlState('sprint', true)
+    for (const control of strategy.controls) bot.setControlState(control, true)
     const deadline = Date.now() + durationMilliseconds
     while (Date.now() < deadline) {
       options.assertActive?.()
@@ -334,6 +359,7 @@ async function performPhysicalUnstuck(bot, target, options = {}) {
   const moved = spatialDistance(start, bot.entity.position)
   const result = {
     attempted: true,
+    strategy: strategy.name,
     moved_distance: round(moved),
     start: vectorJson(start),
     target: vectorJson(escape),
@@ -343,6 +369,20 @@ async function performPhysicalUnstuck(bot, target, options = {}) {
     options.emit?.({ type: 'navigation_physical_unstuck', attempt: options.attempt, ...result })
   } catch (_) {}
   return result
+}
+
+function recoveryStrategy(index) {
+  const strategies = [
+    { name: 'forward_jump_sprint', controls: ['forward', 'jump', 'sprint'] },
+    { name: 'backward_jump', controls: ['back', 'jump'] },
+    { name: 'strafe_left_jump', controls: ['left', 'jump', 'sprint'] },
+    { name: 'strafe_right_jump', controls: ['right', 'jump', 'sprint'] }
+  ]
+  return strategies[Math.abs(Number(index) || 0) % strategies.length]
+}
+
+function sleep(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
 }
 
 function planGlobalRoute(start, target, options) {
@@ -568,7 +608,9 @@ function runPathfinderSegment(bot, goal, options) {
       else resolve(value)
     }
     const stopWith = (code, message, extra = {}) => {
-      const diagnostics = pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve, incompletePlan)
+      const diagnostics = pathfinderDiagnostics(
+        bot, lastPathUpdate, lastPathReset, earlyResolve, incompletePlan, options.getServerAwareness
+      )
       cancelPathfinder(bot)
       const error = new Error(message)
       error.code = code
@@ -710,7 +752,10 @@ function summarizePathUpdate(bot, results) {
   }
 }
 
-function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve = null, incompletePlan = null) {
+function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve = null, incompletePlan = null,
+  getServerAwareness = null) {
+  let serverAuthority = null
+  try { serverAuthority = typeof getServerAwareness === 'function' ? getServerAwareness()?.server_physics || null : null } catch (_) {}
   return {
     on_ground: Boolean(bot?.entity?.onGround),
     is_in_water: Boolean(bot?.entity?.isInWater),
@@ -726,7 +771,8 @@ function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve 
     last_path_reset: lastPathReset,
     last_path_update: lastPathUpdate,
     early_resolve: earlyResolve,
-    incomplete_plan: incompletePlan
+    incomplete_plan: incompletePlan,
+    server_authority: serverAuthority
   }
 }
 
@@ -794,6 +840,7 @@ module.exports = {
   navigateTo,
   obstaclePoint,
   performPhysicalUnstuck,
+  recoveryStrategy,
   recoveryCheckpoint,
   findEscapeCheckpoint,
   findCanopyExit,

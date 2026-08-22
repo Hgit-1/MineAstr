@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const {
   activateNearbyOpenable, applyPathfinderCollisionCompatibility, findCanopyExit, findEscapeCheckpoint,
-  localAvoidanceCost, navigateTo, obstaclePoint, performPhysicalUnstuck, planGlobalRoute
+  localAvoidanceCost, navigateTo, obstaclePoint, performPhysicalUnstuck, planGlobalRoute, recoveryStrategy
 } = require('../navigation')
 
 class GoalNear {
@@ -59,7 +59,7 @@ test('rejects pathfinder false-positive completion when the bot never moves', as
     }),
     error => error.code === 'NAVIGATION_FAILED' && /局部寻路长时间没有产生实际位移/.test(error.message) && /剩余=100/.test(error.message)
   )
-  assert.equal(bot.pathfinder.calls, 4)
+  assert.equal(bot.pathfinder.calls, 20)
   assert.ok(Date.now() - startedAt >= 300)
 })
 
@@ -128,9 +128,10 @@ test('still fails a permanent NoPath after watchdog-bounded recovery attempts', 
     }),
     error => error.code === 'NAVIGATION_FAILED' && /局部寻路长时间没有产生实际位移/.test(error.message)
   )
-  assert.equal(bot.pathfinder.calls, 4)
-  assert.equal(events.filter(event => event.type === 'navigation_pathfinder_incomplete_plan').length, 4)
-  assert.equal(events.filter(event => event.type === 'navigation_watchdog_triggered').length, 4)
+  assert.equal(bot.pathfinder.calls, 20)
+  assert.equal(events.filter(event => event.type === 'navigation_global_replanned').length, 3)
+  assert.equal(events.filter(event => event.type === 'navigation_pathfinder_incomplete_plan').length, 20)
+  assert.equal(events.filter(event => event.type === 'navigation_watchdog_triggered').length, 20)
 })
 
 test('segments a long route and verifies the final three-dimensional goal', async () => {
@@ -186,14 +187,15 @@ test('watchdog cancels a local pathfinder call that never settles', async () => 
     }),
     error => error.code === 'NAVIGATION_FAILED' && /局部寻路长时间没有产生实际位移/.test(error.message)
   )
-  assert.ok(Date.now() - startedAt < 2_000)
-  assert.equal(bot.pathfinder.calls, 4)
-  assert.equal(bot.pathfinder.cancellations, 4)
+  assert.ok(Date.now() - startedAt < 3_000)
+  assert.equal(bot.pathfinder.calls, 20)
+  assert.equal(bot.pathfinder.cancellations, 20)
   assert.deepEqual(
-    events.filter(event => event.type === 'navigation_segment_started').map(event => event.recovery_offset),
-    [0, 3, -3, 5]
+    events.filter(event => event.type === 'navigation_segment_started').slice(0, 5).map(event => event.recovery_offset),
+    [0, 3, -3, 5, -5]
   )
-  assert.equal(events.filter(event => event.type === 'navigation_watchdog_triggered').length, 4)
+  assert.equal(events.filter(event => event.type === 'navigation_global_replanned').length, 3)
+  assert.equal(events.filter(event => event.type === 'navigation_watchdog_triggered').length, 20)
   const diagnostics = events.find(event => event.type === 'navigation_watchdog_triggered').diagnostics
   assert.equal(diagnostics.on_ground, false)
   assert.equal(diagnostics.last_path_reset, 'stuck')
@@ -203,6 +205,73 @@ test('watchdog cancels a local pathfinder call that never settles', async () => 
     { x: 1, y: 64, z: 0 }
   )
   assert.equal(bot.pathfinder.movements.exclusionAreasStep.length, 0)
+})
+
+test('cycles distinct bounded physical recovery strategies', () => {
+  assert.deepEqual([0, 1, 2, 3, 4].map(index => recoveryStrategy(index).name), [
+    'forward_jump_sprint', 'backward_jump', 'strafe_left_jump', 'strafe_right_jump', 'forward_jump_sprint'
+  ])
+})
+
+test('requests restricted server unembedding after three true zero-movement recoveries and resumes', async () => {
+  const events = []
+  const enabledControls = []
+  let released = false
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, goal => {
+    if (!released) return new Promise(() => {})
+    bot.entity.position.x = goal.x
+    bot.entity.position.z = goal.z
+    if (goal instanceof GoalNear) bot.entity.position.y = goal.y
+  })
+  bot.look = async () => {}
+  bot.blockAt = position => position.y <= 63
+    ? { name: 'grass_block', boundingBox: 'block' }
+    : { name: 'air', boundingBox: 'empty' }
+  bot.setControlState = (control, enabled) => {
+    if (enabled) enabledControls.push(control)
+  }
+
+  const result = await navigateTo(bot, fakeGoals, { x: 20, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    stallTimeoutMilliseconds: 100,
+    segmentTimeoutMilliseconds: 1_000,
+    watchdogIntervalMilliseconds: 25,
+    unstuckMovementMilliseconds: 100,
+    emit(event) {
+      events.push(event)
+      if (event.type === 'navigation_server_unembed_requested') {
+        // Simulate the authoritative server accepting a validated neighboring
+        // rescue point and sending the corrected position back to Mineflayer.
+        released = true
+        bot.entity.position.x = 1
+      }
+    }
+  })
+
+  assert.equal(result.remaining_distance, 0)
+  assert.equal(events.filter(event => event.type === 'navigation_server_unembed_requested').length, 1)
+  assert.deepEqual(events.filter(event => event.type === 'navigation_physical_unstuck').map(event => event.strategy), [
+    'forward_jump_sprint', 'backward_jump', 'strafe_left_jump'
+  ])
+  assert.ok(enabledControls.includes('forward'))
+  assert.ok(enabledControls.includes('back'))
+  assert.ok(enabledControls.includes('left'))
+  assert.equal(events.filter(event => event.type === 'navigation_global_replanned').length, 0)
+})
+
+test('includes authoritative server physics in watchdog diagnostics', async () => {
+  const events = []
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => new Promise(() => {}))
+  await assert.rejects(navigateTo(bot, fakeGoals, { x: 20, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    stallTimeoutMilliseconds: 25,
+    segmentTimeoutMilliseconds: 100,
+    watchdogIntervalMilliseconds: 25,
+    getServerAwareness: () => ({ server_physics: { pose: 'standing', collision_free: false } }),
+    emit: event => events.push(event)
+  }))
+  const watchdog = events.find(event => event.type === 'navigation_watchdog_triggered')
+  assert.deepEqual(watchdog.diagnostics.server_authority, { pose: 'standing', collision_free: false })
 })
 
 test('marks the block ahead of a stall as a temporary path cost', () => {

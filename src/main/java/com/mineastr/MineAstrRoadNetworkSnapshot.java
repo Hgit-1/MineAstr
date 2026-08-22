@@ -34,6 +34,8 @@ final class MineAstrRoadNetworkSnapshot implements AutoCloseable {
     private int pointCount;
     private boolean installed;
     private boolean available;
+    private boolean adapterFused;
+    private long adapterFusedAtMs;
     private String sourceVersion = "";
     private String lastError = "";
 
@@ -42,11 +44,13 @@ final class MineAstrRoadNetworkSnapshot implements AutoCloseable {
                 .resolve("data").resolve("mineastr").resolve("agent")
                 .resolve("road-network.json").toAbsolutePath().normalize();
         nextRefreshMs = 0L;
+        adapterFused = false;
+        adapterFusedAtMs = 0L;
         refresh(server, true);
     }
 
     void tick(MinecraftServer server) {
-        if (server == null || System.currentTimeMillis() < nextRefreshMs) return;
+        if (server == null || adapterFused || System.currentTimeMillis() < nextRefreshMs) return;
         refresh(server, false);
     }
 
@@ -55,6 +59,8 @@ final class MineAstrRoadNetworkSnapshot implements AutoCloseable {
         status.addProperty("enabled", MineAstrConfig.AGENT_ROADWEAVER_ROUTING_ENABLED.getAsBoolean());
         status.addProperty("installed", installed);
         status.addProperty("available", available);
+        status.addProperty("adapter_fused", adapterFused);
+        status.addProperty("adapter_fused_at_ms", adapterFusedAtMs);
         status.addProperty("source_version", sourceVersion);
         status.addProperty("generated_at_ms", generatedAtMs);
         status.addProperty("road_count", roadCount);
@@ -82,7 +88,23 @@ final class MineAstrRoadNetworkSnapshot implements AutoCloseable {
                 MineAstr.LOGGER.info("MineAstr RoadWeaver 路网已就绪：roads={} points={} version={}",
                         roadCount, pointCount, sourceVersion);
             }
-        } catch (ReflectiveOperationException | RuntimeException | java.io.IOException failure) {
+        } catch (ReflectiveOperationException | LinkageError failure) {
+            available = false;
+            lastError = safeMessage(failure);
+            if (isApiCompatibilityFailure(failure)) {
+                adapterFused = true;
+                adapterFusedAtMs = System.currentTimeMillis();
+                nextRefreshMs = Long.MAX_VALUE;
+            }
+            writeUnavailable(adapterFused ? "roadweaver_api_incompatible" : "roadweaver_adapter_failed");
+            if (adapterFused) {
+                MineAstr.LOGGER.warn(
+                        "MineAstr RoadWeaver API 不兼容，适配器已熔断至下次服务端重启；将持续回退普通寻路：{}",
+                        lastError);
+            } else {
+                MineAstr.LOGGER.warn("MineAstr 读取 RoadWeaver 路网失败，将回退普通寻路：{}", lastError);
+            }
+        } catch (RuntimeException | java.io.IOException failure) {
             available = false;
             lastError = safeMessage(failure);
             writeUnavailable("roadweaver_adapter_failed");
@@ -179,7 +201,8 @@ final class MineAstrRoadNetworkSnapshot implements AutoCloseable {
             JsonObject snapshot = baseSnapshot(false, reason);
             snapshot.add("roads", new JsonArray());
             atomicWrite(snapshot);
-            if (!"roadweaver_adapter_failed".equals(reason)) lastError = "";
+            if (!"roadweaver_adapter_failed".equals(reason)
+                    && !"roadweaver_api_incompatible".equals(reason)) lastError = "";
         } catch (java.io.IOException failure) {
             lastError = safeMessage(failure);
         }
@@ -216,9 +239,21 @@ final class MineAstrRoadNetworkSnapshot implements AutoCloseable {
         return message.replaceAll("[\\r\\n\\t]+", " ").substring(0, Math.min(300, message.length()));
     }
 
+    static boolean isApiCompatibilityFailure(Throwable failure) {
+        Throwable cursor = failure;
+        while (cursor != null) {
+            if (cursor instanceof NoSuchMethodException || cursor instanceof ClassNotFoundException
+                    || cursor instanceof IllegalAccessException || cursor instanceof LinkageError) return true;
+            cursor = cursor.getCause();
+        }
+        return false;
+    }
+
     @Override
     public void close() {
         snapshotFile = null;
         nextRefreshMs = 0L;
+        adapterFused = false;
+        adapterFusedAtMs = 0L;
     }
 }

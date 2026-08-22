@@ -1018,6 +1018,7 @@ async function navigateTask(target, args, runId) {
     cache: navigationCache,
     roadNetwork,
     blockAwareness: awarenessAt,
+    getServerAwareness: () => serverAwareness,
     onCheckpoint: checkpoint => {
       if (!activeTask || activeTask.run_id !== runId) return
       activeTask = { ...activeTask, navigation_checkpoint: checkpoint, updated_at_ms: Date.now() }

@@ -21,6 +21,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Base64;
 import java.util.HashSet;
@@ -36,11 +37,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.ConnectionProtocol;
@@ -54,10 +57,12 @@ import net.minecraft.world.effect.MobEffectCategory;
 import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.DoorBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.FenceGateBlock;
 import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.network.payload.ModdedNetworkQueryComponent;
 import net.neoforged.neoforge.network.payload.ModdedNetworkQueryPayload;
@@ -104,6 +109,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private volatile long nextServerAwarenessAtMs;
     private volatile long lastServerFoodUseAtMs;
     private volatile String lastServerFoodItem = "";
+    private volatile long lastServerUnembedAtMs;
     private volatile boolean stopping;
     private volatile int neoForgeComponentCount;
 
@@ -122,6 +128,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         this.lastAgentStatus = new JsonObject();
         this.serverAwareness = new JsonObject();
         this.nextServerAwarenessAtMs = 0L;
+        this.lastServerUnembedAtMs = 0L;
         this.controlPort.set(0);
         this.previousAgentUsername = this.preferredAgentUsername;
         this.preferredAgentUsername = resolveAgentUsername(MineAstrConfig.BOT_DISPLAY_NAME.get());
@@ -341,7 +348,11 @@ public final class MineAstrAgentManager implements AutoCloseable {
             while ((line = reader.readLine()) != null) {
                 String safeLine = line.length() > 2000 ? line.substring(0, 2000) : line;
                 try {
-                    JsonObject payload = JsonParser.parseString(safeLine).getAsJsonObject();
+                    if (line.length() > 65_536) {
+                        MineAstr.LOGGER.warn("MineAstr Agent 输出事件超过 64KiB，已拒绝解析。前缀={}", safeLogText(safeLine));
+                        continue;
+                    }
+                    JsonObject payload = JsonParser.parseString(line).getAsJsonObject();
                     String type = payload.has("type") ? payload.get("type").getAsString() : "";
                     if ("ready".equals(type) && payload.has("port")) {
                         controlPort.set(payload.get("port").getAsInt());
@@ -369,8 +380,11 @@ public final class MineAstrAgentManager implements AutoCloseable {
                         String pathUpdate = diagnostics != null && diagnostics.has("last_path_update")
                                 && diagnostics.get("last_path_update").isJsonObject()
                                 ? safeLogText(diagnostics.getAsJsonObject("last_path_update").toString()) : "none";
+                        String serverAuthority = diagnostics != null && diagnostics.has("server_authority")
+                                && diagnostics.get("server_authority").isJsonObject()
+                                ? safeLogText(diagnostics.getAsJsonObject("server_authority").toString()) : "none";
                         MineAstr.LOGGER.warn(
-                                "MineAstr Agent 寻路看门狗触发：attempt={} code={} position={} moving={} mining={} building={} reset={} path={}",
+                                "MineAstr Agent 寻路看门狗触发：attempt={} code={} position={} moving={} mining={} building={} reset={} path={} server={}",
                                 sanitizeAudit(jsonString(payload, "attempt", "?")),
                                 sanitizeAudit(jsonString(payload, "code", "unknown")),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
@@ -378,7 +392,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 jsonString(diagnostics, "mining", "false"),
                                 jsonString(diagnostics, "building", "false"),
                                 safeLogText(jsonString(diagnostics, "last_path_reset", "none")),
-                                pathUpdate);
+                                pathUpdate,
+                                serverAuthority);
                     } else if ("navigation_pathfinder_early_resolve".equals(type)) {
                         String pathUpdate = payload.has("path_update")
                                 && payload.get("path_update").isJsonObject()
@@ -402,11 +417,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 pathUpdate);
                     } else if ("navigation_physical_unstuck".equals(type)) {
                         MineAstr.LOGGER.info(
-                                "MineAstr Agent 物理脱困：attempt={} moved={} target={} position={}",
+                                "MineAstr Agent 物理脱困：attempt={} strategy={} moved={} target={} position={}",
                                 sanitizeAudit(jsonString(payload, "attempt", "?")),
+                                sanitizeAudit(jsonString(payload, "strategy", "unknown")),
                                 sanitizeAudit(jsonString(payload, "moved_distance", "0")),
                                 safeLogText(payload.has("target") ? payload.get("target").toString() : "unknown"),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"));
+                    } else if ("navigation_server_unembed_requested".equals(type)) {
+                        scheduleServerUnembed(payload.deepCopy());
                     } else if ("navigation_route_planned".equals(type)
                             || "navigation_global_replanned".equals(type)) {
                         MineAstr.LOGGER.info("MineAstr Agent 全局路线：backend={} points={} reroutes={}",
@@ -694,6 +712,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         awareness.addProperty("updated_at_ms", now);
         awareness.addProperty("health", player.getHealth());
         awareness.addProperty("food", player.getFoodData().getFoodLevel());
+        awareness.add("server_physics", serverPhysicsDiagnostic(player));
         awareness.addProperty("server_side_survival_enabled",
                 MineAstrConfig.AGENT_SERVER_SIDE_SURVIVAL_ENABLED.getAsBoolean());
         int edibleCount = 0;
@@ -763,6 +782,177 @@ public final class MineAstrAgentManager implements AutoCloseable {
         awareness.add("nearby_blocks", scanNearbyBlocks(player));
         serverAwareness = awareness;
         syncSessionPresence();
+    }
+
+    private static JsonObject serverPhysicsDiagnostic(ServerPlayer player) {
+        JsonObject result = new JsonObject();
+        result.add("position", vector(player.position()));
+        result.add("delta_movement", vector(player.getDeltaMovement()));
+        result.addProperty("pose", player.getPose().name().toLowerCase(Locale.ROOT));
+        result.addProperty("on_ground", player.onGround());
+        result.addProperty("passenger", player.isPassenger());
+        result.addProperty("sleeping", player.isSleeping());
+        result.addProperty("swimming", player.isSwimming());
+        result.addProperty("fall_flying", player.isFallFlying());
+        result.addProperty("using_item", player.isUsingItem());
+        result.addProperty("in_water", player.isInWater());
+        result.addProperty("in_lava", player.isInLava());
+        result.addProperty("collision_free", player.serverLevel().noCollision(player, player.getBoundingBox()));
+        result.addProperty("vehicle", player.getVehicle() == null ? "" :
+                BuiltInRegistries.ENTITY_TYPE.getKey(player.getVehicle().getType()).toString());
+        BlockPos feet = player.blockPosition();
+        result.add("support_block", blockDiagnostic(player, feet.below()));
+        result.add("feet_block", blockDiagnostic(player, feet));
+        result.add("head_block", blockDiagnostic(player, feet.above()));
+        JsonArray colliding = new JsonArray();
+        AABB box = player.getBoundingBox().deflate(1.0E-7D);
+        for (BlockPos position : BlockPos.betweenClosed(
+                BlockPos.containing(box.minX, box.minY, box.minZ),
+                BlockPos.containing(box.maxX, box.maxY, box.maxZ))) {
+            BlockState state = player.serverLevel().getBlockState(position);
+            if (state.isAir()) continue;
+            boolean intersects = state.getCollisionShape(player.serverLevel(), position).toAabbs().stream()
+                    .map(shape -> shape.move(position))
+                    .anyMatch(shape -> shape.intersects(box));
+            if (intersects) colliding.add(blockDiagnostic(player, position));
+            if (colliding.size() >= 16) break;
+        }
+        result.add("colliding_blocks", colliding);
+        return result;
+    }
+
+    private static JsonObject blockDiagnostic(ServerPlayer player, BlockPos position) {
+        BlockState state = player.serverLevel().getBlockState(position);
+        JsonObject result = new JsonObject();
+        result.addProperty("id", BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
+        result.addProperty("x", position.getX());
+        result.addProperty("y", position.getY());
+        result.addProperty("z", position.getZ());
+        result.addProperty("collision", !state.getCollisionShape(player.serverLevel(), position).isEmpty());
+        result.addProperty("fluid", state.getFluidState().isEmpty() ? "" :
+                BuiltInRegistries.FLUID.getKey(state.getFluidState().getType()).toString());
+        return result;
+    }
+
+    private static JsonObject vector(Vec3 value) {
+        JsonObject result = new JsonObject();
+        result.addProperty("x", value.x);
+        result.addProperty("y", value.y);
+        result.addProperty("z", value.z);
+        return result;
+    }
+
+    private void scheduleServerUnembed(JsonObject payload) {
+        MinecraftServer current = server;
+        if (current == null || stopping) return;
+        current.execute(() -> attemptServerUnembed(current, payload));
+    }
+
+    private void attemptServerUnembed(MinecraftServer current, JsonObject payload) {
+        long now = System.currentTimeMillis();
+        if (now - lastServerUnembedAtMs < 10_000L) return;
+        ServerPlayer player = current.getPlayerList().getPlayers().stream()
+                .filter(candidate -> isAgentUsername(candidate.getGameProfile().getName()))
+                .findFirst().orElse(null);
+        if (player == null || player.isDeadOrDying()) return;
+        JsonObject reported = payload.has("position") && payload.get("position").isJsonObject()
+                ? payload.getAsJsonObject("position") : null;
+        if (reported == null) return;
+        double reportedX = jsonDouble(reported, "x", Double.NaN);
+        double reportedY = jsonDouble(reported, "y", Double.NaN);
+        double reportedZ = jsonDouble(reported, "z", Double.NaN);
+        if (!Double.isFinite(reportedX) || !Double.isFinite(reportedY) || !Double.isFinite(reportedZ)
+                || player.distanceToSqr(reportedX, reportedY, reportedZ) > 2.25D) return;
+        lastServerUnembedAtMs = now;
+
+        boolean postureReset = false;
+        if (player.isPassenger()) {
+            player.stopRiding();
+            postureReset = true;
+        }
+        if (player.isSleeping()) {
+            player.stopSleeping();
+            postureReset = true;
+        }
+        player.stopUsingItem();
+        player.setDeltaMovement(Vec3.ZERO);
+        player.fallDistance = 0.0F;
+
+        BlockPos safe = nearestSafeUnembedPosition(player);
+        if (safe == null) {
+            MineAstr.LOGGER.warn(
+                    "MineAstr Agent 受限脱嵌未找到邻近安全位置：position={} posture_reset={} physics={}",
+                    player.position(), postureReset, safeLogText(serverPhysicsDiagnostic(player).toString()));
+            return;
+        }
+        Vec3 before = player.position();
+        player.teleportTo(player.serverLevel(), safe.getX() + 0.5D, safe.getY(), safe.getZ() + 0.5D,
+                player.getYRot(), player.getXRot());
+        MineAstr.LOGGER.warn(
+                "MineAstr Agent 已执行受限服务端脱嵌：from={} to={} distance={} posture_reset={}",
+                before, player.position(), Math.round(before.distanceTo(player.position()) * 100.0D) / 100.0D,
+                postureReset);
+    }
+
+    private static BlockPos nearestSafeUnembedPosition(ServerPlayer player) {
+        BlockPos origin = player.blockPosition();
+        return nearestSafeUnembedPosition(origin, candidate -> isSafeUnembedPosition(player, candidate));
+    }
+
+    static BlockPos nearestSafeUnembedPosition(BlockPos origin, Predicate<BlockPos> isSafe) {
+        ArrayList<BlockPos> candidates = new ArrayList<>();
+        for (int dy : new int[]{0, 1, -1, 2}) {
+            for (int radius = 1; radius <= 2; radius++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    for (int dz = -radius; dz <= radius; dz++) {
+                        if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
+                        candidates.add(origin.offset(dx, dy, dz));
+                    }
+                }
+            }
+        }
+        candidates.sort(Comparator.comparingDouble(candidate -> candidate.distSqr(origin)));
+        for (BlockPos candidate : candidates) if (isSafe.test(candidate)) return candidate;
+        return null;
+    }
+
+    private static boolean isSafeUnembedPosition(ServerPlayer player, BlockPos candidate) {
+        var level = player.serverLevel();
+        String dimension = level.dimension().location().toString();
+        if (!level.hasChunkAt(candidate) || !level.getWorldBorder().isWithinBounds(candidate)
+                || insideForbiddenRegion(dimension, candidate.getX(), candidate.getY(), candidate.getZ())) return false;
+        if (!Block.canSupportCenter(level, candidate.below(), Direction.UP)) return false;
+        BlockState support = level.getBlockState(candidate.below());
+        BlockState feet = level.getBlockState(candidate);
+        BlockState head = level.getBlockState(candidate.above());
+        if (!feet.getFluidState().isEmpty() || !head.getFluidState().isEmpty()
+                || isUnsuitableRescueSupport(support)
+                || isHazardousBlock(feet) || isHazardousBlock(head)) return false;
+        double x = candidate.getX() + 0.5D;
+        double y = candidate.getY();
+        double z = candidate.getZ() + 0.5D;
+        double dx = x - player.getX();
+        double dy = y - player.getY();
+        double dz = z - player.getZ();
+        AABB start = player.getBoundingBox();
+        if (!level.noCollision(player, start.move(dx, dy, dz))) return false;
+        boolean startsColliding = !level.noCollision(player, start);
+        for (int step = 1; step <= 4; step++) {
+            if (startsColliding && step == 1) continue;
+            double ratio = step / 4.0D;
+            if (!level.noCollision(player, start.move(dx * ratio, dy * ratio, dz * ratio))) return false;
+        }
+        return true;
+    }
+
+    private static boolean isHazardousBlock(BlockState state) {
+        String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+        return id.matches(".*(?:lava|fire|magma|cactus|acid|poison|blade|saw|drill|berry_bush).*?");
+    }
+
+    private static boolean isUnsuitableRescueSupport(BlockState state) {
+        String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+        return isHazardousBlock(state) || id.matches(".*(?:leaves|leaf|foliage).*?");
     }
 
     private static boolean isPermittedFoodAnimal(Animal animal) {
@@ -968,6 +1158,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private static String jsonString(JsonObject body, String name, String fallback) {
         try {
             return body != null && body.has(name) ? body.get(name).getAsString() : fallback;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static double jsonDouble(JsonObject body, String name, double fallback) {
+        try {
+            return body != null && body.has(name) ? body.get(name).getAsDouble() : fallback;
         } catch (RuntimeException ignored) {
             return fallback;
         }
