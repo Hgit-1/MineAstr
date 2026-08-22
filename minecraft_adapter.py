@@ -1065,6 +1065,11 @@ class MinecraftPlatformAdapter(Platform):
             await self.connection_manager.send_error(ws, f"不支持的协议版本：{protocol}")
             return
         await self.connection_manager.register(ws, payload)
+        await ws.send_json({
+            "type": "configuration",
+            "protocol": PROTOCOL_VERSION,
+            "bot_display_name": self.bot_display_name,
+        })
         try:
             from .knowledge import get_knowledge_coordinator
 

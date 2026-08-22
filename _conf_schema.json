@@ -1,4 +1,10 @@
 {
+  "auto_enable_platform": {
+    "description": "自动创建并启用 Minecraft 平台",
+    "type": "bool",
+    "hint": "推荐保持开启。启用插件时若没有 minecraft 平台实例，将用本页配置自动创建并监听；已有实例会保留原配置。需要在消息平台页手动停用时，请先关闭此项。",
+    "default": true
+  },
   "host": {
     "description": "WebSocket 监听地址",
     "type": "string",

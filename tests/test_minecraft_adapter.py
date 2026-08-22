@@ -141,6 +141,32 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         finally:
             ADAPTER.configure_plugin_operational_settings({})
 
+    async def test_hello_sends_runtime_bot_display_name_to_server(self):
+        sent = []
+
+        class ConnectionManager:
+            async def register(self, _ws, _payload):
+                return None
+
+            async def send_error(self, _ws, message):
+                sent.append({"type": "error", "message": message})
+
+        class WebSocket:
+            async def send_json(self, payload):
+                sent.append(payload)
+
+        self.adapter.connection_manager = ConnectionManager()
+        self.adapter.bot_display_name = "Aria"
+
+        await self.adapter._handle_hello(WebSocket(), {
+            "protocol": ADAPTER.PROTOCOL_VERSION,
+            "server_id": "minecraft",
+            "server_name": "MFMC",
+        })
+
+        self.assertEqual("configuration", sent[0]["type"])
+        self.assertEqual("Aria", sent[0]["bot_display_name"])
+
     async def test_server_event_uses_server_identity_and_skips_region_chat(self):
         payload = {
             "type": "chat",

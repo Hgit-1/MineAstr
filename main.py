@@ -36,7 +36,7 @@ MINEASTR_TOOL_HINTS = {
     "mineastr_get_knowledge_status": "询问知识扫描、RAG 或来源健康状态时调用 mineastr_get_knowledge_status。",
     "mineastr_get_agent_status": "询问 AI 玩家 Bot 是否在线、当前任务或 Node 状态时调用 mineastr_get_agent_status。",
     "mineastr_observe_agent": "需要确认 AI 玩家 Bot 当前视场、附近实体、背包和生命状态时调用 mineastr_observe_agent。",
-    "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、交互、使用物品、进食、聊天或做连续下蹲动作时调用 mineastr_submit_agent_task。",
+    "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、交互、使用物品、进食、聊天或做连续下蹲动作时调用 mineastr_submit_agent_task；坐标/路径点寻路可按服务端配置受控挖掘或放置方块。",
     "mineastr_cancel_agent_task": "需要紧急停止 AI 玩家当前任务时调用 mineastr_cancel_agent_task。",
     "mineastr_manage_agent_waypoint": "需要列出或管理 AI 玩家路径点与步行/轨道连接时调用 mineastr_manage_agent_waypoint。",
 }
@@ -51,13 +51,16 @@ MINEASTR_EXTERNAL_HINT_KEYWORDS = (
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
+MINEASTR_VERSION = "0.10.3"
+MINECRAFT_PLATFORM_TYPE = "minecraft"
+MINECRAFT_PLATFORM_ID = "minecraft"
 
 
 @register(
     "astrbot_plugin_mineastr",
     "MineAstr",
     "将 Minecraft 聊天桥接为 AstrBot 群聊会话，并提供状态、背包、区域分析、受控命令与截图工具。",
-    "0.10.1",
+    MINEASTR_VERSION,
 )
 class MineAstrPlugin(Star):
     _ADAPTER_PLUGIN_CONFIG_KEYS = (
@@ -98,9 +101,18 @@ class MineAstrPlugin(Star):
         }
         inactive = sorted(name for name, active in registered.items() if not active)
         logger.info(
-            "MineAstr 0.10.1 已初始化；声明工具=%s；已注册=%s；已禁用=%s。人格过滤仍可按请求缩减工具集。",
-            names, sorted(registered), inactive,
+            "MineAstr %s 已初始化；声明工具=%s；已注册=%s；已禁用=%s。人格过滤仍可按请求缩减工具集。",
+            MINEASTR_VERSION, names, sorted(registered), inactive,
         )
+        try:
+            await self._ensure_minecraft_platform()
+        except Exception as exc:
+            # 激活辅助不应阻止其他 MineAstr 工具注册，但必须给出可操作的日志。
+            logger.warning(
+                "MineAstr 自动激活 minecraft 平台失败：%s。"
+                "请在 AstrBot WebUI -> 消息平台中确认存在已启用的 minecraft 实例。",
+                exc,
+            )
         adapter = self._minecraft_adapter()
         if adapter is not None:
             try:
@@ -113,6 +125,184 @@ class MineAstrPlugin(Star):
                     logger.info("MineAstr 已安排从本地快照恢复原生 RAG：%s", restored_rag)
             except Exception as exc:
                 logger.warning("MineAstr 初始化时安排缓存 RAG 恢复失败：%s", exc)
+
+    async def _ensure_minecraft_platform(self) -> dict[str, Any]:
+        """Ensure one configured Minecraft platform is enabled and, when safe, live.
+
+        AstrBot initializes plugins before its platform manager during a cold start,
+        while a plugin installed or reloaded from WebUI runs after the manager is
+        already active.  Persist the platform in both cases, but only hot-load it in
+        the latter so a cold start cannot bind the WebSocket endpoint twice.
+        """
+        if not self._plugin_config_bool("auto_enable_platform", True):
+            if self._minecraft_adapter() is None:
+                logger.info(
+                    "MineAstr 已关闭平台自动激活；当前未检测到运行中的 minecraft 实例。"
+                    "平台将完全由 AstrBot WebUI -> 消息平台的手动配置管理。"
+                )
+            return {"status": "manual", "changed": False, "loaded": False}
+
+        if self._minecraft_adapter() is not None:
+            return {"status": "already_running", "changed": False, "loaded": True}
+
+        get_config = getattr(self.context, "get_config", None)
+        if not callable(get_config):
+            raise RuntimeError("AstrBot Context 不支持 get_config，无法自动写入平台配置")
+        core_config = get_config()
+        platforms = core_config.get("platform")
+        if not isinstance(platforms, list):
+            raise RuntimeError("AstrBot 主配置中的 platform 不是列表")
+
+        candidates = [
+            entry for entry in platforms
+            if isinstance(entry, dict) and entry.get("type") == MINECRAFT_PLATFORM_TYPE
+        ]
+        if len(candidates) > 1:
+            logger.warning(
+                "MineAstr 发现 %s 个 minecraft 平台配置；自动激活只选择其中一个，"
+                "不会擅自停用其余实例。请在 AstrBot WebUI -> 消息平台删除重复实例以避免端口冲突。",
+                len(candidates),
+            )
+
+        selected = self._select_platform_config(candidates)
+        created = selected is None
+        changed = False
+        previous_enable: Any = None
+        had_enable = False
+        if selected is None:
+            selected = self._new_platform_config()
+            platforms.append(selected)
+            changed = True
+        elif not bool(selected.get("enable", False)):
+            # auto_enable_platform=true 表示插件被启用时应保持桥接激活。
+            # 需要手动管理的用户可先关闭该开关，避免意外重新启用。
+            had_enable = "enable" in selected
+            previous_enable = selected.get("enable")
+            selected["enable"] = True
+            changed = True
+
+        if changed:
+            save_config = getattr(core_config, "save_config", None)
+            if not callable(save_config):
+                if created:
+                    platforms.remove(selected)
+                elif had_enable:
+                    selected["enable"] = previous_enable
+                else:
+                    selected.pop("enable", None)
+                raise RuntimeError("AstrBot 主配置不支持 save_config，无法持久化平台实例")
+            try:
+                saved = save_config()
+                if inspect.isawaitable(saved):
+                    await saved
+            except Exception:
+                if created:
+                    platforms.remove(selected)
+                elif had_enable:
+                    selected["enable"] = previous_enable
+                else:
+                    selected.pop("enable", None)
+                raise
+
+        manager = getattr(self.context, "platform_manager", None)
+        if manager is None:
+            raise RuntimeError("AstrBot Context 未暴露 platform_manager")
+
+        platform_id = str(selected.get("id") or MINECRAFT_PLATFORM_ID)
+        if not self._platform_manager_is_initialized(manager):
+            logger.info(
+                "MineAstr 已%s并启用 minecraft 平台实例 id=%s；"
+                "AstrBot 将在本次启动后续阶段自动开始监听。",
+                "创建" if created else "确认", platform_id,
+            )
+            return {
+                "status": "scheduled",
+                "changed": changed,
+                "created": created,
+                "loaded": False,
+                "platform_id": platform_id,
+            }
+
+        reload_platform = getattr(manager, "reload", None)
+        load_platform = getattr(manager, "load_platform", None)
+        if callable(reload_platform):
+            loaded = reload_platform(selected)
+        elif callable(load_platform):
+            loaded = load_platform(selected)
+        else:
+            raise RuntimeError("AstrBot 平台管理器不支持 load_platform/reload")
+        if inspect.isawaitable(loaded):
+            await loaded
+        if self._minecraft_adapter() is None:
+            raise RuntimeError(
+                "AstrBot 已执行平台热加载，但未生成可用的 minecraft 实例；"
+                "请检查日志中的适配器或端口错误"
+            )
+        logger.info(
+            "MineAstr 已%s并热加载 minecraft 平台实例 id=%s，WebSocket 监听已交给 AstrBot。",
+            "创建" if created else "启用", platform_id,
+        )
+        return {
+            "status": "loaded",
+            "changed": changed,
+            "created": created,
+            "loaded": True,
+            "platform_id": platform_id,
+        }
+
+    def _plugin_config_bool(self, key: str, default: bool) -> bool:
+        config = getattr(self, "_config", None)
+        if not config:
+            return default
+        try:
+            value = config.get(key, default)
+        except AttributeError:
+            try:
+                value = config[key]
+            except (KeyError, TypeError):
+                return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", ""}
+        return bool(value)
+
+    def _new_platform_config(self) -> dict[str, Any]:
+        from .minecraft_adapter import DEFAULT_CONFIG
+
+        platform_config = dict(DEFAULT_CONFIG)
+        config = getattr(self, "_config", None)
+        if config:
+            for key in DEFAULT_CONFIG:
+                try:
+                    if key in config:
+                        platform_config[key] = config[key]
+                except (KeyError, TypeError):
+                    continue
+        platform_config.update({
+            "type": MINECRAFT_PLATFORM_TYPE,
+            "enable": True,
+            "id": MINECRAFT_PLATFORM_ID,
+        })
+        return platform_config
+
+    @staticmethod
+    def _select_platform_config(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda entry: (
+                not bool(entry.get("enable", False)),
+                str(entry.get("id") or "") != MINECRAFT_PLATFORM_ID,
+            ),
+        )
+
+    @staticmethod
+    def _platform_manager_is_initialized(manager: Any) -> bool:
+        instances = getattr(manager, "platform_insts", None)
+        if isinstance(instances, list) and instances:
+            return True
+        tasks = getattr(manager, "_platform_tasks", None)
+        return bool(tasks)
 
     async def terminate(self):
         await self._knowledge.close()
@@ -175,6 +365,21 @@ class MineAstrPlugin(Star):
         if not callable(getter):
             return None
         adapter = getter("minecraft")
+        if adapter is None:
+            manager = getattr(self.context, "platform_manager", None)
+            for candidate in getattr(manager, "platform_insts", None) or []:
+                candidate_config = getattr(candidate, "config", None)
+                if isinstance(candidate_config, dict) and candidate_config.get("type") == MINECRAFT_PLATFORM_TYPE:
+                    adapter = candidate
+                    break
+                meta = getattr(candidate, "meta", None)
+                if callable(meta):
+                    try:
+                        if getattr(meta(), "name", None) == MINECRAFT_PLATFORM_TYPE:
+                            adapter = candidate
+                            break
+                    except Exception:
+                        continue
         try:
             from .minecraft_adapter import select_live_platform_adapter
 

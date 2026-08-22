@@ -5,7 +5,10 @@
 > [!IMPORTANT]
 > **AI 制作声明：本插件采用生成式 AI 参与协议设计、编码、文档编写与测试。** AI 生成或修改的内容由项目维护者审阅、验证并承担最终维护责任。
 
-MineAstr 为 AstrBot 提供一个 `minecraft` 平台适配器。插件启动后会监听 WebSocket，等待 MineAstr NeoForge Mod 主动连接。
+> [!IMPORTANT]
+> **本仓库只是 AstrBot 插件端，必须配合 [MineAstr Mod](https://github.com/Hgit-1/MineAstr) 使用。** 请在 MineAstr 主仓库的 Releases 下载与插件版本对应的 NeoForge Mod JAR，并安装到 Minecraft 服务端；只安装本插件时不会产生 Minecraft 连接或服务器知识快照。
+
+MineAstr 为 AstrBot 提供一个 `minecraft` 平台适配器。从 0.10.3 起，启用插件时会默认自动创建并启用平台实例，然后监听 WebSocket，等待 MineAstr NeoForge Mod 主动连接。
 
 Minecraft 玩家聊天会被转换为 AstrBot 中的同一个群聊会话：
 
@@ -21,16 +24,19 @@ AstrBot 对该会话的文本回复会回传给所有已连接的 Minecraft 服�
 
 在模型支持工具调用时，AstrBot 还能主动查询实时服务器数据，并按需检索服务器实际安装的 Mod、物品、方块、标签和配方。Mod 功能说明可通过 Modrinth、官方 Wiki 和源码 README 补充到 AstrBot 原生 RAG 知识库。
 
-0.10.2 在原有知识来源、地区分类与 RAG 能力上，增加由服务端 Mod 托管的 AI 玩家 Agent 状态、观察、基础动作、路径点和可验证的长距离分段寻路工具。
+0.10.3 修复了“启用插件但 WebSocket 不监听”的激活歧义：冷启动时自动持久化平台配置并由 AstrBot 后续加载，热安装或热重载时立即加载，同时保留已有的手工连接配置。
 
 ## 最简单配置
 
-如果 AstrBot 和 Minecraft 服务器都在同一台电脑上，只需要改一项：
+如果 AstrBot 和 Minecraft 服务器都在同一台电脑上：
 
-1. 在 AstrBot WebUI 中启用 `minecraft` 平台适配器。
-2. 把 `token` 从 `change-me` 改成一个你自己写的随机字符串，例如 `mineastr-2026-xxxx`。
+1. 安装并启用 MineAstr 插件。`auto_enable_platform=true` 时，插件会自动创建并启用 ID 为 `minecraft` 的平台实例，不需要再手动新建。
+2. 打开 AstrBot WebUI 的“消息平台”，进入自动创建的“Minecraft 群聊桥接”，把 `token` 从 `change-me` 改成随机字符串，例如 `mineastr-2026-xxxx`。
 3. 打开 Minecraft 侧生成的 `mineastr-common.toml`，把里面的 `token` 改成同一个字符串。
-4. 重启 AstrBot 的 `minecraft` 平台适配器和 Minecraft 服务器。
+4. 保存并重启 `minecraft` 平台适配器，然后重启 Minecraft 服务器。
+
+> [!NOTE]
+> 插件齿轮页中的 `host`/`port`/`path`/`token` 是“首次自动创建平台”的初始模板。平台实例已经存在后，运行时连接配置以 WebUI 的“消息平台”页为准；插件不会用默认值覆盖已有 Token 或监听地址。
 
 默认连接地址是：
 
@@ -68,14 +74,26 @@ websocketUrl = "ws://192.168.1.20:8765/ws"
 pip install -r requirements.txt
 ```
 
-3. 在 AstrBot WebUI 中启用 `minecraft` 平台适配器。
+3. 在 AstrBot WebUI 中启用 MineAstr 插件；默认会自动创建并启用 `minecraft` 平台适配器。
 4. 将 AstrBot 侧的 `token`、监听地址、端口和路径与 Minecraft Mod 的 common 配置保持一致。
+
+## 如何确认已激活
+
+正常情况下，WebUI 的“消息平台”会显示一个已启用的“Minecraft 群聊桥接”，AstrBot 日志会出现以下两类信息之一：
+
+- 冷启动：`已创建并启用 minecraft 平台实例`，随后出现 `MineAstr WebSocket 正在监听`。
+- 热安装/热重载：`已创建并热加载 minecraft 平台实例`。
+
+如果日志提示端口被占用，请检查是否存在多个 `minecraft` 平台实例。如果 AstrBot 在 Docker 中，还必须把监听端口映射到宿主机；平台已激活不等于 Docker 端口已对外发布。
+
+若需要完全手动管理平台，先在插件齿轮页关闭 `auto_enable_platform`，再到“消息平台”停用或删除实例。否则，下次重载插件时会按设计重新启用它。
 
 ## 配置项
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `host` | `127.0.0.1` | WebSocket 监听地址。单机部署通常保持默认；跨机器连接时改为 Minecraft 服务器可访问的地址。 |
+| `auto_enable_platform` | `true` | 启用插件时自动创建或启用一个 `minecraft` 平台实例。需要手动停用平台前先关闭。 |
+| `host` | `127.0.0.1` | 首次自动创建平台时使用的 WebSocket 监听地址。已有平台请在“消息平台”页修改。 |
 | `port` | `8765` | WebSocket 监听端口。被占用时可以换成其他未使用端口，并同步修改 Mod 的 `websocketUrl`。 |
 | `path` | `/ws` | WebSocket 路径。一般保持默认；修改后也要同步修改 Mod 的 `websocketUrl`。 |
 | `token` | `change-me` | Mod 连接时使用的 Bearer Token。两端必须完全一致，建议改成随机字符串。 |
@@ -102,7 +120,7 @@ pip install -r requirements.txt
 | `agent_require_admin_approval` | `false` | 需要人工审批时设为 `true`；默认允许 AI 在服务端类型白名单和禁区内自主行动。状态、观察和紧急取消不受影响。 |
 | `agent_observation_distance` | `8` | Agent 结构化视场与附近实体的默认观察距离，范围 1–32 格。 |
 
-服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。
+服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。
 
 ## 服务器事件推送
 
@@ -135,9 +153,9 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 | `mineastr_get_topic_context` | 为另一话题插件返回在线玩家名、主要 Mod、确认地区和近期非聊天事件。 |
 | `mineastr_get_knowledge_status` | 查看连接/心跳、扫描、远程来源、RAG 和征集状态。 |
 | `mineastr_rescan_server_knowledge` | 管理员按 local/remote/rag/all 提交单实例重扫任务。 |
-| `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer 按需会话、唤醒原因、当前任务和渲染资源门槛。 |
+| `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer 按需会话、名称同步、上次退出/死亡原因、当前任务和渲染资源门槛。 |
 | `mineastr_observe_agent` | 查询 Bot 的生命、饥饿、位置、背包、视线、简单视场和附近实体。 |
-| `mineastr_submit_agent_task` | 提交并在需要时唤醒 Bot 执行聊天、连续下蹲、可验证的分段坐标/路径点移动、跟随、转向、方块交互、物品使用、等待或进食任务。 |
+| `mineastr_submit_agent_task` | 提交并在需要时唤醒 Bot 执行聊天、连续下蹲、可验证的分段坐标/路径点移动（可按 Mod 配置挖掘/搭路）、跟随、转向、方块交互、物品使用、等待或进食任务。 |
 | `mineastr_cancel_agent_task` | 紧急取消当前任务；不要求管理员审批。 |
 | `mineastr_manage_agent_waypoint` | 列出或管理私有路径点及步行/轨道连接。 |
 

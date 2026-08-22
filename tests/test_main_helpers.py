@@ -41,6 +41,17 @@ def _load_main_module():
     knowledge_module.KnowledgeCoordinator = object
     sys.modules[f"{package_name}.knowledge"] = knowledge_module
 
+    minecraft_adapter_module = types.ModuleType(f"{package_name}.minecraft_adapter")
+    minecraft_adapter_module.DEFAULT_CONFIG = {
+        "host": "127.0.0.1",
+        "port": 8765,
+        "path": "/ws",
+        "token": "change-me",
+        "bot_display_name": "AstrBot",
+    }
+    minecraft_adapter_module.select_live_platform_adapter = lambda adapter: adapter
+    sys.modules[f"{package_name}.minecraft_adapter"] = minecraft_adapter_module
+
     path = Path(__file__).resolve().parents[1] / "main.py"
     spec = importlib.util.spec_from_file_location(f"{package_name}.main", path)
     module = importlib.util.module_from_spec(spec)
@@ -53,6 +64,81 @@ MAIN = _load_main_module()
 
 
 class MainHelperTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cold_start_creates_platform_without_double_loading(self):
+        class CoreConfig(dict):
+            save_calls = 0
+
+            def save_config(self):
+                self.save_calls += 1
+
+        core_config = CoreConfig(platform=[])
+        manager = types.SimpleNamespace(platform_insts=[], _platform_tasks={})
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._config = {"host": "0.0.0.0", "token": "configured-token"}
+        plugin.context = types.SimpleNamespace(
+            get_platform_inst=lambda _name: None,
+            get_config=lambda: core_config,
+            platform_manager=manager,
+        )
+
+        result = await plugin._ensure_minecraft_platform()
+
+        self.assertEqual("scheduled", result["status"])
+        self.assertEqual(1, core_config.save_calls)
+        self.assertEqual(1, len(core_config["platform"]))
+        self.assertEqual("minecraft", core_config["platform"][0]["type"])
+        self.assertTrue(core_config["platform"][0]["enable"])
+        self.assertEqual("0.0.0.0", core_config["platform"][0]["host"])
+        self.assertEqual("configured-token", core_config["platform"][0]["token"])
+
+    async def test_hot_reload_enables_existing_platform_without_overwriting_connection(self):
+        class CoreConfig(dict):
+            save_calls = 0
+
+            def save_config(self):
+                self.save_calls += 1
+
+        existing = {
+            "type": "minecraft", "id": "minecraft", "enable": False,
+            "host": "192.0.2.10", "token": "existing-secret",
+        }
+        core_config = CoreConfig(platform=[existing])
+        state = {"loaded": False}
+
+        class Manager:
+            platform_insts = [object()]
+
+            async def reload(self, selected):
+                self.selected = selected
+                state["loaded"] = True
+
+        manager = Manager()
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._config = {"host": "127.0.0.1", "token": "change-me"}
+        plugin.context = types.SimpleNamespace(
+            get_platform_inst=lambda _name: None,
+            get_config=lambda: core_config,
+            platform_manager=manager,
+        )
+        plugin._minecraft_adapter = lambda: object() if state["loaded"] else None
+
+        result = await plugin._ensure_minecraft_platform()
+
+        self.assertEqual("loaded", result["status"])
+        self.assertTrue(existing["enable"])
+        self.assertEqual("192.0.2.10", existing["host"])
+        self.assertEqual("existing-secret", existing["token"])
+        self.assertIs(existing, manager.selected)
+
+    async def test_auto_activation_can_be_disabled_for_manual_management(self):
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._config = {"auto_enable_platform": False}
+        plugin.context = types.SimpleNamespace(get_platform_inst=lambda _name: None)
+
+        result = await plugin._ensure_minecraft_platform()
+
+        self.assertEqual("manual", result["status"])
+
     def test_plugin_config_is_applied_to_live_adapter(self):
         plugin = object.__new__(MAIN.MineAstrPlugin)
         plugin._config = {
