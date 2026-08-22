@@ -124,6 +124,8 @@ pip install -r requirements.txt
 
 0.11.1 与现有 Agent 任务协议保持兼容，可继续轮询 Mod 在生存避险时返回的挂起与恢复状态。
 
+0.11.2 与现有 Agent 任务协议保持兼容，可透传 Mod 的物理脱困进度及 runtime 版本状态。
+
 ## 服务器事件推送
 
 MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `player_advancement`。插件会把它们标记为 `message_kind=server_event`，以服务器名而不是玩家身份投递到同一 Minecraft 虚拟群，因此不会被当作玩家发言或地区简介投稿。AstrBot 是否对此自动回复，仍由当前人格、唤醒和群聊规则决定。
