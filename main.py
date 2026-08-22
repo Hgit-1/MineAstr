@@ -36,7 +36,7 @@ MINEASTR_TOOL_HINTS = {
     "mineastr_get_knowledge_status": "询问知识扫描、RAG 或来源健康状态时调用 mineastr_get_knowledge_status。",
     "mineastr_get_agent_status": "询问 AI 玩家 Bot 是否在线、当前任务或 Node 状态时调用 mineastr_get_agent_status。",
     "mineastr_observe_agent": "需要确认 AI 玩家 Bot 当前视场、附近实体、背包和生命状态时调用 mineastr_observe_agent。",
-    "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、交互、使用物品、进食、聊天或做连续下蹲动作时调用 mineastr_submit_agent_task；坐标/路径点寻路可按服务端配置受控挖掘或放置方块。",
+    "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、交互、使用物品、进食、聊天或做连续下蹲动作时调用 mineastr_submit_agent_task；该工具会等待实际完成或失败，不能把 accepted 当成完成；坐标/路径点寻路可按服务端配置受控挖掘或放置方块。",
     "mineastr_cancel_agent_task": "需要紧急停止 AI 玩家当前任务时调用 mineastr_cancel_agent_task。",
     "mineastr_manage_agent_waypoint": "需要列出或管理 AI 玩家路径点与步行/轨道连接时调用 mineastr_manage_agent_waypoint。",
 }
@@ -51,7 +51,7 @@ MINEASTR_EXTERNAL_HINT_KEYWORDS = (
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
-MINEASTR_VERSION = "0.10.4"
+MINEASTR_VERSION = "0.10.5"
 MINECRAFT_PLATFORM_TYPE = "minecraft"
 MINECRAFT_PLATFORM_ID = "minecraft"
 
@@ -926,7 +926,7 @@ class MineAstrPlugin(Star):
         distance: int = 3,
         item_name: str = "",
     ) -> str:
-        """向服务端托管的 AI 玩家提交一个受类型约束的动作任务。
+        """向服务端托管的 AI 玩家提交一个受类型约束的动作任务，并等待实际完成或失败。
 
         Args:
             task_type(str): chat、crouch_greet、goto、goto_waypoint、follow_player、look_at、wait、eat、interact_block 或 use_item。

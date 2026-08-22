@@ -242,6 +242,106 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(observed["ok"])
         self.assertEqual(["agent_observe"], calls)
 
+    async def test_agent_task_waits_for_terminal_state_instead_of_treating_acceptance_as_completion(self):
+        calls = []
+        status_calls = 0
+
+        class Manager:
+            async def query(self, query, server_id, params=None, timeout=0):
+                nonlocal status_calls
+                calls.append((query, server_id, params, timeout))
+                if query == "agent_task":
+                    return {
+                        "ok": True,
+                        "data": {
+                            "ok": True,
+                            "accepted": True,
+                            "task": {"task_id": "move-1", "state": "waiting_for_connection"},
+                        },
+                    }
+                status_calls += 1
+                return {
+                    "ok": True,
+                    "data": {
+                        "agent": {
+                            "active_task": {
+                                "task_id": "move-1" if status_calls == 1 else "newer-task",
+                                "state": "running",
+                            },
+                            "recent_tasks": [] if status_calls == 1 else [{
+                                "task_id": "move-1",
+                                "state": "completed",
+                                "message": "任务完成",
+                                "data": {"position": {"x": 10, "y": 64, "z": 20}},
+                            }],
+                        }
+                    },
+                }
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = True
+
+        original_poll_seconds = ADAPTER.AGENT_TASK_POLL_SECONDS
+        ADAPTER.AGENT_TASK_POLL_SECONDS = 0
+        try:
+            result = await self.adapter.submit_agent_task(
+                "server-a", "goto", {"x": 10, "y": 64, "z": 20}, "move-1"
+            )
+        finally:
+            ADAPTER.AGENT_TASK_POLL_SECONDS = original_poll_seconds
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["completed"])
+        self.assertTrue(result["data"]["waited_for_completion"])
+        self.assertEqual("single_agent_action", result["data"]["completion_scope"])
+        self.assertEqual("completed", result["data"]["task"]["state"])
+        self.assertEqual(["agent_task", "agent_status", "agent_status"], [call[0] for call in calls])
+
+    async def test_agent_task_returns_terminal_failure_to_the_model(self):
+        class Manager:
+            async def query(self, query, _server_id, params=None, timeout=0):
+                if query == "agent_task":
+                    return {"ok": True, "accepted": True,
+                            "task": {"task_id": "move-2", "state": "running"}}
+                return {"ok": True, "agent": {"active_task": {
+                    "task_id": "move-2", "state": "failed", "message": "目标不可达"
+                }}}
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = True
+
+        result = await self.adapter.submit_agent_task(
+            None, "goto", {"x": 1, "y": 2, "z": 3}, "move-2"
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["completed"])
+        self.assertEqual("目标不可达", result["error"])
+
+    async def test_agent_task_never_reports_success_when_status_becomes_unavailable(self):
+        class Manager:
+            async def query(self, query, _server_id, params=None, timeout=0):
+                if query == "agent_task":
+                    return {"ok": True, "accepted": True,
+                            "task": {"task_id": "move-3", "state": "running"}}
+                raise RuntimeError("status link unavailable")
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = True
+        original_poll_seconds = ADAPTER.AGENT_TASK_POLL_SECONDS
+        ADAPTER.AGENT_TASK_POLL_SECONDS = 0
+        try:
+            result = await self.adapter.submit_agent_task(
+                None, "goto", {"x": 4, "y": 5, "z": 6}, "move-3"
+            )
+        finally:
+            ADAPTER.AGENT_TASK_POLL_SECONDS = original_poll_seconds
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["pending"])
+        self.assertTrue(result["status_unavailable"])
+        self.assertIn("status link unavailable", result["error"])
+
     async def test_hot_reload_adopts_pre_shared_live_connection_manager(self):
         managers = ADAPTER._runtime_connection_managers()
         managers.clear()

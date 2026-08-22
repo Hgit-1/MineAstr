@@ -30,6 +30,7 @@ except ImportError:
 PROTOCOL_VERSION = 1
 QUERY_TIMEOUT_SECONDS = 5.0
 SCREENSHOT_QUERY_TIMEOUT_SECONDS = 30.0
+AGENT_TASK_POLL_SECONDS = 1.0
 LOGO_PATH = str(Path(__file__).resolve().with_name("logo.png"))
 MINECRAFT_LEADING_MENTION_RE = re.compile(r"^\s*@(?P<target>[^\s@]+)(?P<body>(?:\s+.*)?)$")
 DEFAULT_MENTION_ALIASES = "AstrBot,Aria,astrbot"
@@ -976,12 +977,123 @@ class MinecraftPlatformAdapter(Platform):
         }
         if requester:
             params.update({key: str(value)[:100] for key, value in requester.items() if value})
-        return await self.connection_manager.query(
+        submitted = await self.connection_manager.query(
             "agent_task",
             server_id,
             params=params,
             timeout=15.0,
         )
+        submitted_data = self._agent_response_data(submitted)
+        task = submitted_data.get("task") if isinstance(submitted_data, dict) else None
+        if not isinstance(task, dict) or not task.get("task_id"):
+            return submitted
+        if str(task.get("state") or "").lower() in {"completed", "failed", "canceled"}:
+            return self._completed_agent_task_payload(submitted, task)
+        return await self._wait_for_agent_task(
+            server_id,
+            submitted,
+            str(task["task_id"]),
+            self._agent_task_wait_seconds(task_type, args),
+        )
+
+    async def _wait_for_agent_task(
+        self,
+        server_id: str | None,
+        submitted: dict[str, Any],
+        task_id: str,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_seconds
+        last_task: dict[str, Any] | None = None
+        consecutive_status_errors = 0
+        while time.monotonic() < deadline:
+            try:
+                status = await self.query_agent_status(server_id)
+                consecutive_status_errors = 0
+            except Exception as exc:
+                consecutive_status_errors += 1
+                if consecutive_status_errors >= 3:
+                    return self._merge_agent_task_result(submitted, {
+                        "ok": False,
+                        "pending": True,
+                        "waited_for_completion": True,
+                        "status_unavailable": True,
+                        "error": f"连续无法查询 Agent 任务状态：{str(exc) or exc.__class__.__name__}",
+                        **({"task": last_task} if last_task is not None else {}),
+                    })
+                await asyncio.sleep(AGENT_TASK_POLL_SECONDS)
+                continue
+            status_data = self._agent_response_data(status)
+            agent = status_data.get("agent") if isinstance(status_data, dict) else None
+            current = self._find_agent_task(agent, task_id)
+            if current is not None:
+                last_task = current
+                if str(current.get("state") or "").lower() in {"completed", "failed", "canceled"}:
+                    return self._completed_agent_task_payload(submitted, current)
+            await asyncio.sleep(AGENT_TASK_POLL_SECONDS)
+        return self._merge_agent_task_result(submitted, {
+            "ok": False,
+            "pending": True,
+            "waited_for_completion": True,
+            "error": f"等待 Agent 任务 {task_id} 完成超时；任务可能仍在执行，请查询 Agent 状态。",
+            **({"task": last_task} if last_task is not None else {}),
+        })
+
+    @staticmethod
+    def _completed_agent_task_payload(submitted: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+        state = str(task.get("state") or "").lower()
+        return MinecraftPlatformAdapter._merge_agent_task_result(submitted, {
+            "ok": state == "completed",
+            "completed": state == "completed",
+            "waited_for_completion": True,
+            "completion_scope": "single_agent_action",
+            "completion_note": "completed 只表示本次原子动作完成；若用户目标包含后续步骤，应继续观察并提交下一动作。",
+            "task": task,
+            **({"error": str(task.get("message") or f"Agent 任务以 {state or 'unknown'} 状态结束")}
+               if state != "completed" else {}),
+        })
+
+    @staticmethod
+    def _agent_response_data(response: dict[str, Any]) -> dict[str, Any]:
+        data = response.get("data") if isinstance(response, dict) else None
+        return data if isinstance(data, dict) else response
+
+    @staticmethod
+    def _find_agent_task(agent: Any, task_id: str) -> dict[str, Any] | None:
+        if not isinstance(agent, dict):
+            return None
+        active = agent.get("active_task")
+        if isinstance(active, dict) and str(active.get("task_id") or "") == task_id:
+            return active
+        recent = agent.get("recent_tasks")
+        if isinstance(recent, list):
+            for task in reversed(recent):
+                if isinstance(task, dict) and str(task.get("task_id") or "") == task_id:
+                    return task
+        return None
+
+    @staticmethod
+    def _merge_agent_task_result(submitted: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        result = dict(submitted)
+        if isinstance(result.get("data"), dict):
+            data = dict(result["data"])
+            data.update(updates)
+            result["data"] = data
+            result["ok"] = bool(updates.get("ok"))
+        else:
+            result.update(updates)
+        return result
+
+    @staticmethod
+    def _agent_task_wait_seconds(task_type: str, args: dict[str, Any]) -> float:
+        selected = task_type.strip().lower()
+        if selected in {"goto", "goto_waypoint"}:
+            return 960.0
+        if selected == "follow_player":
+            return max(120.0, min(120.0, float(args.get("seconds") or 10)) + 120.0)
+        if selected == "wait":
+            return max(120.0, min(30.0, float(args.get("milliseconds") or 1000) / 1000.0) + 120.0)
+        return 180.0
 
     async def cancel_agent_task(self, server_id: str | None = None) -> dict[str, Any]:
         return await self.connection_manager.query("agent_cancel", server_id, timeout=8.0)
