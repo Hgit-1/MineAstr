@@ -37,11 +37,15 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(status.connection_attempts, 0)
     assert.equal(status.session_policy, 'on_demand')
 
-    const presence = await postJson(port, '/session', { human_player_count: 1 }, 'test-token')
+    const presence = await postJson(port, '/session', {
+      human_player_count: 1, preferred_username: 'Aria'
+    }, 'test-token')
     assert.equal(presence.status, 200)
     await delay(100)
     const presentButIdle = await (await postJson(port, '/status', {}, 'test-token')).json()
     assert.equal(presentButIdle.human_player_count, 1)
+    assert.equal(presentButIdle.preferred_username, 'Aria')
+    assert.equal(presentButIdle.username, 'Aria')
     assert.equal(presentButIdle.state, 'standby')
     assert.equal(presentButIdle.connection_attempts, 0)
 

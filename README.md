@@ -236,7 +236,7 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 > 兼容层会忽略 Mineflayer 无法解析的 Mod 自定义游戏数据，并跳过 Create 的自定义配方包（配方理解仍由 MineAstr 服务端知识快照/RAG 提供）。这可以保证本次实测组合上的登录、原版世界观察和基本动作，不等于完整 Create 客户端模拟。复杂机械结构的视觉与专用 GUI 操作仍需 with-mod 执行后端。
 
 1. 在 Minecraft 服务端安装 Node.js 22 或更高版本。
-2. 为 Bot 准备专用白名单账号；离线服也应固定并保护 `agentUsername`。
+2. 为 Bot 准备专用白名单身份。默认 `agentUseBotDisplayNameAsUsername=true`：Mod 优先采用 AstrBot 通过已认证 WebSocket 下发的显示名（例如 `Aria`），其次使用服务器显示名，都不符合 Minecraft 3–16 位英数下划线规则时才回退到 `agentUsername`。需要固定独立名称时关闭该开关。
 3. 首次保持 `enableAgent=false` 启动，并用 `/mineastr agent status` 确认配置。
 4. 设置正确的 `agentServerPort` 后启用 `enableAgent=true` 并重启服务端。
 
@@ -248,7 +248,11 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 Agent 会把实际加载过的区块按每方块 2-bit 分类为空气、固体、水体或危险，并使用 deflate 持久化到 `world/data/mineastr/agent/navigation-cache/`。缓存不保存方块 ID、方块实体、NBT、容器、告示牌、玩家或聊天内容；索引只保留区块坐标、地表高度离散度和类别比例。默认最多 2048 个区块，超过后删除最旧项。方块变化会延迟刷新对应区块，缓存损坏或写入失败只会降级为直线分段，不会阻断 Agent。
 
-`agentNavigationAllowDigging` 与 `agentNavigationAllowPlacing` 默认均为 `false`。服主显式启用后，Mineflayer 会把挖掘、放置、液体和实体代价纳入 A*：挖掘成本还会结合当前背包中最佳工具、附魔、状态效果及方块实际挖掘时间；放置会检查可识别的脚手材料并按 `agentNavigationPlaceCost` 惩罚。NeoForge Mod 物品数据处于 `degraded_mod_data=true` 时不会假定存在材料，因此不会凭空规划放置。
+0.10.3 起，`agentNavigationAllowDigging` 与 `agentNavigationAllowPlacing` 对新配置默认均为 `true`，使坐标/路径点寻路可像真实玩家一样挖掘挡路方块或消耗背包方块搭路。Mineflayer 会把挖掘、放置、液体和实体代价纳入 A*：挖掘成本还会结合当前背包中最佳工具、附魔、状态效果及方块实际挖掘时间；放置会检查可识别的脚手材料并按 `agentNavigationPlaceCost` 惩罚。禁区对通行、挖掘和放置三者都生效，容器和常见机器/存储方块不会被自动挖掉。
+
+NeoForge Mod 物品数据处于 `degraded_mod_data=true` 时不会假定存在材料，因此不会凭空规划放置。从 0.10.2 升级且配置文件已经保存了两个 `false` 的服务器需要由服主显式改为 `true`；MineAstr 不会擅自覆盖旧服务器的世界编辑选择。
+
+Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_change_pending`。因按需待机主动退出时，`last_session_exit.expected=true` 且 `code=idle_standby`；被踢出、登录超时或网络错误则会保留为非预期原因，避免 AI 再把正常待机误报为进程重启。
 
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
 

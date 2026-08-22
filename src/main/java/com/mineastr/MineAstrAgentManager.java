@@ -81,6 +81,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private volatile String token = "";
     private volatile String nodeVersion = "";
     private volatile String lastError = "";
+    private volatile String preferredAgentUsername = "MineAstrBot";
+    private volatile String previousAgentUsername = "";
     private volatile long startedAtMs;
     private volatile JsonObject lastAgentStatus = new JsonObject();
     private volatile boolean stopping;
@@ -100,6 +102,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         this.lastError = "";
         this.lastAgentStatus = new JsonObject();
         this.controlPort.set(0);
+        this.previousAgentUsername = this.preferredAgentUsername;
+        this.preferredAgentUsername = resolveAgentUsername(MineAstrConfig.BOT_DISPLAY_NAME.get());
         if (!currentServer.isDedicatedServer()) {
             disable("Agent 只在独立服务器中运行。");
             return;
@@ -136,7 +140,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
             environment.put("MINEASTR_MC_HOST", MineAstrConfig.AGENT_SERVER_HOST.get());
             environment.put("MINEASTR_MC_PORT", Integer.toString(MineAstrConfig.AGENT_SERVER_PORT.getAsInt()));
             environment.put("MINEASTR_MC_VERSION", SharedConstants.getCurrentVersion().getName());
-            environment.put("MINEASTR_AGENT_USERNAME", MineAstrConfig.AGENT_USERNAME.get());
+            environment.put("MINEASTR_AGENT_USERNAME", preferredAgentUsername);
             environment.put("MINEASTR_AGENT_AUTH", MineAstrConfig.AGENT_ACCOUNT_MODE.get().toLowerCase(Locale.ROOT));
             environment.put("MINEASTR_AGENT_SESSION_POLICY",
                     MineAstrConfig.AGENT_SESSION_POLICY.get().toLowerCase(Locale.ROOT));
@@ -311,6 +315,16 @@ public final class MineAstrAgentManager implements AutoCloseable {
                             || "uncaught_exception".equals(type)) {
                         lastError = payload.has("error") ? payload.get("error").getAsString() : type;
                         MineAstr.LOGGER.warn("MineAstr Agent：{}", lastError);
+                    } else if ("bot_offline".equals(type) && payload.has("session_exit")
+                            && payload.get("session_exit").isJsonObject()) {
+                        JsonObject exit = payload.getAsJsonObject("session_exit");
+                        String code = exit.has("code") ? exit.get("code").getAsString() : "unknown";
+                        boolean expected = exit.has("expected") && exit.get("expected").getAsBoolean();
+                        String detail = exit.has("detail") ? safeLogText(exit.get("detail").getAsString()) : "";
+                        MineAstr.LOGGER.info("MineAstr Agent 游戏会话结束：code={} expected={} detail={}",
+                                code, expected, detail);
+                    } else if ("bot_death".equals(type)) {
+                        MineAstr.LOGGER.warn("MineAstr Agent 在游戏中死亡；寻路任务将由生命保护安全中止。");
                     } else {
                         MineAstr.LOGGER.debug("MineAstr Agent：{}", safeLine);
                     }
@@ -363,6 +377,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("session_policy", MineAstrConfig.AGENT_SESSION_POLICY.get());
         result.addProperty("human_player_count", humanPlayerCount.get());
         result.addProperty("idle_disconnect_seconds", MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt());
+        result.addProperty("preferred_username", preferredAgentUsername);
         JsonObject navigation = new JsonObject();
         navigation.addProperty("allow_digging", MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean());
         navigation.addProperty("allow_placing", MineAstrConfig.AGENT_NAVIGATION_ALLOW_PLACING.getAsBoolean());
@@ -473,10 +488,34 @@ public final class MineAstrAgentManager implements AutoCloseable {
         syncSessionPresence();
     }
 
+    public void updateBotDisplayName(String displayName) {
+        String resolved = resolveAgentUsername(displayName);
+        if (!resolved.equals(preferredAgentUsername)) {
+            previousAgentUsername = preferredAgentUsername;
+            preferredAgentUsername = resolved;
+            MineAstr.LOGGER.info("MineAstr Agent 玩家名已同步为 {}，下次登录生效。", resolved);
+        }
+        syncSessionPresence();
+    }
+
+    public boolean isAgentUsername(String playerName) {
+        return playerName != null && (playerName.equalsIgnoreCase(preferredAgentUsername)
+                || (!previousAgentUsername.isBlank() && playerName.equalsIgnoreCase(previousAgentUsername)));
+    }
+
+    private static String resolveAgentUsername(String displayName) {
+        return MineAstrAgentIdentity.resolve(
+                MineAstrConfig.AGENT_USE_BOT_DISPLAY_NAME_AS_USERNAME.getAsBoolean(),
+                displayName,
+                MineAstrConfig.SERVER_NAME.get(),
+                MineAstrConfig.AGENT_USERNAME.get());
+    }
+
     private void syncSessionPresence() {
         if (state.get() != State.RUNNING || controlPort.get() <= 0 || stopping) return;
         JsonObject body = new JsonObject();
         body.addProperty("human_player_count", humanPlayerCount.get());
+        body.addProperty("preferred_username", preferredAgentUsername);
         request("/session", body, Duration.ofSeconds(3)).whenComplete((ignored, throwable) -> {
             if (throwable != null && !stopping) {
                 Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
@@ -808,6 +847,11 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private static String safeMessage(Throwable throwable) {
         String value = throwable.getMessage();
         if (value == null || value.isBlank()) value = throwable.getClass().getSimpleName();
+        return safeLogText(value);
+    }
+
+    private static String safeLogText(String value) {
+        if (value == null) return "";
         String sanitized = value.replaceAll("[\\r\\n\\t]+", " ")
                 .replaceAll("(?i)(token|password|secret)\\s*[:=]\\s*\\S+", "$1=[redacted]");
         return sanitized.substring(0, Math.min(300, sanitized.length()));

@@ -91,6 +91,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         }
         knowledgeSnapshot.refresh(server);
         MineAstrConfig.migrateDefaultPrivacyNotice();
+        agentManager.updateBotDisplayName(MineAstrConfig.BOT_DISPLAY_NAME.get());
         humanAgentPlayers.clear();
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             if (!isAgentPlayer(player)) humanAgentPlayers.add(player.getUUID());
@@ -204,8 +205,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
         agentManager.updateHumanPlayerCount(humanAgentPlayers.size());
     }
 
-    private static boolean isAgentPlayer(ServerPlayer player) {
-        return player.getGameProfile().getName().equalsIgnoreCase(MineAstrConfig.AGENT_USERNAME.get());
+    private boolean isAgentPlayer(ServerPlayer player) {
+        return agentManager.isAgentUsername(player.getGameProfile().getName());
     }
 
     public void forwardPlayerDeath(ServerPlayer player, Component deathMessage) {
@@ -537,6 +538,10 @@ public final class MineAstrBridge implements WebSocket.Listener {
         String type = getString(payload, "type", "");
         if ("chat".equals(type)) {
             handleChat(payload);
+        } else if ("configuration".equals(type)) {
+            String displayName = trimFlatContent(
+                    getString(payload, "bot_display_name", MineAstrConfig.BOT_DISPLAY_NAME.get()), 64);
+            if (!displayName.isBlank()) agentManager.updateBotDisplayName(displayName);
         } else if ("query".equals(type)) {
             handleQuery(socket, payload);
         } else if ("pong".equals(type)) {

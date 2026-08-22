@@ -9,12 +9,13 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { navigateTo } = require('./navigation')
 const { ChunkNavigationCache } = require('./chunk-cache')
+const { applyNavigationPolicy } = require('./navigation-policy')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
 const host = process.env.MINEASTR_MC_HOST || '127.0.0.1'
 const port = parseInteger(process.env.MINEASTR_MC_PORT, 25565, 1, 65535)
-const username = (process.env.MINEASTR_AGENT_USERNAME || 'MineAstrBot').slice(0, 16)
+let username = validMinecraftUsername(process.env.MINEASTR_AGENT_USERNAME) || 'MineAstrBot'
 const version = process.env.MINEASTR_MC_VERSION || false
 const auth = process.env.MINEASTR_AGENT_AUTH === 'microsoft' ? 'microsoft' : 'offline'
 const joinCommands = String(process.env.MINEASTR_AGENT_JOIN_COMMANDS || '').split(/\r?\n/)
@@ -76,6 +77,9 @@ let neoForgeNegotiated = false
 let taskGeneration = 0
 const observedCustomChannels = new Set()
 let lastProtocolDiagnostic = null
+let pendingSessionExit = null
+let lastSessionExit = null
+let lastDeathAt = 0
 
 const waypointFile = path.join(dataDir, 'waypoints.json')
 let waypointData = loadWaypointData()
@@ -91,6 +95,11 @@ function safeError(error) {
     try { value = JSON.stringify(value) } catch (_) { value = String(value) }
   }
   return String(value).replace(/[\r\n\t]+/g, ' ').slice(0, 500)
+}
+
+function validMinecraftUsername(value) {
+  const candidate = String(value || '').trim()
+  return /^[A-Za-z0-9_]{3,16}$/.test(candidate) ? candidate : null
 }
 
 function decodeBase64(value) {
@@ -184,6 +193,10 @@ function reconcileSession() {
     sessionDisconnecting = true
     sessionReady = false
     state = 'disconnecting_idle'
+    pendingSessionExit = {
+      code: 'idle_standby', expected: true,
+      detail: `按需会话闲置 ${idleDisconnectSeconds} 秒后进入待机`
+    }
     emit({ type: 'bot_idle_disconnect', idle_seconds: idleDisconnectSeconds })
     try { bot.quit('MineAstr on-demand standby') } catch (_) { bot.end?.('MineAstr on-demand standby') }
   }, delayMs)
@@ -220,6 +233,7 @@ function connectBot() {
       if (bot !== created || state !== 'connecting') return
       lastError = `Minecraft 登录超时（协议状态 ${created._client?.state || 'unknown'}）`
       lastDisconnectError = lastError
+      pendingSessionExit = { code: 'login_timeout', expected: false, detail: lastError }
       emit({ type: 'bot_connection_timeout', error: lastError })
       try { created.quit('MineAstr login timeout') } catch (_) { created.end?.('MineAstr login timeout') }
     }, 30_000)
@@ -262,16 +276,14 @@ function connectBot() {
       lastDisconnectError = ''
       try {
         const movements = new Movements(created)
-        // Navigation is not authorization to edit the world. Destructive movement
-        // is exposed only through explicit, separately guarded task types.
-        movements.canDig = navigationAllowDigging
-        movements.digCost = navigationDigCost
-        movements.placeCost = navigationPlaceCost
-        movements.liquidCost = navigationLiquidCost
-        movements.allow1by1towers = navigationAllowPlacing
-        movements.allowParkour = false
-        if (!navigationAllowPlacing) movements.scafoldingBlocks = []
-        movements.exclusionAreasStep.push(block => isForbidden(block?.position, created.game?.dimension) ? 100 : 0)
+        applyNavigationPolicy(movements, created, {
+          allowDigging: navigationAllowDigging,
+          allowPlacing: navigationAllowPlacing,
+          digCost: navigationDigCost,
+          placeCost: navigationPlaceCost,
+          liquidCost: navigationLiquidCost,
+          isForbidden
+        })
         created.pathfinder.setMovements(movements)
       } catch (error) {
         lastError = safeError(error)
@@ -289,6 +301,10 @@ function connectBot() {
       reconcileSession()
     })
     created.on('health', () => void selfCare())
+    created.on('death', () => {
+      lastDeathAt = Date.now()
+      emit({ type: 'bot_death', position: created.entity?.position ? vectorJson(created.entity.position) : null })
+    })
     created.on('move', () => {
       if (isForbidden(created.entity?.position)) {
         created.pathfinder?.stop()
@@ -299,6 +315,7 @@ function connectBot() {
     created.on('kicked', reason => {
       lastError = safeError(reason)
       lastDisconnectError = lastError
+      pendingSessionExit = { code: 'kicked', expected: false, detail: lastError }
       if (/running NeoForge|install NeoForge|neoforge\.network\.negotiation/i.test(lastError)) {
         connectionBlocked = true
         state = 'incompatible_server'
@@ -313,6 +330,7 @@ function connectBot() {
     created.on('error', error => {
       lastError = safeError(error)
       lastDisconnectError = lastError
+      pendingSessionExit ||= { code: 'network_error', expected: false, detail: lastError }
       lastProtocolDiagnostic = {
         frames: recentProtocolFrames.map(frame => ({ ...frame })),
         packets: recentProtocolPackets.map(packet => ({ ...packet }))
@@ -326,7 +344,21 @@ function connectBot() {
       sessionReady = false
       const expectedIdleDisconnect = sessionDisconnecting
       sessionDisconnecting = false
-      if (!expectedIdleDisconnect && !lastDisconnectError) lastDisconnectError = safeError(reason)
+      const protocolReason = safeError(reason)
+      if (!expectedIdleDisconnect && !lastDisconnectError) lastDisconnectError = protocolReason
+      const recordedExit = pendingSessionExit || {
+        code: stopping ? 'server_stopping' : 'connection_ended',
+        expected: stopping,
+        detail: protocolReason
+      }
+      lastSessionExit = {
+        ...recordedExit,
+        protocol_reason: protocolReason,
+        time_ms: Date.now(),
+        after_recent_death: Boolean(lastDeathAt && Date.now() - lastDeathAt <= 120_000)
+      }
+      pendingSessionExit = null
+      emit({ type: 'bot_offline', session_exit: lastSessionExit })
       state = stopping ? 'stopped' : connectionBlocked ? 'incompatible_server'
         : (expectedIdleDisconnect || !desiredWakeReason()) ? 'standby' : 'disconnected'
       if (activeTask?.state === 'running') finishTask(activeTask.run_id, false, `连接中断：${safeError(reason)}`)
@@ -390,12 +422,16 @@ function status() {
     state,
     last_error: lastError || null,
     username: bot?.username || username,
+    preferred_username: username,
+    identity_change_pending: Boolean(bot?.username && bot.username !== username),
     version: bot?.version || version || null,
     connected_at_ms: connectedAt || null,
     connection_started_at_ms: connectionStartedAt || null,
     connection_attempts: connectionAttempts,
     protocol_state: bot?._client?.state || null,
     last_disconnect_error: lastDisconnectError || null,
+    last_session_exit: lastSessionExit,
+    last_death_at_ms: lastDeathAt || null,
     health: numberOrNull(bot?.health),
     food: numberOrNull(bot?.food),
     position: entity ? vectorJson(entity.position) : null,
@@ -754,7 +790,19 @@ function cancelTask() {
 
 function updateSession(input) {
   humanPlayerCount = parseInteger(input.human_player_count, 0, 0, 100000)
-  emit({ type: 'session_presence', human_player_count: humanPlayerCount, session_policy: sessionPolicy })
+  const preferredUsername = validMinecraftUsername(input.preferred_username)
+  if (preferredUsername && preferredUsername !== username) {
+    const previous = username
+    username = preferredUsername
+    emit({
+      type: 'agent_identity_updated', previous_username: previous,
+      preferred_username: username, applies_after_reconnect: Boolean(bot)
+    })
+  }
+  emit({
+    type: 'session_presence', human_player_count: humanPlayerCount,
+    session_policy: sessionPolicy, preferred_username: username
+  })
   reconcileSession()
   return status()
 }
@@ -859,6 +907,7 @@ function shutdown() {
   if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
   taskConnectionTimer = null
   cancelTask()
+  pendingSessionExit = { code: 'server_stopping', expected: true, detail: 'MineAstr Agent 控制进程正在停止' }
   try { bot?.quit('MineAstr server stopping') } catch (_) {}
   control.close(() => process.exit(0))
   setTimeout(() => process.exit(0), 3000).unref()
@@ -877,6 +926,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.2' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.3' })
   reconcileSession()
 })

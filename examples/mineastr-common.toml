@@ -87,6 +87,8 @@ agentAutoDownloadNode = false
 # offline 或 microsoft。离线身份必须配合白名单并注意同名冒用风险。
 agentAccountMode = "offline"
 agentUsername = "MineAstrBot"
+# 优先用 AstrBot 实际显示名作为玩家名（例如 Aria）；不符合 MC 名称规则时回退到上项。
+agentUseBotDisplayNameAsUsername = true
 
 # Mineflayer 会话策略：on_demand（默认，搭话/任务唤醒）、players_online（有人或有任务时在线）、always（常驻）。
 agentSessionPolicy = "on_demand"
@@ -103,6 +105,10 @@ agentFullAutonomy = true
 # 同机 Bot 的 NeoForge 限定兼容层；不会关闭服务器全局网络校验。非同机地址不会启用。
 agentNeoForgeCompatibility = true
 agentForbiddenRegions = []
+
+# 寻路可像真实玩家一样挖掉挡路方块、消耗背包方块搭路；容器/机器/禁区仍受保护。
+agentNavigationAllowDigging = true
+agentNavigationAllowPlacing = true
 
 # 独立客户端实例和严格资源熔断；留空时不启用 with-mod 临时渲染。
 agentClientInstancePath = ""

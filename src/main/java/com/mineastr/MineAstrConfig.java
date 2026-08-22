@@ -176,9 +176,17 @@ public final class MineAstrConfig {
                     && ("offline".equalsIgnoreCase(text) || "microsoft".equalsIgnoreCase(text)));
 
     public static final ModConfigSpec.ConfigValue<String> AGENT_USERNAME = BUILDER
-            .comment("Agent 专用玩家名；建议加入白名单，不要与真人账号共用。")
+            .comment(
+                    "Agent 专用玩家名；建议加入白名单，不要与真人账号共用。",
+                    "agentUseBotDisplayNameAsUsername=true 时仅作为自动名称无效时的回退值。")
             .define("agentUsername", "MineAstrBot", value -> value instanceof String text
                     && text.matches("[A-Za-z0-9_]{3,16}"));
+
+    public static final ModConfigSpec.BooleanValue AGENT_USE_BOT_DISPLAY_NAME_AS_USERNAME = BUILDER
+            .comment(
+                    "自动使用 AstrBot 下发的机器人称呼作为 Agent 玩家名。",
+                    "名称必须符合 Minecraft 的 3-16 位英文字母/数字/下划线规则；否则回退到 agentUsername。")
+            .define("agentUseBotDisplayNameAsUsername", true);
 
     public static final ModConfigSpec.ConfigValue<List<? extends String>> AGENT_JOIN_COMMANDS = BUILDER
             .comment(
@@ -227,15 +235,15 @@ public final class MineAstrConfig {
 
     public static final ModConfigSpec.BooleanValue AGENT_NAVIGATION_ALLOW_DIGGING = BUILDER
             .comment(
-                    "是否允许 Agent 在明确的寻路任务中挖掘挡路方块。默认关闭。",
+                    "是否允许 Agent 在明确的寻路任务中挖掘挡路方块。默认开启。",
                     "启用后仍会避开容器、液体相邻方块、坠落方块、禁区和不可破坏方块，并按当前最佳工具耗时计入成本。")
-            .define("agentNavigationAllowDigging", false);
+            .define("agentNavigationAllowDigging", true);
 
     public static final ModConfigSpec.BooleanValue AGENT_NAVIGATION_ALLOW_PLACING = BUILDER
             .comment(
-                    "是否允许 Agent 在明确的寻路任务中消耗背包方块搭路或垫高。默认关闭。",
+                    "是否允许 Agent 在明确的寻路任务中消耗背包方块搭路或垫高。默认开启。",
                     "只有 Mineflayer 能可靠识别背包物品时才会实际规划放置；Mod 数据降级状态下不会假定存在材料。")
-            .define("agentNavigationAllowPlacing", false);
+            .define("agentNavigationAllowPlacing", true);
 
     public static final ModConfigSpec.IntValue AGENT_NAVIGATION_DIG_COST = BUILDER
             .comment("寻路中挖掘的基础成本倍率；实际成本还会按最佳可用工具和方块挖掘时间增加。")
