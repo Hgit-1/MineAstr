@@ -14,6 +14,7 @@ const { executeJoinCommands, initialJoinCommandState, parseJoinCommands } = requ
 const { createCombatController, isAttackableHostile, isRetreatThreat } = require('./combat')
 const { RoadNetwork } = require('./road-network')
 const { RESUMABLE_TYPES, TaskStore } = require('./task-store')
+const { resumeNavigationRecord, suspendNavigationRecord } = require('./task-lifecycle')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
@@ -86,6 +87,8 @@ let navigationCompatibility = null
 let combatController = null
 let eating = false
 let retreating = false
+let survivalTimer = null
+let selfCareRunning = false
 let neoForgeNegotiated = false
 let taskGeneration = 0
 const observedCustomChannels = new Set()
@@ -204,7 +207,7 @@ function emit(record) {
 }
 
 function taskNeedsSession() {
-  return activeTask?.state === 'waiting_for_connection' || activeTask?.state === 'running'
+  return ['waiting_for_connection', 'running', 'suspended'].includes(activeTask?.state)
 }
 
 function maintenanceNeedsSession() {
@@ -402,12 +405,15 @@ function connectBot() {
         onDanger: (threat, reason) => handleCombatDanger(threat, reason)
       })
       combatController.start()
+      survivalTimer = setInterval(() => void selfCare(), 1000)
+      survivalTimer.unref?.()
       startWaitingTask()
       reconcileSession()
     })
     created.on('health', () => void selfCare())
     created.on('death', () => {
       lastDeathAt = Date.now()
+      suspendNavigationTask('自主生存保护：Bot 死亡，等待重生后续行', null, 'death')
       emit({ type: 'bot_death', position: created.entity?.position ? vectorJson(created.entity.position) : null })
     })
     created.on('move', () => {
@@ -447,6 +453,8 @@ function connectBot() {
       clearTimeout(connectionTimeout)
       combatController?.stop('connection_ended')
       combatController = null
+      if (survivalTimer) clearInterval(survivalTimer)
+      survivalTimer = null
       bot = null
       sessionReady = false
       const expectedIdleDisconnect = sessionDisconnecting
@@ -469,7 +477,11 @@ function connectBot() {
       const wakeAfterDisconnect = desiredWakeReason()
       state = stopping ? 'stopped' : connectionBlocked ? 'incompatible_server'
         : wakeAfterDisconnect ? 'disconnected' : 'standby'
-      if (activeTask?.state === 'running') finishTask(activeTask.run_id, false, `连接中断：${safeError(reason)}`)
+      if (activeTask?.state === 'running') {
+        if (!suspendNavigationTask(`连接中断：${safeError(reason)}`, null, 'connection_interrupted', false)) {
+          finishTask(activeTask.run_id, false, `连接中断：${safeError(reason)}`)
+        }
+      }
       if (!stopping) {
         if (desiredWakeReason()) scheduleConnect()
         else reconcileSession()
@@ -665,26 +677,80 @@ function visibleBlocks(distance) {
 }
 
 async function selfCare() {
-  if (bot?.health != null && bot.health <= 8 && activeTask?.state === 'running' && activeTask.task_type !== 'eat') {
-    bot.pathfinder?.stop()
-    bot.clearControlStates()
-    finishTask(activeTask.run_id, false, '自主生存保护：生命值过低，已中止当前任务')
+  if (selfCareRunning) return
+  selfCareRunning = true
+  try {
+    if (bot?.health != null && bot.health <= combatMinimumHealth
+        && activeTask?.state === 'running' && activeTask.task_type !== 'eat') {
+      suspendNavigationTask('自主生存保护：生命值过低', null, 'low_health')
+    }
+    const ate = await autoEat(false)
+    const nearbyThreat = activeTask?.state === 'suspended' ? nearbySurvivalThreat() : null
+    if (!ate && bot?.health != null && bot.health <= combatMinimumHealth) {
+      await retreatFromThreat(nearbyThreat, 'low_health')
+    } else if (!ate && nearbyThreat) {
+      await retreatFromThreat(nearbyThreat, 'navigation_safety')
+    }
+    tryResumeSuspendedNavigation()
+  } finally {
+    selfCareRunning = false
   }
-  const ate = await autoEat(false)
-  if (!ate && bot?.health != null && bot.health <= 8) void retreatFromThreat(null, 'low_health')
 }
 
 function handleCombatDanger(threat, reason) {
   if (!threat || retreating || eating) return
   if (activeTask?.state === 'running' && activeTask.task_type !== 'eat') {
-    finishTask(activeTask.run_id, false,
-      `自主生存保护：检测到${reason === 'low_health' ? '低生命值与' : ''}高危生物 ${String(threat.name || threat.mobType || 'unknown').slice(0, 40)}`)
+    suspendNavigationTask(
+      `自主生存保护：检测到${reason === 'low_health' ? '低生命值与' : ''}高危生物 ${String(threat.name || threat.mobType || 'unknown').slice(0, 40)}`,
+      threat, reason)
   }
   void retreatFromThreat(threat, reason)
 }
 
+function suspendNavigationTask(message, threat = null, reason = 'survival', reconcile = true) {
+  if (!resumeInterruptedNavigation || !activeTask || activeTask.state !== 'running'
+      || !RESUMABLE_TYPES.has(activeTask.task_type)) return false
+  const checkpoint = activeTask.navigation_checkpoint || (bot?.entity?.position
+    ? { position: vectorJson(bot.entity.position), reason } : null)
+  bot?.pathfinder?.stop()
+  bot?.clearControlStates()
+  activeTask = suspendNavigationRecord(activeTask, {
+    runId: ++taskGeneration, message, reason, checkpoint
+  })
+  persistTasks()
+  emit({
+    type: 'task_suspended', task: taskStatus(activeTask, false), reason,
+    threat: threat ? String(threat.name || threat.mobType || 'unknown').slice(0, 40) : null,
+    checkpoint
+  })
+  if (reconcile) reconcileSession()
+  return true
+}
+
+function nearbySurvivalThreat(radius = combatRadius + 2) {
+  if (!bot?.entity?.position) return null
+  return Object.values(bot.entities || {})
+    .filter(entity => entity?.position && (isAttackableHostile(bot, entity) || isRetreatThreat(entity)))
+    .map(entity => ({ entity, distance: entity.position.distanceTo(bot.entity.position) }))
+    .filter(candidate => candidate.distance <= radius)
+    .sort((left, right) => left.distance - right.distance)[0]?.entity || null
+}
+
+function tryResumeSuspendedNavigation() {
+  if (!activeTask || activeTask.state !== 'suspended' || !RESUMABLE_TYPES.has(activeTask.task_type)
+      || !bot || state !== 'online' || !sessionReady || retreating || eating) return false
+  const safeHealth = Math.min(20, combatMinimumHealth + 2)
+  if (Number(bot.health) < safeHealth || nearbySurvivalThreat()) return false
+  activeTask = resumeNavigationRecord(activeTask, { runId: ++taskGeneration })
+  persistTasks()
+  emit({ type: 'task_resumed', task: taskStatus(activeTask, false), checkpoint: activeTask.navigation_checkpoint || null })
+  startWaitingTask()
+  reconcileSession()
+  return true
+}
+
 async function retreatFromThreat(providedThreat = null, reason = 'threat') {
-  if (!bot?.entity || retreating) return
+  if (!bot?.entity || retreating || eating) return
   const threat = providedThreat || Object.values(bot.entities)
     .filter(entity => entity.position && (isAttackableHostile(bot, entity) || isRetreatThreat(entity)))
     .sort((left, right) => left.position.distanceTo(bot.entity.position) - right.position.distanceTo(bot.entity.position))[0]
@@ -703,6 +769,7 @@ async function retreatFromThreat(providedThreat = null, reason = 'threat') {
     lastError = `自主避险失败：${safeError(error)}`
   } finally {
     retreating = false
+    tryResumeSuspendedNavigation()
     reconcileSession()
   }
 }
@@ -753,7 +820,7 @@ async function runTask(input) {
   const args = input.args && typeof input.args === 'object' ? input.args : {}
   if (activeTask?.task_id === taskId) return { ok: true, accepted: false, duplicate: true, task: activeTask }
   if (recentTasks.has(taskId)) return { ok: true, accepted: false, duplicate: true, task: recentTasks.get(taskId) }
-  if (['waiting_for_connection', 'running'].includes(activeTask?.state)) throw new Error('已有任务正在执行')
+  if (['waiting_for_connection', 'running', 'suspended'].includes(activeTask?.state)) throw new Error('已有任务正在执行或等待生存条件恢复')
   const runId = ++taskGeneration
   activeTask = {
     task_id: taskId, task_type: type, run_id: runId, state: 'waiting_for_connection',
@@ -924,7 +991,7 @@ function delay(milliseconds) {
 }
 
 function cancelTask() {
-  if (!activeTask || !['waiting_for_connection', 'running'].includes(activeTask.state)) {
+  if (!activeTask || !['waiting_for_connection', 'running', 'suspended'].includes(activeTask.state)) {
     return { ok: true, canceled: false }
   }
   if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
@@ -1059,6 +1126,8 @@ function shutdown() {
   clearIdleDisconnect()
   if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
   taskConnectionTimer = null
+  if (survivalTimer) clearInterval(survivalTimer)
+  survivalTimer = null
   if (activeTask && ['waiting_for_connection', 'running'].includes(activeTask.state)) {
     if (resumeInterruptedNavigation && RESUMABLE_TYPES.has(activeTask.task_type)) {
       const suspended = { ...activeTask, state: 'suspended', suspended_at_ms: Date.now(), updated_at_ms: Date.now() }
@@ -1089,7 +1158,7 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.11.0' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.11.1' })
   if (restoredNavigationTask && activeTask) {
     emit({ type: 'task_resumed', task: taskStatus(activeTask, false), checkpoint: activeTask.navigation_checkpoint || null })
   }

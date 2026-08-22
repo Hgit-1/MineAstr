@@ -276,6 +276,8 @@ Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_cha
 
 0.11.0 新增可选 RoadWeaver 混合寻路。当服务端安装 RoadWeaver 1.21.1 时，Mod 会读取其持久化 `RoadData` 中心线和 `targetY`，导出到 `world/data/mineastr/agent/road-network.json`；Agent 比较上路、道路行走、下路与普通地形路线成本后选路。道路点仍会在已加载世界中检验，路面未生成、被改建或断裂时会临时封禁该边并回退重规划。`agentRoadWeaverRoutingEnabled=true` 为默认值；RoadWeaver 不是必需依赖，未安装或适配失败不影响现有寻路。
 
+0.11.1 修复 Agent 遇到低生命值、高危生物、死亡或临时断线时将可续行导航误标为失败的问题。`goto`/`goto_waypoint` 现在会保留参数和检查点并进入挂起，待进食、撤退、生命值与周边威胁恢复安全后自动续行；挂起期间不会被闲置策略断开或被新任务覆盖。
+
 同版本把树木/坡面恢复改为 3–12 格三维安全点扫描：树叶仍是可站立方块，但树冠死胡同会增加成本，优先寻找可下降地面或道路接入点。`goto`/`goto_waypoint` 会原子保存在 `world/data/mineastr/agent/tasks.json`；`agentResumeInterruptedNavigation=true` 时，24 小时内的未完成导航可在进程或服务端重启后经维度、坐标和禁区重检后自动续行。
 
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
