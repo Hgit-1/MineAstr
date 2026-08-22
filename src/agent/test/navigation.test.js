@@ -4,7 +4,7 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 const {
-  applyPathfinderCollisionCompatibility, localAvoidanceCost, navigateTo, obstaclePoint
+  applyPathfinderCollisionCompatibility, findEscapeCheckpoint, localAvoidanceCost, navigateTo, obstaclePoint
 } = require('../navigation')
 
 class GoalNear {
@@ -233,6 +233,19 @@ test('uses a lateral recovery checkpoint after a stuck segment', async () => {
   assert.ok(bot.pathfinder.cancellations >= 1)
   const recovery = events.find(event => event.type === 'navigation_segment_started' && event.recovery_offset === 3)
   assert.deepEqual(recovery.checkpoint, { x: 4, y: 64, z: 3 })
+})
+
+test('three-dimensional recovery prefers safe ground over repeating a tree collision', () => {
+  const bot = {
+    blockAt(position) {
+      const key = `${position.x},${position.y},${position.z}`
+      if (key === '3,63,0') return { name: 'grass_block', boundingBox: 'block' }
+      if (key === '3,64,0' || key === '3,65,0') return { name: 'air', boundingBox: 'empty' }
+      return { name: 'oak_log', boundingBox: 'block' }
+    }
+  }
+  const escape = findEscapeCheckpoint(bot, { x: 0, y: 64, z: 0 }, { x: 20, y: 64, z: 0 }, 3)
+  assert.deepEqual(escape, { x: 3, y: 64, z: 0 })
 })
 
 test('does not treat steady slow movement as a stall', async () => {

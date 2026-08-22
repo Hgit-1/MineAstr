@@ -166,6 +166,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     Integer.toString(MineAstrConfig.AGENT_COMBAT_ATTACK_COOLDOWN_MS.getAsInt()));
             environment.put("MINEASTR_NAV_CACHE_MAX_CHUNKS",
                     Integer.toString(MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt()));
+            environment.put("MINEASTR_ROADWEAVER_ROUTING_ENABLED",
+                    Boolean.toString(MineAstrConfig.AGENT_ROADWEAVER_ROUTING_ENABLED.getAsBoolean()));
+            environment.put("MINEASTR_RESUME_INTERRUPTED_NAVIGATION",
+                    Boolean.toString(MineAstrConfig.AGENT_RESUME_INTERRUPTED_NAVIGATION.getAsBoolean()));
             if (!MineAstrConfig.AGENT_JOIN_COMMANDS.get().isEmpty()) {
                 environment.put("MINEASTR_AGENT_JOIN_COMMANDS", String.join(
                         "\n", MineAstrConfig.AGENT_JOIN_COMMANDS.get().stream().limit(5).toList()));
@@ -375,6 +379,17 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 sanitizeAudit(jsonString(payload, "elapsed_ms", "?")),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
                                 pathUpdate);
+                    } else if ("navigation_route_planned".equals(type)
+                            || "navigation_global_replanned".equals(type)) {
+                        MineAstr.LOGGER.info("MineAstr Agent 全局路线：backend={} points={} reroutes={}",
+                                sanitizeAudit(jsonString(payload, "backend", "unknown")),
+                                sanitizeAudit(jsonString(payload, "route_points", "0")),
+                                sanitizeAudit(jsonString(payload, "global_reroutes", "0")));
+                    } else if ("navigation_road_segment_invalid".equals(type)) {
+                        MineAstr.LOGGER.warn("MineAstr Agent RoadWeaver 路段不可通：point={} fallback={} reroutes={}",
+                                safeLogText(payload.has("point") ? payload.get("point").toString() : "unknown"),
+                                sanitizeAudit(jsonString(payload, "fallback_backend", "unknown")),
+                                sanitizeAudit(jsonString(payload, "global_reroutes", "0")));
                     } else if ("combat_started".equals(type) && payload.has("target")
                             && payload.get("target").isJsonObject()) {
                         JsonObject target = payload.getAsJsonObject("target");
@@ -404,6 +419,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 sanitizeAudit(jsonString(task, "task_type", "unknown")),
                                 sanitizeAudit(jsonString(task, "state", "unknown")),
                                 safeLogText(jsonString(task, "message", "")));
+                    } else if (("task_resumed".equals(type) || "task_suspended".equals(type))
+                            && payload.has("task") && payload.get("task").isJsonObject()) {
+                        JsonObject task = payload.getAsJsonObject("task");
+                        MineAstr.LOGGER.info("MineAstr Agent 任务{}: id={} type={} checkpoint={}",
+                                "task_resumed".equals(type) ? "已恢复" : "已挂起",
+                                sanitizeAudit(jsonString(task, "task_id", "unknown")),
+                                sanitizeAudit(jsonString(task, "task_type", "unknown")),
+                                safeLogText(payload.has("checkpoint") ? payload.get("checkpoint").toString() : "none"));
                     } else if ("bot_idle_disconnect".equals(type)) {
                         String lastTask = "none";
                         if (payload.has("last_task") && payload.get("last_task").isJsonObject()) {
@@ -483,6 +506,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
         navigation.addProperty("place_cost", MineAstrConfig.AGENT_NAVIGATION_PLACE_COST.getAsInt());
         navigation.addProperty("liquid_cost", MineAstrConfig.AGENT_NAVIGATION_LIQUID_COST.getAsInt());
         navigation.addProperty("cache_max_chunks", MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt());
+        navigation.addProperty("roadweaver_routing_enabled",
+                MineAstrConfig.AGENT_ROADWEAVER_ROUTING_ENABLED.getAsBoolean());
+        navigation.addProperty("resume_interrupted_navigation",
+                MineAstrConfig.AGENT_RESUME_INTERRUPTED_NAVIGATION.getAsBoolean());
         result.add("navigation_config", navigation);
         JsonObject combat = new JsonObject();
         combat.addProperty("enabled", MineAstrConfig.AGENT_COMBAT_ENABLED.getAsBoolean());

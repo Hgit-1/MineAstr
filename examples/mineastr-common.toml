@@ -118,6 +118,12 @@ agentForbiddenRegions = []
 agentNavigationAllowDigging = true
 agentNavigationAllowPlacing = true
 
+# RoadWeaver 存在时优先沿它生成的真实道路折线长途行走；未安装时自动回退。
+agentRoadWeaverRoutingEnabled = true
+
+# 重启后自动续行 24 小时内未完成的 goto/goto_waypoint，恢复前会重新检查禁区。
+agentResumeInterruptedNavigation = true
+
 # 独立客户端实例和严格资源熔断；留空时不启用 with-mod 临时渲染。
 agentClientInstancePath = ""
 agentRendererMinFreeMemoryMb = 3072

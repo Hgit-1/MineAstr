@@ -12,6 +12,8 @@ const { ChunkNavigationCache } = require('./chunk-cache')
 const { applyNavigationPolicy } = require('./navigation-policy')
 const { executeJoinCommands, initialJoinCommandState, parseJoinCommands } = require('./join-commands')
 const { createCombatController, isAttackableHostile, isRetreatThreat } = require('./combat')
+const { RoadNetwork } = require('./road-network')
+const { RESUMABLE_TYPES, TaskStore } = require('./task-store')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
@@ -49,6 +51,8 @@ const navigationAllowPlacing = process.env.MINEASTR_NAV_ALLOW_PLACING === 'true'
 const navigationDigCost = parseInteger(process.env.MINEASTR_NAV_DIG_COST, 12, 1, 99)
 const navigationPlaceCost = parseInteger(process.env.MINEASTR_NAV_PLACE_COST, 18, 1, 99)
 const navigationLiquidCost = parseInteger(process.env.MINEASTR_NAV_LIQUID_COST, 8, 1, 99)
+const roadWeaverRoutingEnabled = process.env.MINEASTR_ROADWEAVER_ROUTING_ENABLED !== 'false'
+const resumeInterruptedNavigation = process.env.MINEASTR_RESUME_INTERRUPTED_NAVIGATION !== 'false'
 const combatEnabled = process.env.MINEASTR_COMBAT_ENABLED !== 'false'
 const combatRadius = parseInteger(process.env.MINEASTR_COMBAT_RADIUS, 6, 3, 16)
 const combatMinimumHealth = parseInteger(process.env.MINEASTR_COMBAT_MIN_HEALTH, 10, 1, 20)
@@ -93,6 +97,10 @@ let joinCommandState = initialJoinCommandState(joinCommands.length)
 
 const waypointFile = path.join(dataDir, 'waypoints.json')
 let waypointData = loadWaypointData()
+const roadNetwork = new RoadNetwork(path.join(dataDir, 'road-network.json'), { enabled: roadWeaverRoutingEnabled })
+const taskStore = new TaskStore(path.join(dataDir, 'tasks.json'), { resumeEnabled: resumeInterruptedNavigation })
+let restoredNavigationTask = false
+restoreTaskState()
 
 function parseInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10)
@@ -151,6 +159,44 @@ function normalizeDimension(value) {
   if (dimension === 'the_nether' || dimension === 'nether') return 'minecraft:the_nether'
   if (dimension === 'the_end' || dimension === 'end') return 'minecraft:the_end'
   return dimension
+}
+
+function validateRestoredTask(task, args) {
+  if (!args || typeof args !== 'object') return '持久化任务缺少参数'
+  let target = args
+  if (task.task_type === 'goto_waypoint') {
+    target = waypointData.waypoints[String(args.id || '')]
+    if (!target) return '要恢复的路径点已不存在'
+  }
+  const x = Number(target.x), y = Number(target.y), z = Number(target.z)
+  if (![x, y, z].every(Number.isFinite)) return '要恢复的目标坐标无效'
+  const dimension = target.dimension || args.dimension || 'minecraft:overworld'
+  if (isForbidden({ x, y, z }, dimension)) return '要恢复的目标位于 Agent 禁区'
+  return null
+}
+
+function restoreTaskState() {
+  const restored = taskStore.restore(validateRestoredTask)
+  recentTasks.clear()
+  for (const task of restored.recentTasks) {
+    if (task?.task_id) recentTasks.set(task.task_id, task)
+  }
+  if (!restored.activeTask) {
+    persistTasks()
+    return
+  }
+  activeTask = { ...restored.activeTask, run_id: ++taskGeneration }
+  activeTaskArgs = restored.activeTaskArgs
+  restoredNavigationTask = true
+  persistTasks()
+}
+
+function persistTasks(activeOverride = undefined, argsOverride = undefined) {
+  const candidate = activeOverride === undefined ? activeTask : activeOverride
+  const args = argsOverride === undefined ? activeTaskArgs : argsOverride
+  const resumableActive = candidate && ['waiting_for_connection', 'running', 'suspended'].includes(candidate.state)
+    ? candidate : null
+  taskStore.save(resumableActive, args, recentTasks.values())
 }
 
 function emit(record) {
@@ -522,7 +568,7 @@ function status() {
     proxy_protocol: useProxyProtocol,
     last_protocol_diagnostic: lastProtocolDiagnostic,
     navigation: {
-      backend: 'mineflayer-pathfinder-a-star',
+      backend: roadNetwork.status().available ? 'roadweaver-hybrid' : 'mineflayer-pathfinder-a-star',
       segmented: true,
       stitched_chunk_corridor: true,
       tool_aware_dig_cost: true,
@@ -532,6 +578,8 @@ function status() {
       place_cost: navigationPlaceCost,
       liquid_cost: navigationLiquidCost,
       cache: navigationCache.status(),
+      road_network: roadNetwork.status(),
+      task_persistence: taskStore.status(),
       collision_compatibility: navigationCompatibility
     }
   }
@@ -689,6 +737,7 @@ function finishTask(runId, ok, message, data = null) {
   activeTask = { ...activeTask, state: ok ? 'completed' : 'failed', finished_at_ms: Date.now(), message, data }
   recentTasks.set(activeTask.task_id, activeTask)
   while (recentTasks.size > 100) recentTasks.delete(recentTasks.keys().next().value)
+  persistTasks()
   // The Java supervisor only needs the audit fields. Keep the potentially large
   // final observation available through the control API, but do not duplicate it
   // onto the line-oriented child-process event stream.
@@ -727,6 +776,7 @@ async function runTask(input) {
   }, 90_000)
   taskConnectionTimer.unref()
   reconcileSession()
+  persistTasks()
   startWaitingTask()
   return { ok: true, accepted: true, task: activeTask }
 }
@@ -739,6 +789,7 @@ function startWaitingTask() {
   const type = activeTask.task_type
   const args = activeTaskArgs || {}
   activeTask = { ...activeTask, state: 'running', started_at_ms: Date.now() }
+  persistTasks()
   emit({ type: 'task_started', task: activeTask })
   queueMicrotask(async () => {
     try {
@@ -822,6 +873,12 @@ async function navigateTask(target, args, runId) {
     assertActive: () => assertTaskActive(runId),
     dimension: normalizeDimension(args.dimension || bot?.game?.dimension),
     cache: navigationCache,
+    roadNetwork,
+    onCheckpoint: checkpoint => {
+      if (!activeTask || activeTask.run_id !== runId) return
+      activeTask = { ...activeTask, navigation_checkpoint: checkpoint, updated_at_ms: Date.now() }
+      persistTasks()
+    },
     emit
   })
 }
@@ -878,6 +935,7 @@ function cancelTask() {
   activeTask = { ...activeTask, state: 'canceled', finished_at_ms: Date.now() }
   recentTasks.set(activeTask.task_id, activeTask)
   while (recentTasks.size > 100) recentTasks.delete(recentTasks.keys().next().value)
+  persistTasks()
   emit({ type: 'task_canceled', task: activeTask })
   reconcileSession()
   return { ok: true, canceled: true, task: activeTask }
@@ -1001,7 +1059,17 @@ function shutdown() {
   clearIdleDisconnect()
   if (taskConnectionTimer) clearTimeout(taskConnectionTimer)
   taskConnectionTimer = null
-  cancelTask()
+  if (activeTask && ['waiting_for_connection', 'running'].includes(activeTask.state)) {
+    if (resumeInterruptedNavigation && RESUMABLE_TYPES.has(activeTask.task_type)) {
+      const suspended = { ...activeTask, state: 'suspended', suspended_at_ms: Date.now(), updated_at_ms: Date.now() }
+      persistTasks(suspended, activeTaskArgs)
+      emit({ type: 'task_suspended', task: taskStatus(suspended, false), reason: 'agent_process_stopping' })
+      activeTask = null
+      activeTaskArgs = null
+    } else {
+      finishTask(activeTask.run_id, false, '服务端停止导致任务中断')
+    }
+  }
   pendingSessionExit = { code: 'server_stopping', expected: true, detail: 'MineAstr Agent 控制进程正在停止' }
   try { bot?.quit('MineAstr server stopping') } catch (_) {}
   control.close(() => process.exit(0))
@@ -1021,6 +1089,9 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.6' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.11.0' })
+  if (restoredNavigationTask && activeTask) {
+    emit({ type: 'task_resumed', task: taskStatus(activeTask, false), checkpoint: activeTask.navigation_checkpoint || null })
+  }
   reconcileSession()
 })

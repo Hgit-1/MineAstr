@@ -83,10 +83,22 @@ async function navigateTo(bot, goals, target, options = {}) {
   let consecutiveStalls = 0
   let recoveryOffset = 0
   const recoveryOffsets = [3, -3, 5]
-  const corridor = options.cache?.planChunkCorridor?.(bot.entity.position, target, options.dimension) || []
+  let globalRoute = planGlobalRoute(bot.entity.position, target, options)
+  let corridor = globalRoute.points
+  let routeBackend = globalRoute.backend
   let corridorIndex = 0
+  let globalReroutes = 0
   const localAvoidanceZones = []
   const removeLocalAvoidance = installLocalAvoidance(bot, localAvoidanceZones)
+
+  emit({
+    type: 'navigation_route_planned',
+    backend: routeBackend,
+    route_points: corridor.length,
+    road_distance: globalRoute.road_distance || null,
+    connector_distance: globalRoute.connector_distance || null,
+    global_reroutes: globalReroutes
+  })
 
   try {
     while (true) {
@@ -94,6 +106,21 @@ async function navigateTo(bot, goals, target, options = {}) {
       const current = bot.entity.position
       while (corridorIndex < corridor.length - 1 && horizontalDistance(current, corridor[corridorIndex]) <= 5) corridorIndex += 1
       const stitchedTarget = corridor[corridorIndex] || target
+      if (routeBackend === 'roadweaver-hybrid' && standPositionState(bot, stitchedTarget) === 'invalid') {
+        options.roadNetwork?.invalidateNear?.(stitchedTarget)
+        globalReroutes += 1
+        globalRoute = planGlobalRoute(current, target, globalReroutes <= 3 ? options : { ...options, roadNetwork: null })
+        corridor = globalRoute.points
+        routeBackend = globalRoute.backend
+        corridorIndex = 0
+        emit({
+          type: 'navigation_road_segment_invalid',
+          point: vectorJson(stitchedTarget),
+          fallback_backend: routeBackend,
+          global_reroutes: globalReroutes
+        })
+        continue
+      }
       const remainingHorizontal = horizontalDistance(current, stitchedTarget)
       const atFinalCorridorPoint = corridorIndex >= corridor.length - 1
       let finalGoal = atFinalCorridorPoint && horizontalDistance(current, target) <= segmentLength
@@ -105,12 +132,14 @@ async function navigateTo(bot, goals, target, options = {}) {
       }
       const recoverySegment = recoveryOffset !== 0
       if (recoverySegment) {
-        checkpoint = recoveryCheckpoint(current, stitchedTarget, recoveryOffset)
+        checkpoint = findEscapeCheckpoint(bot, current, stitchedTarget, recoveryOffset, options.roadNetwork)
         finalGoal = false
       }
       const goal = finalGoal
         ? new goals.GoalNear(target.x, target.y, target.z, tolerance)
-        : new goals.GoalNearXZ(checkpoint.x, checkpoint.z, recoverySegment ? 1 : 3)
+        : recoverySegment
+          ? new goals.GoalNear(checkpoint.x, checkpoint.y, checkpoint.z, 1)
+          : new goals.GoalNearXZ(checkpoint.x, checkpoint.z, 3)
 
       if (goalReached(goal, current)) {
         if (!finalGoal) continue
@@ -165,6 +194,10 @@ async function navigateTo(bot, goals, target, options = {}) {
           remaining_distance: round(spatialDistance(actual, target))
         })
         if (finalGoal) return navigationResult(target, actual, tolerance, attempts, startedAt)
+        options.onCheckpoint?.({
+          target: vectorJson(target), position: vectorJson(actual), route_backend: routeBackend,
+          corridor_index: corridorIndex, route_points: corridor.length, global_reroutes: globalReroutes
+        })
         if (recoverySegment) recoveryOffset = 0
         if (!recoverySegment && remainingHorizontal <= segmentLength && corridorIndex < corridor.length - 1) corridorIndex += 1
         continue
@@ -195,6 +228,25 @@ async function navigateTo(bot, goals, target, options = {}) {
         avoidance_point: avoidancePoint ? vectorJson(avoidancePoint) : null
       })
 
+      if (consecutiveStalls > recoveryOffsets.length && routeBackend === 'roadweaver-hybrid' && globalReroutes < 3) {
+        globalReroutes += 1
+        options.roadNetwork?.invalidateNear?.(actual)
+        globalRoute = planGlobalRoute(actual, target, options)
+        corridor = globalRoute.points
+        routeBackend = globalRoute.backend
+        corridorIndex = 0
+        consecutiveStalls = 0
+        recoveryOffset = 0
+        emit({
+          type: 'navigation_global_replanned',
+          backend: routeBackend,
+          route_points: corridor.length,
+          global_reroutes: globalReroutes,
+          failed_position: vectorJson(actual)
+        })
+        continue
+      }
+
       if (consecutiveStalls > recoveryOffsets.length) {
         const reason = pathError ? `寻路失败：${safeMessage(pathError)}` : '寻路未到达检查点且连续无进展'
         throw navigationError(reason, target, actual, attempts, startedAt)
@@ -203,6 +255,13 @@ async function navigateTo(bot, goals, target, options = {}) {
   } finally {
     removeLocalAvoidance()
   }
+}
+
+function planGlobalRoute(start, target, options) {
+  const road = options.roadNetwork?.plan?.(start, target, options.dimension)
+  if (road?.points?.length > 1) return road
+  const terrain = options.cache?.planChunkCorridor?.(start, target, options.dimension) || []
+  return { backend: terrain.length ? 'chunk-corridor' : 'direct-local-a-star', points: terrain }
 }
 
 function obstaclePoint(current, target) {
@@ -247,6 +306,59 @@ function recoveryCheckpoint(current, target, lateralOffset) {
     y: Number(current.y),
     z: Number(current.z) + unitZ * forward + unitX * lateralOffset
   }
+}
+
+function findEscapeCheckpoint(bot, current, target, lateralOffset, roadNetwork = null) {
+  if (typeof bot?.blockAt !== 'function') return recoveryCheckpoint(current, target, lateralOffset)
+  const originY = Math.floor(Number(current.y))
+  const desired = recoveryCheckpoint(current, target, lateralOffset)
+  const candidates = []
+  for (let radius = 3; radius <= 12; radius += 3) {
+    for (let step = 0; step < 16; step++) {
+      const angle = (Math.PI * 2 * step) / 16
+      const x = Math.floor(Number(current.x) + Math.cos(angle) * radius)
+      const z = Math.floor(Number(current.z) + Math.sin(angle) * radius)
+      for (let y = originY + 3; y >= originY - 6; y--) {
+        const point = { x, y, z }
+        if (!isSafeStandPosition(bot, point)) continue
+        const targetGain = spatialDistance(current, target) - spatialDistance(point, target)
+        const desiredDistance = spatialDistance(point, desired)
+        const verticalPenalty = Math.abs(y - originY) * 1.5
+        const roadDistance = Math.min(32, Number(roadNetwork?.distanceToRoad?.(point) ?? 32))
+        const support = safeBlockAt(bot, { x, y: y - 1, z })
+        const leafPenalty = /leaves/i.test(String(support?.name || '')) ? 6 : 0
+        candidates.push({ point, score: targetGain * 2 - desiredDistance - verticalPenalty - roadDistance * 0.15 - leafPenalty })
+        break
+      }
+    }
+    if (candidates.length >= 4) break
+  }
+  candidates.sort((left, right) => right.score - left.score)
+  return candidates[0]?.point || recoveryCheckpoint(current, target, lateralOffset)
+}
+
+function isSafeStandPosition(bot, point) {
+  return standPositionState(bot, point) === 'valid'
+}
+
+function standPositionState(bot, point) {
+  const support = safeBlockAt(bot, { x: point.x, y: point.y - 1, z: point.z })
+  const feet = safeBlockAt(bot, point)
+  const head = safeBlockAt(bot, { x: point.x, y: point.y + 1, z: point.z })
+  if (!support || !feet || !head) return 'unknown'
+  const supportName = String(support.name || '')
+  if (/(?:lava|fire|magma_block|cactus|sweet_berry_bush|powder_snow)/i.test(supportName)) return 'invalid'
+  if (/(?:slab|carpet|snow)/i.test(String(feet.name || '')) && feet.boundingBox !== 'empty' && passable(head)) return 'valid'
+  return support.boundingBox !== 'empty' && passable(feet) && passable(head) ? 'valid' : 'invalid'
+}
+
+function passable(block) {
+  const name = String(block?.name || '')
+  return block?.boundingBox === 'empty' && !/(?:lava|fire|cobweb|sweet_berry_bush|powder_snow)/i.test(name)
+}
+
+function safeBlockAt(bot, position) {
+  try { return bot.blockAt(position, false) } catch (_) { return null }
 }
 
 function runPathfinderSegment(bot, goal, options) {
@@ -514,6 +626,8 @@ module.exports = {
   navigateTo,
   obstaclePoint,
   recoveryCheckpoint,
+  findEscapeCheckpoint,
+  isSafeStandPosition,
   runPathfinderSegment,
   spatialDistance
 }

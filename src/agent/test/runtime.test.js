@@ -3,15 +3,18 @@
 const assert = require('node:assert/strict')
 const { spawn } = require('node:child_process')
 const net = require('node:net')
+const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
 test('on-demand control stays in standby and an offline task wakes the bot', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mineastr-runtime-test-'))
   const child = spawn(process.execPath, [path.resolve(__dirname, '..', 'index.js')], {
     env: {
       ...process.env,
       MINEASTR_AGENT_TOKEN: 'test-token',
-      MINEASTR_AGENT_DATA_DIR: path.resolve(__dirname, '.tmp'),
+      MINEASTR_AGENT_DATA_DIR: dataDir,
       MINEASTR_MC_HOST: '127.0.0.1',
       MINEASTR_MC_PORT: '9',
       MINEASTR_AGENT_USERNAME: 'MineAstrTest',
@@ -72,10 +75,12 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(Object.hasOwn(afterCancel.recent_tasks[0], 'data'), false)
   } finally {
     await stopChild(child)
+    fs.rmSync(dataDir, { recursive: true, force: true })
   }
 })
 
 test('proxy protocol mode sends a v1 header before the Minecraft handshake', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mineastr-proxy-test-'))
   let resolveHeader
   const headerPromise = new Promise(resolve => { resolveHeader = resolve })
   const server = net.createServer(socket => {
@@ -89,7 +94,7 @@ test('proxy protocol mode sends a v1 header before the Minecraft handshake', asy
     env: {
       ...process.env,
       MINEASTR_AGENT_TOKEN: 'proxy-test-token',
-      MINEASTR_AGENT_DATA_DIR: path.resolve(__dirname, '.tmp-proxy'),
+      MINEASTR_AGENT_DATA_DIR: dataDir,
       MINEASTR_MC_HOST: '127.0.0.1',
       MINEASTR_MC_PORT: String(server.address().port),
       MINEASTR_AGENT_USERNAME: 'MineAstrProxy',
@@ -110,10 +115,12 @@ test('proxy protocol mode sends a v1 header before the Minecraft handshake', asy
   } finally {
     server.close()
     await stopChild(child)
+    fs.rmSync(dataDir, { recursive: true, force: true })
   }
 })
 
 test('players-online policy connects only after human presence is synchronized', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mineastr-presence-test-'))
   let resolveConnection
   const connectionPromise = new Promise(resolve => { resolveConnection = resolve })
   const server = net.createServer(socket => {
@@ -125,7 +132,7 @@ test('players-online policy connects only after human presence is synchronized',
     env: {
       ...process.env,
       MINEASTR_AGENT_TOKEN: 'presence-token',
-      MINEASTR_AGENT_DATA_DIR: path.resolve(__dirname, '.tmp-presence'),
+      MINEASTR_AGENT_DATA_DIR: dataDir,
       MINEASTR_MC_HOST: '127.0.0.1',
       MINEASTR_MC_PORT: String(server.address().port),
       MINEASTR_AGENT_USERNAME: 'MineAstrHuman',
@@ -151,6 +158,47 @@ test('players-online policy connects only after human presence is synchronized',
   } finally {
     server.close()
     await stopChild(child)
+    fs.rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('an interrupted goto is restored after the Agent process restarts', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mineastr-resume-test-'))
+  const environment = {
+    ...process.env,
+    MINEASTR_AGENT_TOKEN: 'resume-token',
+    MINEASTR_AGENT_DATA_DIR: dataDir,
+    MINEASTR_MC_HOST: '127.0.0.1',
+    MINEASTR_MC_PORT: '9',
+    MINEASTR_AGENT_USERNAME: 'MineAstrResume',
+    MINEASTR_AGENT_AUTH: 'offline',
+    MINEASTR_MC_VERSION: '1.21.1',
+    MINEASTR_RESUME_INTERRUPTED_NAVIGATION: 'true'
+  }
+  let child = spawn(process.execPath, [path.resolve(__dirname, '..', 'index.js')], {
+    env: environment, stdio: ['ignore', 'pipe', 'pipe']
+  })
+  try {
+    let port = await readyPort(child)
+    const accepted = await postJson(port, '/task', {
+      task_id: 'resume-goto', task_type: 'goto',
+      args: { x: 100, y: 64, z: 0, dimension: 'minecraft:overworld' }
+    }, 'resume-token')
+    assert.equal((await accepted.json()).accepted, true)
+    await stopChild(child)
+
+    child = spawn(process.execPath, [path.resolve(__dirname, '..', 'index.js')], {
+      env: environment, stdio: ['ignore', 'pipe', 'pipe']
+    })
+    port = await readyPort(child)
+    const restored = await (await postJson(port, '/status', {}, 'resume-token')).json()
+    assert.equal(restored.active_task.task_id, 'resume-goto')
+    assert.equal(restored.active_task.state, 'waiting_for_connection')
+    assert.equal(restored.active_task.resumed, true)
+    assert.equal(restored.wake_reason, 'task')
+  } finally {
+    await stopChild(child)
+    fs.rmSync(dataDir, { recursive: true, force: true })
   }
 })
 

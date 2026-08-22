@@ -274,6 +274,10 @@ Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_cha
 
 0.10.8 继续修复区块边界处的长距离寻路。上游 pathfinder 返回 `NoPath` 或规划超时时仍可能附带当前已加载区域内的最佳局部路径；MineAstr 现在保留该目标和局部路径，让 Bot 先走向区块边界并等待新区块触发重规划。真正永久不可达且无位移的目标仍会由看门狗和有限恢复次数安全终止。
 
+0.11.0 新增可选 RoadWeaver 混合寻路。当服务端安装 RoadWeaver 1.21.1 时，Mod 会读取其持久化 `RoadData` 中心线和 `targetY`，导出到 `world/data/mineastr/agent/road-network.json`；Agent 比较上路、道路行走、下路与普通地形路线成本后选路。道路点仍会在已加载世界中检验，路面未生成、被改建或断裂时会临时封禁该边并回退重规划。`agentRoadWeaverRoutingEnabled=true` 为默认值；RoadWeaver 不是必需依赖，未安装或适配失败不影响现有寻路。
+
+同版本把树木/坡面恢复改为 3–12 格三维安全点扫描：树叶仍是可站立方块，但树冠死胡同会增加成本，优先寻找可下降地面或道路接入点。`goto`/`goto_waypoint` 会原子保存在 `world/data/mineastr/agent/tasks.json`；`agentResumeInterruptedNavigation=true` 时，24 小时内的未完成导航可在进程或服务端重启后经维度、坐标和禁区重检后自动续行。
+
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
 
 高信息量设备学习使用独立的 `enablePassiveSkillLearning` 开关，默认关闭。玩家可用 `/mineastr learning optout` 独立退出；该选择不影响活动地区统计。
@@ -317,7 +321,7 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 
 扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。
 
-WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.10 服务端；旧 AstrBot 插件会忽略新增 Agent 能力，仍可使用原有功能。
+WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.11 服务端；旧 AstrBot 插件会忽略新增 Agent 能力，仍可使用原有功能。
 
 MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`player_join`、`player_leave`、`player_death` 和 `player_advancement`。死亡和进度推送尊重 `showDeathMessages` 与 `announceAdvancements` 游戏规则；只推送会在游戏聊天中公开宣告的进度，不推送隐藏配方解锁。事件不含 IP 地址、精确坐标、背包或 NBT。
 

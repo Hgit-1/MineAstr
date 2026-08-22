@@ -294,6 +294,18 @@ public final class MineAstrConfig {
                     "超过上限时按最旧更新时间删除；缓存位于世界 data/mineastr/agent/navigation-cache。")
             .defineInRange("agentNavigationCacheMaxChunks", 2048, 64, 16384);
 
+    public static final ModConfigSpec.BooleanValue AGENT_ROADWEAVER_ROUTING_ENABLED = BUILDER
+            .comment(
+                    "RoadWeaver 存在时是否读取其已规划道路折线，用于 Agent 长距离导航。",
+                    "RoadWeaver 是可选依赖；未安装、数据异常或道路不可通时会自动回退到普通地形寻路。")
+            .define("agentRoadWeaverRoutingEnabled", true);
+
+    public static final ModConfigSpec.BooleanValue AGENT_RESUME_INTERRUPTED_NAVIGATION = BUILDER
+            .comment(
+                    "Agent 或服务端重启后是否自动续行 24 小时内未完成的 goto/goto_waypoint 任务。",
+                    "恢复前会重新检查维度、坐标和禁区；其他动作任务不会自动恢复。")
+            .define("agentResumeInterruptedNavigation", true);
+
     public static final ModConfigSpec.BooleanValue AGENT_NEOFORGE_COMPATIBILITY = BUILDER
             .comment(
                     "是否允许同机 Mineflayer Bot 使用 MineAstr 限定的 NeoForge 协议兼容层。默认开启。",

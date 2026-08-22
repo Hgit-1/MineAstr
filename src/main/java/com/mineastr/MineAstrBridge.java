@@ -68,6 +68,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     private final java.util.Set<UUID> humanAgentPlayers = ConcurrentHashMap.newKeySet();
     private final MineAstrKnowledgeSnapshot knowledgeSnapshot = new MineAstrKnowledgeSnapshot();
     private final MineAstrAgentManager agentManager = new MineAstrAgentManager();
+    private final MineAstrRoadNetworkSnapshot roadNetworkSnapshot = new MineAstrRoadNetworkSnapshot();
 
     private volatile MineAstrActivityData activityData;
     private volatile long nextActivitySampleMs;
@@ -97,6 +98,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
             if (!isAgentPlayer(player)) humanAgentPlayers.add(player.getUUID());
         }
         agentManager.updateHumanPlayerCount(humanAgentPlayers.size());
+        roadNetworkSnapshot.start(server);
         agentManager.start(server);
         activityData = MineAstrActivityData.get(server);
         nextActivitySampleMs = 0;
@@ -114,6 +116,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         cancelReconnect();
         clearScreenshotState("Minecraft 服务器正在停止。");
         knowledgeSnapshot.close();
+        roadNetworkSnapshot.close();
         agentManager.close();
         humanAgentPlayers.clear();
         activityData = null;
@@ -313,6 +316,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     }
 
     public void tickActivity(MinecraftServer currentServer) {
+        roadNetworkSnapshot.tick(currentServer);
         MineAstrActivityData data = activityData;
         if (data == null || !MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) return;
         long now = System.currentTimeMillis();
@@ -955,6 +959,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         data.addProperty("max_players", playerList.getMaxPlayers());
         data.addProperty("uptime_ms", Math.max(0L, System.currentTimeMillis() - startedAtMs));
         data.add("agent", agentManager.status());
+        data.add("roadweaver_navigation", roadNetworkSnapshot.status());
         BlockPos spawn = currentServer.overworld().getSharedSpawnPos();
         JsonObject spawnData = new JsonObject();
         spawnData.addProperty("dimension", Level.OVERWORLD.location().toString());
