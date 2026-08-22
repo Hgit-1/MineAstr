@@ -122,6 +122,8 @@ pip install -r requirements.txt
 
 服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。0.10.4 的服务端 Mod 可在 Bot 每次进入世界后先执行 `/login` 等前置指令，全部发送并等待认证完成后才放行 AI 任务；密码仅配置在 Minecraft 服务端 TOML 中，不应填写到 AstrBot 插件设置或聊天中。0.10.5 起，Agent 动作工具会继续轮询同一任务，只有收到 `completed` 才向模型报告成功；`failed`、`canceled`、状态链路中断或等待超时不会再被 `accepted=true` 掩盖。0.10.6 可透传 Mod 的自动防卫状态，包括当前目标、攻击次数、危险事件和最近错误；攻击选择与执行仍由服务端 Mod 控制。0.10.7 修复新登录时的空路径提前完成；0.10.8 进一步保留 `NoPath`/规划超时返回的局部最佳路径。0.11.0 可透传 RoadWeaver 混合寻路、断路改道和重启续行状态；Agent 任务协议及工具名称不变。
 
+0.11.1 与现有 Agent 任务协议保持兼容，可继续轮询 Mod 在生存避险时返回的挂起与恢复状态。
+
 ## 服务器事件推送
 
 MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `player_advancement`。插件会把它们标记为 `message_kind=server_event`，以服务器名而不是玩家身份投递到同一 Minecraft 虚拟群，因此不会被当作玩家发言或地区简介投稿。AstrBot 是否对此自动回复，仍由当前人格、唤醒和群聊规则决定。

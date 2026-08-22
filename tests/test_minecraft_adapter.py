@@ -318,6 +318,39 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["completed"])
         self.assertEqual("目标不可达", result["error"])
 
+    async def test_agent_task_keeps_waiting_while_survival_navigation_is_suspended(self):
+        status_calls = 0
+
+        class Manager:
+            async def query(self, query, _server_id, params=None, timeout=0):
+                nonlocal status_calls
+                if query == "agent_task":
+                    return {"ok": True, "task": {
+                        "task_id": "move-survival", "state": "running"
+                    }}
+                status_calls += 1
+                state = "suspended" if status_calls == 1 else "completed"
+                task = {"task_id": "move-survival", "state": state}
+                return {"ok": True, "agent": {
+                    "active_task": task if state == "suspended" else None,
+                    "recent_tasks": [] if state == "suspended" else [task],
+                }}
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = True
+        original_poll_seconds = ADAPTER.AGENT_TASK_POLL_SECONDS
+        ADAPTER.AGENT_TASK_POLL_SECONDS = 0
+        try:
+            result = await self.adapter.submit_agent_task(
+                None, "goto", {"x": 4, "y": 5, "z": 6}, "move-survival"
+            )
+        finally:
+            ADAPTER.AGENT_TASK_POLL_SECONDS = original_poll_seconds
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["completed"])
+        self.assertEqual(2, status_calls)
+
     async def test_agent_task_never_reports_success_when_status_becomes_unavailable(self):
         class Manager:
             async def query(self, query, _server_id, params=None, timeout=0):
