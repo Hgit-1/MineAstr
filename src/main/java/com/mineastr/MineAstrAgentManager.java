@@ -364,6 +364,17 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 sanitizeAudit(jsonString(payload, "elapsed_ms", "?")),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
                                 pathUpdate);
+                    } else if ("navigation_pathfinder_incomplete_plan".equals(type)) {
+                        String pathUpdate = payload.has("path_update")
+                                && payload.get("path_update").isJsonObject()
+                                ? safeLogText(payload.getAsJsonObject("path_update").toString()) : "none";
+                        MineAstr.LOGGER.info(
+                                "MineAstr Agent 局部规划尚不完整，保留最佳路径等待区块更新：attempt={} reason={} elapsed_ms={} position={} path={}",
+                                sanitizeAudit(jsonString(payload, "attempt", "?")),
+                                sanitizeAudit(jsonString(payload, "reason", "unknown")),
+                                sanitizeAudit(jsonString(payload, "elapsed_ms", "?")),
+                                safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
+                                pathUpdate);
                     } else if ("combat_started".equals(type) && payload.has("target")
                             && payload.get("target").isJsonObject()) {
                         JsonObject target = payload.getAsJsonObject("target");

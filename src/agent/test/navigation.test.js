@@ -84,6 +84,54 @@ test('keeps an early-resolved segment alive until delayed chunks allow the goal 
   assert.equal(events.filter(event => event.type === 'navigation_segment_incomplete').length, 0)
 })
 
+test('keeps the best partial path alive after goto reports NoPath at a chunk boundary', async () => {
+  const events = []
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, goal => {
+    setTimeout(() => {
+      bot.entity.position.x = goal.x
+      bot.entity.position.z = goal.z
+      bot.emit('goal_reached', goal)
+    }, 80)
+    const error = new Error('No path to the goal!')
+    error.name = 'NoPath'
+    return Promise.reject(error)
+  })
+  const result = await navigateTo(bot, fakeGoals, { x: 20, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    stallTimeoutMilliseconds: 500,
+    segmentTimeoutMilliseconds: 1_000,
+    watchdogIntervalMilliseconds: 25,
+    emit: event => events.push(event)
+  })
+  assert.equal(result.remaining_distance, 0)
+  assert.equal(bot.pathfinder.calls, 1)
+  const incomplete = events.find(event => event.type === 'navigation_pathfinder_incomplete_plan')
+  assert.equal(incomplete.reason, 'NoPath')
+  assert.equal(events.filter(event => event.type === 'navigation_segment_incomplete').length, 0)
+})
+
+test('still fails a permanent NoPath after watchdog-bounded recovery attempts', async () => {
+  const events = []
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => {
+    const error = new Error('No path to the goal!')
+    error.name = 'NoPath'
+    return Promise.reject(error)
+  })
+  await assert.rejects(
+    navigateTo(bot, fakeGoals, { x: 20, y: 64, z: 0 }, {
+      timeoutMilliseconds: 10_000,
+      stallTimeoutMilliseconds: 100,
+      segmentTimeoutMilliseconds: 1_000,
+      watchdogIntervalMilliseconds: 25,
+      emit: event => events.push(event)
+    }),
+    error => error.code === 'NAVIGATION_FAILED' && /局部寻路长时间没有产生实际位移/.test(error.message)
+  )
+  assert.equal(bot.pathfinder.calls, 4)
+  assert.equal(events.filter(event => event.type === 'navigation_pathfinder_incomplete_plan').length, 4)
+  assert.equal(events.filter(event => event.type === 'navigation_watchdog_triggered').length, 4)
+})
+
 test('segments a long route and verifies the final three-dimensional goal', async () => {
   const bot = fakeBot({ x: 0, y: 70, z: 0 }, async goal => {
     if (goal instanceof GoalNearXZ) {

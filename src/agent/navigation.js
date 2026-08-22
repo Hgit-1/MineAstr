@@ -262,6 +262,7 @@ function runPathfinderSegment(bot, goal, options) {
   let lastPathUpdate = null
   let lastPathReset = null
   let earlyResolve = null
+  let incompletePlan = null
 
   return new Promise((resolve, reject) => {
     const onPathUpdate = results => { lastPathUpdate = summarizePathUpdate(bot, results) }
@@ -287,7 +288,7 @@ function runPathfinderSegment(bot, goal, options) {
       else resolve(value)
     }
     const stopWith = (code, message, extra = {}) => {
-      const diagnostics = pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve)
+      const diagnostics = pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve, incompletePlan)
       cancelPathfinder(bot)
       const error = new Error(message)
       error.code = code
@@ -339,7 +340,29 @@ function runPathfinderSegment(bot, goal, options) {
           ...earlyResolve
         })
       } catch (_) {}
-    }, error => finish(error))
+    }, error => {
+      if (['NoPath', 'Timeout'].includes(String(error?.name)) && !goalReached(goal, bot.entity.position)) {
+        // goto() rejects as soon as the initial A* result is incomplete, but
+        // mineflayer-pathfinder assigns its best partial path immediately after
+        // emitting path_update. Do not replace the goal before that path can be
+        // followed to the loaded-chunk boundary; chunk_loaded will then replan.
+        incompletePlan = {
+          reason: String(error.name),
+          elapsed_ms: Date.now() - startedAt,
+          position: vectorJson(bot.entity.position),
+          path_update: lastPathUpdate
+        }
+        try {
+          options.emit({
+            type: 'navigation_pathfinder_incomplete_plan',
+            attempt: options.attempt,
+            ...incompletePlan
+          })
+        } catch (_) {}
+        return
+      }
+      finish(error)
+    })
 
     interval = setInterval(() => {
       if (settled) return
@@ -407,7 +430,7 @@ function summarizePathUpdate(bot, results) {
   }
 }
 
-function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve = null) {
+function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve = null, incompletePlan = null) {
   return {
     on_ground: Boolean(bot?.entity?.onGround),
     is_in_water: Boolean(bot?.entity?.isInWater),
@@ -422,7 +445,8 @@ function pathfinderDiagnostics(bot, lastPathUpdate, lastPathReset, earlyResolve 
     },
     last_path_reset: lastPathReset,
     last_path_update: lastPathUpdate,
-    early_resolve: earlyResolve
+    early_resolve: earlyResolve,
+    incomplete_plan: incompletePlan
   }
 }
 
