@@ -36,8 +36,8 @@ git switch minecraft-mod
 
 ## 当前版本
 
-- AstrBot 插件：`0.10.3`
-- Minecraft Mod：`0.10.3`
+- AstrBot 插件：`0.10.4`
+- Minecraft Mod：`0.10.4`
 
 ## AI 制作声明
 
