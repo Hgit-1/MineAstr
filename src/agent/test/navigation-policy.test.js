@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict')
 const test = require('node:test')
-const { applyNavigationPolicy, isProtectedNavigationBlock } = require('../navigation-policy')
+const { applyNavigationPolicy, isProtectedNavigationBlock, pathfinderDigMultiplier } = require('../navigation-policy')
 
 function fakeMovements() {
   return {
@@ -21,8 +21,16 @@ test('enables real-player digging and placing while applying configured costs', 
   assert.equal(movements.canDig, true)
   assert.equal(movements.allow1by1towers, true)
   assert.deepEqual(movements.scafoldingBlocks, [1, 2])
-  assert.equal(movements.digCost, 12)
+  assert.equal(movements.digCost, 1)
   assert.equal(movements.placeCost, 18)
+})
+
+test('normalizes the public digging cost around the safe pathfinder baseline', () => {
+  assert.equal(pathfinderDigMultiplier(12), 1)
+  assert.equal(pathfinderDigMultiplier(24), 2)
+  assert.equal(pathfinderDigMultiplier(1), 1 / 12)
+  assert.equal(pathfinderDigMultiplier(999), 99 / 12)
+  assert.equal(pathfinderDigMultiplier('invalid'), 1)
 })
 
 test('forbidden regions block walking, breaking, and placing', () => {

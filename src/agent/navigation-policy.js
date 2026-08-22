@@ -1,5 +1,17 @@
 'use strict'
 
+const DEFAULT_CONFIGURED_DIG_COST = 12
+
+function pathfinderDigMultiplier(configuredCost) {
+  const parsed = Number(configuredCost)
+  const safeCost = Number.isFinite(parsed) ? Math.max(1, Math.min(99, parsed)) : DEFAULT_CONFIGURED_DIG_COST
+  // mineflayer-pathfinder already multiplies this value by the block's tool-aware
+  // dig time and discards any single movement whose accumulated cost exceeds 100.
+  // Treat the public default (12) as 1x so ordinary two-block tunnels remain
+  // feasible without erasing the relative cost advantage of proper tools.
+  return safeCost / DEFAULT_CONFIGURED_DIG_COST
+}
+
 function isProtectedNavigationBlock(block) {
   const name = String(block?.name || block?.displayName || '').toLowerCase()
   if (!name) return false
@@ -12,7 +24,7 @@ function applyNavigationPolicy(movements, bot, options) {
   const allowPlacing = Boolean(options.allowPlacing)
   const forbidden = typeof options.isForbidden === 'function' ? options.isForbidden : () => false
   movements.canDig = allowDigging
-  movements.digCost = options.digCost
+  movements.digCost = pathfinderDigMultiplier(options.digCost)
   movements.placeCost = options.placeCost
   movements.liquidCost = options.liquidCost
   movements.allow1by1towers = allowPlacing
@@ -30,4 +42,4 @@ function applyNavigationPolicy(movements, bot, options) {
   return movements
 }
 
-module.exports = { applyNavigationPolicy, isProtectedNavigationBlock }
+module.exports = { applyNavigationPolicy, isProtectedNavigationBlock, pathfinderDigMultiplier }

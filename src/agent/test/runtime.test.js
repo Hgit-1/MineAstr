@@ -67,6 +67,9 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal((await canceled.json()).canceled, true)
     const afterCancel = await (await postJson(port, '/status', {}, 'test-token')).json()
     assert.equal(afterCancel.wake_reason, null)
+    assert.equal(afterCancel.recent_tasks.length, 1)
+    assert.equal(afterCancel.recent_tasks[0].task_id, 'offline-chat')
+    assert.equal(Object.hasOwn(afterCancel.recent_tasks[0], 'data'), false)
   } finally {
     await stopChild(child)
   }

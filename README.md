@@ -254,17 +254,21 @@ Mineflayer 每次进入世界后会先等待 `agentJoinCommandDelayMs`，按顺�
 
 当前内置动作包括聊天、连续下蹲示好、移动到坐标/路径点、短时跟随玩家、看向坐标、交互方块、使用背包物品、等待以及手动/自动进食。`agentFullAutonomy=true` 时 AstrBot 可在类型白名单内自主调用；任务仍受单任务互斥、可取消执行、生命保护、维度/坐标检查、服务端禁区和请求者审计约束。路径点和 `walk`/`rail` 连接保存在当前世界的 `data/mineastr/agent/waypoints.json`，不会进入公共 RAG。
 
+`agentCombatEnabled=true` 时，Agent 会周期检查 `agentCombatRadius` 内的明确敌对生物，在正常近战触及距离内选择背包中识别到的较优武器并按攻击冷却反击。该机制永不主动攻击玩家，并排除宠物、中立生物和可条件敌对的生物；苦力怕、监守者、凋灵和末影龙会触发撤退而不是迎战。生命值低于 `agentCombatMinHealth` 时同样优先撤退/进食；防卫时不会打断正在进行的挖掘、放置或物品使用。
+
 0.10.2 的坐标与路径点移动不再直接信任上游 `goto()` 的 Promise：长距离会先用已知区块生成粗粒度 A* 走廊，再拼接为约 24 格的局部路段；每段及最终目标都校验 Bot 实际位置，连续无进展或总预算超时会返回目标、当前位置和剩余距离，不再误报完成。路径预算会按距离在 2–15 分钟间调整。
 
 Agent 会把实际加载过的区块按每方块 2-bit 分类为空气、固体、水体或危险，并使用 deflate 持久化到 `world/data/mineastr/agent/navigation-cache/`。缓存不保存方块 ID、方块实体、NBT、容器、告示牌、玩家或聊天内容；索引只保留区块坐标、地表高度离散度和类别比例。默认最多 2048 个区块，超过后删除最旧项。方块变化会延迟刷新对应区块，缓存损坏或写入失败只会降级为直线分段，不会阻断 Agent。
 
-0.10.3 起，`agentNavigationAllowDigging` 与 `agentNavigationAllowPlacing` 对新配置默认均为 `true`，使坐标/路径点寻路可像真实玩家一样挖掘挡路方块或消耗背包方块搭路。Mineflayer 会把挖掘、放置、液体和实体代价纳入 A*：挖掘成本还会结合当前背包中最佳工具、附魔、状态效果及方块实际挖掘时间；放置会检查可识别的脚手材料并按 `agentNavigationPlaceCost` 惩罚。禁区对通行、挖掘和放置三者都生效，容器和常见机器/存储方块不会被自动挖掉。
+0.10.3 起，`agentNavigationAllowDigging` 与 `agentNavigationAllowPlacing` 对新配置默认均为 `true`，使坐标/路径点寻路可像真实玩家一样挖掘挡路方块或消耗背包方块搭路。Mineflayer 会把挖掘、放置、液体和实体代价纳入 A*：挖掘成本还会结合当前背包中最佳工具、附魔、状态效果及方块实际挖掘时间；`agentNavigationDigCost=12` 对应 pathfinder 的 1x 基准倍率，避免普通树干因内部单步成本上限被误判为不可挖掘；放置会检查可识别的脚手材料并按 `agentNavigationPlaceCost` 惩罚。禁区对通行、挖掘和放置三者都生效，容器和常见机器/存储方块不会被自动挖掉。
 
 NeoForge Mod 物品数据处于 `degraded_mod_data=true` 时不会假定存在材料，因此不会凭空规划放置。从 0.10.2 升级且配置文件已经保存了两个 `false` 的服务器需要由服主显式改为 `true`；MineAstr 不会擅自覆盖旧服务器的世界编辑选择。
 
 Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_change_pending`。因按需待机主动退出时，`last_session_exit.expected=true` 且 `code=idle_standby`；被踢出、登录超时或网络错误则会保留为非预期原因，避免 AI 再把正常待机误报为进程重启。
 
 0.10.5 修复了任务只返回 `accepted=true` 就被上层误当作完成的问题。AstrBot 插件现在会追踪相同任务 ID，直到单个动作进入 `completed`、`failed` 或 `canceled`；服务端状态保留最近 10 个终态任务，避免极短任务被下一任务覆盖。任务恰好在闲置退出开始后到达时会标记为 `idle_disconnect_superseded`，断开后自动重连继续等待，不再把它表现成无任务待机。服务端 INFO 日志会记录任务 ID、类型、开始、终态和闲置前最后任务，但不记录动作参数或认证指令。
+
+0.10.6 修复 Minecraft 1.21.x 下 Mineflayer 在树干/方块边界前可能长时停留的问题：引入碰撞边界兼容值、实际位移看门狗、分段超时、侧向恢复点和临时障碍成本，并在日志中输出路径状态与首个挖掘/放置动作。配置值 `agentNavigationDigCost=12` 现在正确对应 pathfinder 1x 基准，不再把徒手挖普通树干误判为不可行路径。任务终态事件改为紧凑审计记录，避免 observation 递归膨胀和 Java 端遗漏完成事件。同时新增可配置的敌对生物自主防卫：近战范围内自动选择武器并按冷却反击，低生命值或遇到苦力怕/监守者等高危实体时改为撤退，且不主动攻击玩家、宠物或中立生物。
 
 完整模组客户端必须使用独立且经过验证的客户端实例目录，不能直接复制服务器 `mods`。状态工具会报告实例、可用物理内存与平均 MSPT 是否达到渲染门槛；8GB 主机默认要求至少剩余 3072MB 且 MSPT 健康。当前版本先提供运行时与熔断基座，未配置客户端实例时自动禁用 with-mod 渲染。
 

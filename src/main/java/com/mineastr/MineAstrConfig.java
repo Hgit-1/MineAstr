@@ -246,6 +246,24 @@ public final class MineAstrConfig {
                     "AstrBot 可额外启用分级审批；服务端禁区、预算和紧急停止始终生效。")
             .define("agentFullAutonomy", true);
 
+    public static final ModConfigSpec.BooleanValue AGENT_COMBAT_ENABLED = BUILDER
+            .comment(
+                    "是否允许 Agent 自主反击近距离的明确敌对生物。默认开启。",
+                    "不会主动攻击玩家、宠物或中立生物；苦力怕、监守者等高危目标会触发撤退。")
+            .define("agentCombatEnabled", true);
+
+    public static final ModConfigSpec.IntValue AGENT_COMBAT_RADIUS = BUILDER
+            .comment("Agent 自主防卫检测半径（格）；只会在正常近战触及距离内出手。")
+            .defineInRange("agentCombatRadius", 6, 3, 16);
+
+    public static final ModConfigSpec.IntValue AGENT_COMBAT_MIN_HEALTH = BUILDER
+            .comment("Agent 可继续自主反击的最低生命值；低于或等于此值时改为撤退。")
+            .defineInRange("agentCombatMinHealth", 10, 1, 20);
+
+    public static final ModConfigSpec.IntValue AGENT_COMBAT_ATTACK_COOLDOWN_MS = BUILDER
+            .comment("Agent 近战攻击间隔（毫秒），用于避免无效高频挥击。")
+            .defineInRange("agentCombatAttackCooldownMs", 650, 250, 2000);
+
     public static final ModConfigSpec.BooleanValue AGENT_NAVIGATION_ALLOW_DIGGING = BUILDER
             .comment(
                     "是否允许 Agent 在明确的寻路任务中挖掘挡路方块。默认开启。",
@@ -259,7 +277,7 @@ public final class MineAstrConfig {
             .define("agentNavigationAllowPlacing", true);
 
     public static final ModConfigSpec.IntValue AGENT_NAVIGATION_DIG_COST = BUILDER
-            .comment("寻路中挖掘的基础成本倍率；实际成本还会按最佳可用工具和方块挖掘时间增加。")
+            .comment("寻路中挖掘的基础成本；12 表示 Mineflayer 原生 1x 倍率，实际成本还会按最佳可用工具和方块挖掘时间增加。")
             .defineInRange("agentNavigationDigCost", 12, 1, 99);
 
     public static final ModConfigSpec.IntValue AGENT_NAVIGATION_PLACE_COST = BUILDER

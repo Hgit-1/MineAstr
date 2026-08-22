@@ -156,6 +156,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     Integer.toString(MineAstrConfig.AGENT_NAVIGATION_PLACE_COST.getAsInt()));
             environment.put("MINEASTR_NAV_LIQUID_COST",
                     Integer.toString(MineAstrConfig.AGENT_NAVIGATION_LIQUID_COST.getAsInt()));
+            environment.put("MINEASTR_COMBAT_ENABLED",
+                    Boolean.toString(MineAstrConfig.AGENT_COMBAT_ENABLED.getAsBoolean()));
+            environment.put("MINEASTR_COMBAT_RADIUS",
+                    Integer.toString(MineAstrConfig.AGENT_COMBAT_RADIUS.getAsInt()));
+            environment.put("MINEASTR_COMBAT_MIN_HEALTH",
+                    Integer.toString(MineAstrConfig.AGENT_COMBAT_MIN_HEALTH.getAsInt()));
+            environment.put("MINEASTR_COMBAT_ATTACK_COOLDOWN_MS",
+                    Integer.toString(MineAstrConfig.AGENT_COMBAT_ATTACK_COOLDOWN_MS.getAsInt()));
             environment.put("MINEASTR_NAV_CACHE_MAX_CHUNKS",
                     Integer.toString(MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt()));
             if (!MineAstrConfig.AGENT_JOIN_COMMANDS.get().isEmpty()) {
@@ -329,6 +337,38 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 code, expected, detail);
                     } else if ("bot_death".equals(type)) {
                         MineAstr.LOGGER.warn("MineAstr Agent 在游戏中死亡；寻路任务将由生命保护安全中止。");
+                    } else if ("navigation_watchdog_triggered".equals(type)) {
+                        JsonObject diagnostics = payload.has("diagnostics")
+                                && payload.get("diagnostics").isJsonObject()
+                                ? payload.getAsJsonObject("diagnostics") : null;
+                        String pathUpdate = diagnostics != null && diagnostics.has("last_path_update")
+                                && diagnostics.get("last_path_update").isJsonObject()
+                                ? safeLogText(diagnostics.getAsJsonObject("last_path_update").toString()) : "none";
+                        MineAstr.LOGGER.warn(
+                                "MineAstr Agent 寻路看门狗触发：attempt={} code={} position={} moving={} mining={} building={} reset={} path={}",
+                                sanitizeAudit(jsonString(payload, "attempt", "?")),
+                                sanitizeAudit(jsonString(payload, "code", "unknown")),
+                                safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"),
+                                jsonString(diagnostics, "moving", "false"),
+                                jsonString(diagnostics, "mining", "false"),
+                                jsonString(diagnostics, "building", "false"),
+                                safeLogText(jsonString(diagnostics, "last_path_reset", "none")),
+                                pathUpdate);
+                    } else if ("combat_started".equals(type) && payload.has("target")
+                            && payload.get("target").isJsonObject()) {
+                        JsonObject target = payload.getAsJsonObject("target");
+                        MineAstr.LOGGER.info("MineAstr Agent 开始自主防卫：target={} id={} distance={}",
+                                sanitizeAudit(jsonString(target, "name", "unknown")),
+                                sanitizeAudit(jsonString(target, "id", "?")),
+                                sanitizeAudit(jsonString(payload, "distance", "?")));
+                    } else if ("combat_error".equals(type)) {
+                        MineAstr.LOGGER.warn("MineAstr Agent 自主防卫失败：{}",
+                                safeLogText(jsonString(payload, "error", "unknown")));
+                    } else if ("autonomous_retreat".equals(type)) {
+                        MineAstr.LOGGER.warn("MineAstr Agent 自主撤退：threat={} reason={} target={}",
+                                sanitizeAudit(jsonString(payload, "threat", "unknown")),
+                                sanitizeAudit(jsonString(payload, "reason", "threat")),
+                                safeLogText(payload.has("target") ? payload.get("target").toString() : "unknown"));
                     } else if ("task_started".equals(type) && payload.has("task")
                             && payload.get("task").isJsonObject()) {
                         JsonObject task = payload.getAsJsonObject("task");
@@ -357,7 +397,11 @@ public final class MineAstrAgentManager implements AutoCloseable {
                         MineAstr.LOGGER.debug("MineAstr Agent：{}", safeLine);
                     }
                 } catch (RuntimeException ignored) {
-                    MineAstr.LOGGER.debug("MineAstr Agent 输出：{}", safeLine.replaceAll("[\\r\\n]", " "));
+                    if (state.get() == State.STARTING || state.get() == State.WAITING_FOR_CONTROL) {
+                        MineAstr.LOGGER.warn("MineAstr Agent 启动输出：{}", safeLogText(safeLine));
+                    } else {
+                        MineAstr.LOGGER.debug("MineAstr Agent 输出：{}", safeLine.replaceAll("[\\r\\n]", " "));
+                    }
                 }
             }
         } catch (IOException exc) {
@@ -419,6 +463,12 @@ public final class MineAstrAgentManager implements AutoCloseable {
         navigation.addProperty("liquid_cost", MineAstrConfig.AGENT_NAVIGATION_LIQUID_COST.getAsInt());
         navigation.addProperty("cache_max_chunks", MineAstrConfig.AGENT_NAVIGATION_CACHE_MAX_CHUNKS.getAsInt());
         result.add("navigation_config", navigation);
+        JsonObject combat = new JsonObject();
+        combat.addProperty("enabled", MineAstrConfig.AGENT_COMBAT_ENABLED.getAsBoolean());
+        combat.addProperty("radius", MineAstrConfig.AGENT_COMBAT_RADIUS.getAsInt());
+        combat.addProperty("minimum_health", MineAstrConfig.AGENT_COMBAT_MIN_HEALTH.getAsInt());
+        combat.addProperty("attack_cooldown_ms", MineAstrConfig.AGENT_COMBAT_ATTACK_COOLDOWN_MS.getAsInt());
+        result.add("combat_config", combat);
         Process current = process;
         if (current != null) result.addProperty("pid", current.pid());
         if (!lastError.isBlank()) result.addProperty("last_error", lastError);

@@ -7,10 +7,11 @@ const path = require('node:path')
 const mineflayer = require('mineflayer')
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
-const { navigateTo } = require('./navigation')
+const { applyPathfinderCollisionCompatibility, navigateTo } = require('./navigation')
 const { ChunkNavigationCache } = require('./chunk-cache')
 const { applyNavigationPolicy } = require('./navigation-policy')
 const { executeJoinCommands, initialJoinCommandState, parseJoinCommands } = require('./join-commands')
+const { createCombatController, isAttackableHostile, isRetreatThreat } = require('./combat')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
 const dataDir = process.env.MINEASTR_AGENT_DATA_DIR || process.cwd()
@@ -48,6 +49,10 @@ const navigationAllowPlacing = process.env.MINEASTR_NAV_ALLOW_PLACING === 'true'
 const navigationDigCost = parseInteger(process.env.MINEASTR_NAV_DIG_COST, 12, 1, 99)
 const navigationPlaceCost = parseInteger(process.env.MINEASTR_NAV_PLACE_COST, 18, 1, 99)
 const navigationLiquidCost = parseInteger(process.env.MINEASTR_NAV_LIQUID_COST, 8, 1, 99)
+const combatEnabled = process.env.MINEASTR_COMBAT_ENABLED !== 'false'
+const combatRadius = parseInteger(process.env.MINEASTR_COMBAT_RADIUS, 6, 3, 16)
+const combatMinimumHealth = parseInteger(process.env.MINEASTR_COMBAT_MIN_HEALTH, 10, 1, 20)
+const combatAttackCooldownMilliseconds = parseInteger(process.env.MINEASTR_COMBAT_ATTACK_COOLDOWN_MS, 650, 250, 2000)
 const navigationCache = new ChunkNavigationCache(path.join(dataDir, 'navigation-cache'), {
   maxChunks: parseInteger(process.env.MINEASTR_NAV_CACHE_MAX_CHUNKS, 2048, 64, 16384)
 })
@@ -73,6 +78,8 @@ let connectedAt = 0
 let connectionStartedAt = 0
 let connectionAttempts = 0
 let lastDisconnectError = ''
+let navigationCompatibility = null
+let combatController = null
 let eating = false
 let retreating = false
 let neoForgeNegotiated = false
@@ -287,6 +294,10 @@ function connectBot() {
       connectedAt = Date.now()
       lastError = ''
       lastDisconnectError = ''
+      navigationCompatibility = applyPathfinderCollisionCompatibility(created, created.version || version)
+      if (navigationCompatibility.applied) {
+        emit({ type: 'pathfinder_compatibility_applied', compatibility: navigationCompatibility })
+      }
       try {
         const movements = new Movements(created)
         applyNavigationPolicy(movements, created, {
@@ -332,6 +343,19 @@ function connectBot() {
       }
       if (bot !== created || state !== 'online') return
       sessionReady = true
+      combatController = createCombatController(created, {
+        enabled: combatEnabled,
+        radius: combatRadius,
+        attackRange: 3.1,
+        minimumHealth: combatMinimumHealth,
+        attackCooldownMilliseconds: combatAttackCooldownMilliseconds,
+        emit,
+        isForbidden,
+        shouldPause: () => bot !== created || !sessionReady || sessionDisconnecting || eating || retreating
+          || created.isUsingHeldItem || created.pathfinder?.isMining?.() || created.pathfinder?.isBuilding?.(),
+        onDanger: (threat, reason) => handleCombatDanger(threat, reason)
+      })
+      combatController.start()
       startWaitingTask()
       reconcileSession()
     })
@@ -375,6 +399,8 @@ function connectBot() {
     })
     created.once('end', reason => {
       clearTimeout(connectionTimeout)
+      combatController?.stop('connection_ended')
+      combatController = null
       bot = null
       sessionReady = false
       const expectedIdleDisconnect = sessionDisconnecting
@@ -463,8 +489,8 @@ function status() {
     food: numberOrNull(bot?.food),
     position: entity ? vectorJson(entity.position) : null,
     dimension: normalizeDimension(bot?.game?.dimension) || null,
-    active_task: activeTask,
-    recent_tasks: Array.from(recentTasks.values()).slice(-10),
+    active_task: taskStatus(activeTask, true),
+    recent_tasks: Array.from(recentTasks.values()).slice(-10).map(task => taskStatus(task, false)),
     session_policy: sessionPolicy,
     human_player_count: humanPlayerCount,
     wake_reason: wakeReason,
@@ -472,6 +498,20 @@ function status() {
     idle_disconnect_at_ms: idleDisconnectAt || null,
     join_commands: joinCommandState,
     maintenance_state: retreating ? 'retreating_from_threat' : eating ? 'eating' : 'idle',
+    combat: combatController?.status() || {
+      enabled: combatEnabled,
+      state: 'idle',
+      target: null,
+      radius: combatRadius,
+      attack_range: 3.1,
+      minimum_health: combatMinimumHealth,
+      attack_cooldown_ms: combatAttackCooldownMilliseconds,
+      attacks: 0,
+      danger_events: 0,
+      last_danger: null,
+      last_attack_at_ms: null,
+      last_error: null
+    },
     waypoint_count: Object.keys(waypointData.waypoints).length,
     neoforge_compatibility: {
       available: Boolean(neoForgeQuery),
@@ -491,9 +531,17 @@ function status() {
       dig_cost: navigationDigCost,
       place_cost: navigationPlaceCost,
       liquid_cost: navigationLiquidCost,
-      cache: navigationCache.status()
+      cache: navigationCache.status(),
+      collision_compatibility: navigationCompatibility
     }
   }
+}
+
+function taskStatus(task, includeData) {
+  if (!task) return null
+  const result = { ...task }
+  if (!includeData) delete result.data
+  return result
 }
 
 function numberOrNull(value) {
@@ -575,15 +623,22 @@ async function selfCare() {
     finishTask(activeTask.run_id, false, '自主生存保护：生命值过低，已中止当前任务')
   }
   const ate = await autoEat(false)
-  if (!ate && bot?.health != null && bot.health <= 8) void retreatFromThreat()
+  if (!ate && bot?.health != null && bot.health <= 8) void retreatFromThreat(null, 'low_health')
 }
 
-async function retreatFromThreat() {
+function handleCombatDanger(threat, reason) {
+  if (!threat || retreating || eating) return
+  if (activeTask?.state === 'running' && activeTask.task_type !== 'eat') {
+    finishTask(activeTask.run_id, false,
+      `自主生存保护：检测到${reason === 'low_health' ? '低生命值与' : ''}高危生物 ${String(threat.name || threat.mobType || 'unknown').slice(0, 40)}`)
+  }
+  void retreatFromThreat(threat, reason)
+}
+
+async function retreatFromThreat(providedThreat = null, reason = 'threat') {
   if (!bot?.entity || retreating) return
-  const hostileNames = new Set(['zombie', 'husk', 'drowned', 'skeleton', 'stray', 'creeper', 'spider',
-    'cave_spider', 'witch', 'pillager', 'vindicator', 'evoker', 'ravager', 'phantom', 'warden'])
-  const threat = Object.values(bot.entities)
-    .filter(entity => entity.position && hostileNames.has(String(entity.name || '').toLowerCase()))
+  const threat = providedThreat || Object.values(bot.entities)
+    .filter(entity => entity.position && (isAttackableHostile(bot, entity) || isRetreatThreat(entity)))
     .sort((left, right) => left.position.distanceTo(bot.entity.position) - right.position.distanceTo(bot.entity.position))[0]
   if (!threat || threat.position.distanceTo(bot.entity.position) > 16) return
   const away = bot.entity.position.minus(threat.position)
@@ -593,7 +648,7 @@ async function retreatFromThreat() {
   const target = new Vec3(x, Math.floor(bot.entity.position.y), z)
   if (isForbidden(target)) return
   retreating = true
-  emit({ type: 'autonomous_retreat', threat: threat.name, target: vectorJson(target) })
+  emit({ type: 'autonomous_retreat', threat: threat.name, reason, target: vectorJson(target) })
   try {
     await bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 2))
   } catch (error) {
@@ -634,7 +689,10 @@ function finishTask(runId, ok, message, data = null) {
   activeTask = { ...activeTask, state: ok ? 'completed' : 'failed', finished_at_ms: Date.now(), message, data }
   recentTasks.set(activeTask.task_id, activeTask)
   while (recentTasks.size > 100) recentTasks.delete(recentTasks.keys().next().value)
-  emit({ type: 'task_finished', task: activeTask })
+  // The Java supervisor only needs the audit fields. Keep the potentially large
+  // final observation available through the control API, but do not duplicate it
+  // onto the line-oriented child-process event stream.
+  emit({ type: 'task_finished', task: taskStatus(activeTask, false) })
   reconcileSession()
   return true
 }
@@ -963,6 +1021,6 @@ process.on('unhandledRejection', error => {
 
 fs.mkdirSync(dataDir, { recursive: true })
 control.listen(0, '127.0.0.1', () => {
-  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.5' })
+  emit({ type: 'ready', port: control.address().port, runtime_version: '0.10.6' })
   reconcileSession()
 })
