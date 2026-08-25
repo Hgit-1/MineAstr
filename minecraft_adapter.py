@@ -48,6 +48,13 @@ PLUGIN_OPERATIONAL_CONFIG_KEYS = (
     "agent_actions_enabled",
     "agent_require_admin_approval",
     "agent_observation_distance",
+    "agent_companion_enabled",
+    "agent_companion_proactive_chat_enabled",
+    "agent_companion_autonomous_planning_enabled",
+    "agent_companion_chat_min_seconds",
+    "agent_companion_chat_max_seconds",
+    "agent_companion_linger_seconds",
+    "agent_companion_chat_provider_id",
 )
 DEFAULT_CONFIG = {
     "host": "127.0.0.1",
@@ -76,6 +83,13 @@ DEFAULT_CONFIG = {
     "agent_actions_enabled": True,
     "agent_require_admin_approval": False,
     "agent_observation_distance": 8,
+    "agent_companion_enabled": False,
+    "agent_companion_proactive_chat_enabled": True,
+    "agent_companion_autonomous_planning_enabled": True,
+    "agent_companion_chat_min_seconds": 20,
+    "agent_companion_chat_max_seconds": 60,
+    "agent_companion_linger_seconds": 600,
+    "agent_companion_chat_provider_id": "",
 }
 CONFIG_METADATA = {
     "host": {
@@ -233,6 +247,48 @@ CONFIG_METADATA = {
         "type": "int",
         "hint": "Mineflayer结构化视场和附近实体的默认距离，范围 1 到 32 格。",
         "default": 8,
+    },
+    "agent_companion_enabled": {
+        "description": "AI 陪伴会话",
+        "type": "bool",
+        "hint": "显式启用后，AI 可以围绕高层目标持续行动和搭话；Mod 端也必须同时启用。默认关闭。",
+        "default": False,
+    },
+    "agent_companion_proactive_chat_enabled": {
+        "description": "陪伴期间主动对话",
+        "type": "bool",
+        "hint": "仅在陪伴会话已启动且有真实玩家在线时广播简短对话。",
+        "default": True,
+    },
+    "agent_companion_autonomous_planning_enabled": {
+        "description": "陪伴高层自主规划",
+        "type": "bool",
+        "hint": "每个原子动作结束后重新观察并选择下一个可验证动作；不会后台执行熔炼、丢弃等不可逆操作。",
+        "default": True,
+    },
+    "agent_companion_chat_min_seconds": {
+        "description": "主动对话最短间隔",
+        "type": "int",
+        "hint": "每次主动搭话的随机间隔下限，最低 10 秒。",
+        "default": 20,
+    },
+    "agent_companion_chat_max_seconds": {
+        "description": "主动对话最长间隔",
+        "type": "int",
+        "hint": "每次主动搭话的随机间隔上限，不得小于下限。",
+        "default": 60,
+    },
+    "agent_companion_linger_seconds": {
+        "description": "目标完成后停留时间",
+        "type": "int",
+        "hint": "目标完成后 Agent 继续陪伴和聊天的秒数，默认 600 秒。",
+        "default": 600,
+    },
+    "agent_companion_chat_provider_id": {
+        "description": "陪伴对话 Provider ID",
+        "type": "string",
+        "hint": "留空时优先沿用知识分析模型，再回退到 AstrBot 默认模型。",
+        "default": "",
     },
 }
 
@@ -670,6 +726,26 @@ class MinecraftPlatformAdapter(Platform):
         self.agent_actions_enabled = bool(_config_value(self.config, "agent_actions_enabled"))
         self.agent_require_admin_approval = bool(_config_value(self.config, "agent_require_admin_approval"))
         self.agent_observation_distance = max(1, min(32, int(_config_value(self.config, "agent_observation_distance"))))
+        self.agent_companion_enabled = bool(_config_value(self.config, "agent_companion_enabled"))
+        self.agent_companion_proactive_chat_enabled = bool(
+            _config_value(self.config, "agent_companion_proactive_chat_enabled")
+        )
+        self.agent_companion_autonomous_planning_enabled = bool(
+            _config_value(self.config, "agent_companion_autonomous_planning_enabled")
+        )
+        self.agent_companion_chat_min_seconds = max(
+            10, int(_config_value(self.config, "agent_companion_chat_min_seconds"))
+        )
+        self.agent_companion_chat_max_seconds = max(
+            self.agent_companion_chat_min_seconds,
+            int(_config_value(self.config, "agent_companion_chat_max_seconds")),
+        )
+        self.agent_companion_linger_seconds = max(
+            60, min(3600, int(_config_value(self.config, "agent_companion_linger_seconds")))
+        )
+        self.agent_companion_chat_provider_id = str(
+            _config_value(self.config, "agent_companion_chat_provider_id")
+        )
         self.knowledge_sync_enabled = bool(_config_value(self.config, "knowledge_sync_enabled"))
         self.knowledge_embedding_provider_id = str(_config_value(self.config, "knowledge_embedding_provider_id"))
         self.modrinth_enrichment_enabled = bool(_config_value(self.config, "modrinth_enrichment_enabled"))
@@ -960,6 +1036,27 @@ class MinecraftPlatformAdapter(Platform):
             "agent_observe", server_id, params={"distance": selected}, timeout=12.0
         )
 
+    async def manage_agent_companion(
+        self, server_id: str | None, action: str, **values: Any
+    ) -> dict[str, Any]:
+        params = {"action": action.strip().lower()}
+        params.update({
+            key: value for key, value in values.items()
+            if not (key in {"focus_player", "session_id", "last_action_summary"}
+                    and isinstance(value, str) and not value.strip())
+        })
+        params["linger_seconds"] = self.agent_companion_linger_seconds
+        return await self.connection_manager.query("agent_companion", server_id, params=params, timeout=12.0)
+
+    async def query_agent_events(
+        self, server_id: str | None = None, since_sequence: int = 0, limit: int = 32
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "agent_events", server_id,
+            params={"since_sequence": max(0, int(since_sequence)), "limit": max(1, min(128, int(limit)))},
+            timeout=8.0,
+        )
+
     async def submit_agent_task(
         self,
         server_id: str | None,
@@ -1093,6 +1190,8 @@ class MinecraftPlatformAdapter(Platform):
             return max(120.0, min(120.0, float(args.get("seconds") or 10)) + 120.0)
         if selected == "wait":
             return max(120.0, min(30.0, float(args.get("milliseconds") or 1000) / 1000.0) + 120.0)
+        if selected == "furnace_process":
+            return max(180.0, min(900.0, float(args.get("timeout_seconds") or 180) + 30.0))
         return 180.0
 
     async def cancel_agent_task(self, server_id: str | None = None) -> dict[str, Any]:

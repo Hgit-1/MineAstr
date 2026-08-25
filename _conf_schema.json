@@ -160,5 +160,47 @@
     "type": "int",
     "hint": "Mineflayer 结构化视场和附近实体的默认距离，范围 1 到 32 格。",
     "default": 8
+  },
+  "agent_companion_enabled": {
+    "description": "AI 陪伴会话",
+    "type": "bool",
+    "hint": "显式启用后，AI 可围绕高层目标持续行动和搭话；Mod 端也必须同时启用。默认关闭。",
+    "default": false
+  },
+  "agent_companion_proactive_chat_enabled": {
+    "description": "陪伴期间主动对话",
+    "type": "bool",
+    "hint": "仅在陪伴会话已启动且有真实玩家在线时广播简短对话。",
+    "default": true
+  },
+  "agent_companion_autonomous_planning_enabled": {
+    "description": "陪伴高层自主规划",
+    "type": "bool",
+    "hint": "每个原子动作结束后重新观察并选择下一个可验证动作；不后台执行不可逆操作。",
+    "default": true
+  },
+  "agent_companion_chat_min_seconds": {
+    "description": "主动对话最短间隔",
+    "type": "int",
+    "hint": "随机间隔下限，最低 10 秒。",
+    "default": 20
+  },
+  "agent_companion_chat_max_seconds": {
+    "description": "主动对话最长间隔",
+    "type": "int",
+    "hint": "随机间隔上限，不得小于下限。",
+    "default": 60
+  },
+  "agent_companion_linger_seconds": {
+    "description": "目标完成后停留秒数",
+    "type": "int",
+    "hint": "目标完成后 Agent 继续陪伴与聊天的时间，默认 600 秒。",
+    "default": 600
+  },
+  "agent_companion_chat_provider_id": {
+    "description": "陪伴对话 Provider ID",
+    "type": "string",
+    "hint": "留空时优先沿用知识分析模型，再回退到 AstrBot 默认模型。",
+    "default": ""
   }
 }

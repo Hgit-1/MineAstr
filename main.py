@@ -37,6 +37,7 @@ MINEASTR_TOOL_HINTS = {
     "mineastr_get_agent_status": "询问 AI 玩家 Bot 是否在线、当前任务或 Node 状态时调用 mineastr_get_agent_status。",
     "mineastr_observe_agent": "需要确认 AI 玩家 Bot 当前视场、附近实体、背包和生命状态时调用 mineastr_observe_agent。",
     "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、交互、使用物品、进食、聊天或做连续下蹲动作时调用 mineastr_submit_agent_task；该工具会等待实际完成或失败，不能把 accepted 当成完成；坐标/路径点寻路可按服务端配置受控挖掘或放置方块。",
+    "mineastr_manage_companion": "玩家要求一起工作、陪同旅行或给出高层目标时，先用 mineastr_manage_companion start/update 建立陪伴会话；然后观察环境并逐个提交原子动作。目标完成时 update goal_completed=true，会再停留约 10 分钟。",
     "mineastr_cancel_agent_task": "需要紧急停止 AI 玩家当前任务时调用 mineastr_cancel_agent_task。",
     "mineastr_manage_agent_waypoint": "需要列出或管理 AI 玩家路径点与步行/轨道连接时调用 mineastr_manage_agent_waypoint。",
 }
@@ -51,7 +52,7 @@ MINEASTR_EXTERNAL_HINT_KEYWORDS = (
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
-MINEASTR_VERSION = "0.11.4"
+MINEASTR_VERSION = "0.11.6-dev.7"
 MINECRAFT_PLATFORM_TYPE = "minecraft"
 MINECRAFT_PLATFORM_ID = "minecraft"
 
@@ -75,6 +76,13 @@ class MineAstrPlugin(Star):
         "agent_actions_enabled",
         "agent_require_admin_approval",
         "agent_observation_distance",
+        "agent_companion_enabled",
+        "agent_companion_proactive_chat_enabled",
+        "agent_companion_autonomous_planning_enabled",
+        "agent_companion_chat_min_seconds",
+        "agent_companion_chat_max_seconds",
+        "agent_companion_linger_seconds",
+        "agent_companion_chat_provider_id",
     )
 
     def __init__(self, context: Context, config: Any = None):
@@ -84,6 +92,9 @@ class MineAstrPlugin(Star):
         from .knowledge import KnowledgeCoordinator
 
         self._knowledge = KnowledgeCoordinator(context)
+        from .companion import CompanionCoordinator
+
+        self._companion = CompanionCoordinator(context, self._minecraft_adapter, self._config)
         from .minecraft_adapter import (  # noqa: F401
             MinecraftPlatformAdapter,
             configure_plugin_operational_settings,
@@ -125,6 +136,7 @@ class MineAstrPlugin(Star):
                     logger.info("MineAstr 已安排从本地快照恢复原生 RAG：%s", restored_rag)
             except Exception as exc:
                 logger.warning("MineAstr 初始化时安排缓存 RAG 恢复失败：%s", exc)
+        self._companion.start()
 
     async def _ensure_minecraft_platform(self) -> dict[str, Any]:
         """Ensure one configured Minecraft platform is enabled and, when safe, live.
@@ -305,6 +317,7 @@ class MineAstrPlugin(Star):
         return bool(tasks)
 
     async def terminate(self):
+        await self._companion.close()
         await self._knowledge.close()
         logger.info("MineAstr 插件已终止。")
 
@@ -320,6 +333,10 @@ class MineAstrPlugin(Star):
             return
 
         current_prompt = getattr(request, "system_prompt", "") or ""
+        if current_prompt:
+            self._companion.remember_persona(
+                str(raw_message.get("server_id") or "minecraft"), current_prompt
+            )
         prompt_parts = [current_prompt] if current_prompt else []
         if raw_message.get("minecraft_mentioned_bot"):
             prompt_parts.append(
@@ -925,11 +942,20 @@ class MineAstrPlugin(Star):
         seconds: int = 10,
         distance: int = 3,
         item_name: str = "",
+        direction: str = "",
+        input_item: str = "",
+        input_count: int = 1,
+        fuel_item: str = "",
+        fuel_count: int = 1,
+        wait_mode: str = "first_output",
+        timeout_seconds: int = 180,
+        take_output: bool = True,
+        confirm_irreversible: bool = False,
     ) -> str:
         """向服务端托管的 AI 玩家提交一个受类型约束的动作任务，并等待实际完成或失败。
 
         Args:
-            task_type(str): chat、crouch_greet、goto、goto_waypoint、follow_player、look_at、wait、eat、interact_block 或 use_item。
+            task_type(str): 基础动作，或 container_inspect、container_transfer、furnace_inspect、furnace_process。
             server_id(str): 可选服务器 ID；单服时留空。
             message(str): chat 使用的消息，最多 256 字符。
             x(int): goto/look_at 的 X 坐标。
@@ -944,15 +970,31 @@ class MineAstrPlugin(Star):
             seconds(int): follow_player 持续时间，范围 1 到 120 秒。
             distance(int): follow_player 保持距离，范围 2 到 8 格。
             item_name(str): use_item 使用的物品 ID/内部名。
+            direction(str): container_transfer 的 to_container 或 from_container。
+            input_item(str): furnace_process 的原料物品 ID。
+            input_count(int): 投入原料数量，1 到 64。
+            fuel_item(str): 可选燃料 ID；留空时安全选择已知燃料。
+            fuel_count(int): 投入燃料数量，1 到 64。
+            wait_mode(str): furnace_process 的 none、first_output 或 all。
+            timeout_seconds(int): 等待熔炼产物超时，5 到 900 秒。
+            take_output(bool): 熔炼后是否取出产物。
+            confirm_irreversible(bool): 玩家已明确确认消耗原料/燃料时才可设为 true。
         """
         adapter = self._minecraft_adapter()
         if adapter is None or not hasattr(adapter, "submit_agent_task"):
             return "MineAstr minecraft 平台适配器未启用或版本过旧，无法操作 Agent。"
         selected = task_type.strip().lower()
         allowed = {"chat", "crouch_greet", "goto", "goto_waypoint", "follow_player", "look_at",
-                   "wait", "eat", "interact_block", "use_item"}
+                   "wait", "eat", "interact_block", "use_item", "container_inspect", "container_transfer",
+                   "furnace_inspect", "furnace_process"}
         if selected not in allowed:
             return self._tool_json("MineAstr AI 玩家任务", {"ok": False, "error": f"不支持的任务类型：{selected}"})
+        if selected == "furnace_process" and not confirm_irreversible:
+            return self._tool_json(
+                "MineAstr AI 玩家任务",
+                {"ok": False, "confirmation_required": True,
+                 "error": "熔炼会消耗原料与燃料；请先获得玩家明确确认，再以 confirm_irreversible=true 提交。"},
+            )
         if bool(getattr(adapter, "agent_require_admin_approval", False)) and not await self._event_is_admin(event):
             return self._tool_json(
                 "MineAstr AI 玩家任务",
@@ -961,8 +1003,20 @@ class MineAstrPlugin(Star):
         args: dict[str, Any] = {}
         if selected == "chat":
             args["message"] = message.strip()[:256]
-        elif selected in {"goto", "look_at", "interact_block"}:
+        elif selected in {"goto", "look_at", "interact_block", "container_inspect", "container_transfer",
+                        "furnace_inspect", "furnace_process"}:
             args.update({"x": int(x), "y": int(y), "z": int(z), "dimension": dimension.strip()})
+            if selected == "container_transfer":
+                args.update({"direction": direction.strip().lower(), "item_id": item_name.strip(),
+                             "count": max(1, min(2304, int(count)))})
+            elif selected == "furnace_process":
+                args.update({
+                    "input_item": input_item.strip(), "input_count": max(1, min(64, int(input_count))),
+                    "fuel_item": fuel_item.strip(), "fuel_count": max(1, min(64, int(fuel_count))),
+                    "wait_mode": wait_mode.strip().lower(),
+                    "timeout_seconds": max(5, min(900, int(timeout_seconds))),
+                    "take_output": bool(take_output),
+                })
         elif selected == "goto_waypoint":
             args["id"] = waypoint_id.strip()
         elif selected == "follow_player":
@@ -983,6 +1037,51 @@ class MineAstrPlugin(Star):
             logger.warning("MineAstr 提交 Agent 任务失败：%s", exc)
             payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
         return self._tool_json("MineAstr AI 玩家任务", payload)
+
+    @filter.llm_tool(name="mineastr_manage_companion")
+    async def mineastr_manage_companion(
+        self,
+        event: AstrMessageEvent,
+        action: str = "status",
+        server_id: str = "",
+        focus_player: str = "",
+        goal: str = "",
+        goal_completed: bool = False,
+        session_id: str = "",
+        last_action_summary: str = "",
+    ) -> str:
+        """建立、更新、查询或停止 AI 陪伴会话；陪伴期间动作串行、聊天独立并行。
+
+        Args:
+            action(str): start、update、status 或 stop。
+            server_id(str): 可选服务器 ID。
+            focus_player(str): 优先陪伴的玩家名；start 时必填。
+            goal(str): 玩家给出的高层自然语言目标。
+            goal_completed(bool): 目标已完成时设为 true，进入停留陪伴阶段。
+            session_id(str): 可选稳定会话 ID。
+            last_action_summary(str): 最近完成的可核验原子动作摘要。
+        """
+        adapter = self._minecraft_adapter()
+        if adapter is None or not hasattr(adapter, "manage_agent_companion"):
+            return "MineAstr minecraft 平台适配器未启用或版本过旧，无法管理陪伴会话。"
+        selected = action.strip().lower()
+        if selected not in {"start", "update", "status", "stop"}:
+            return self._tool_json("MineAstr AI 陪伴会话", {"ok": False, "error": f"不支持的操作：{selected}"})
+        raw = self._event_raw_message(event)
+        target = server_id.strip() or str(raw.get("server_id") or "").strip() or None
+        selected_focus = focus_player.strip()
+        if selected == "start" and not selected_focus:
+            selected_focus = str(self._requester_identity(event).get("requester_name") or "").strip()
+        try:
+            payload = await self._companion.manage(
+                adapter, target, selected, focus_player=selected_focus, goal=goal,
+                goal_completed=goal_completed, session_id=session_id,
+                last_action_summary=last_action_summary,
+            )
+        except Exception as exc:
+            logger.warning("MineAstr 管理陪伴会话失败：%s", exc)
+            payload = {"ok": False, "error": str(exc) or exc.__class__.__name__}
+        return self._tool_json("MineAstr AI 陪伴会话", payload)
 
     @filter.llm_tool(name="mineastr_cancel_agent_task")
     async def mineastr_cancel_agent_task(self, event: AstrMessageEvent, server_id: str = "") -> str:
