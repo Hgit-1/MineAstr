@@ -242,6 +242,32 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(observed["ok"])
         self.assertEqual(["agent_observe"], calls)
 
+    async def test_companion_and_event_queries_use_typed_protocol(self):
+        calls = []
+
+        class Manager:
+            async def query(self, query, server_id, params=None, timeout=0):
+                calls.append((query, server_id, params, timeout))
+                return {"ok": True}
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_companion_linger_seconds = 600
+        await self.adapter.manage_agent_companion(
+            "server-a", "start", focus_player="Alex", goal="explore"
+        )
+        await self.adapter.query_agent_events("server-a", 7, 24)
+
+        self.assertEqual("agent_companion", calls[0][0])
+        self.assertEqual(600, calls[0][2]["linger_seconds"])
+        self.assertEqual("agent_events", calls[1][0])
+        self.assertEqual(7, calls[1][2]["since_sequence"])
+
+    def test_furnace_process_wait_budget_includes_requested_timeout(self):
+        self.assertEqual(
+            230.0,
+            self.adapter._agent_task_wait_seconds("furnace_process", {"timeout_seconds": 200}),
+        )
+
     async def test_agent_task_waits_for_terminal_state_instead_of_treating_acceptance_as_completion(self):
         calls = []
         status_calls = 0

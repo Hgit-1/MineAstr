@@ -294,6 +294,36 @@ class MainHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(json.loads(result.split("\n", 1)[1])["ok"])
         self.assertEqual(["server-a"], calls)
 
+    async def test_furnace_process_requires_explicit_irreversible_confirmation(self):
+        calls = []
+
+        class Adapter:
+            agent_require_admin_approval = False
+
+            async def submit_agent_task(self, *args):
+                calls.append(args)
+                return {"ok": True}
+
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._minecraft_adapter = lambda: Adapter()
+        event = types.SimpleNamespace(
+            is_admin=lambda: False,
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
+        )
+
+        rejected = await plugin.mineastr_submit_agent_task(
+            event, "furnace_process", x=1, y=64, z=2, input_item="iron_ore"
+        )
+        self.assertTrue(json.loads(rejected.split("\n", 1)[1])["confirmation_required"])
+        self.assertEqual([], calls)
+
+        accepted = await plugin.mineastr_submit_agent_task(
+            event, "furnace_process", x=1, y=64, z=2, input_item="iron_ore",
+            input_count=3, confirm_irreversible=True,
+        )
+        self.assertTrue(json.loads(accepted.split("\n", 1)[1])["ok"])
+        self.assertEqual("iron_ore", calls[0][2]["input_item"])
+
 
 if __name__ == "__main__":
     unittest.main()

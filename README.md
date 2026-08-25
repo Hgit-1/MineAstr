@@ -119,12 +119,24 @@ pip install -r requirements.txt
 | `agent_actions_enabled` | `true` | 允许 AstrBot 向服务端 Mod 托管的 Mineflayer Agent 提交任务；服务端仍做最终检查。 |
 | `agent_require_admin_approval` | `false` | 需要人工审批时设为 `true`；默认允许 AI 在服务端类型白名单和禁区内自主行动。状态、观察和紧急取消不受影响。 |
 | `agent_observation_distance` | `8` | Agent 结构化视场与附近实体的默认观察距离，范围 1–32 格。 |
+| `agent_companion_enabled` | `false` | 显式启用持续陪伴；Mod 端 `agentCompanionEnabled` 也必须为 `true`。 |
+| `agent_companion_proactive_chat_enabled` | `true` | 陪伴会话中有真人在线时，允许独立的主动搭话循环。 |
+| `agent_companion_autonomous_planning_enabled` | `true` | 动作结束后重新观察并规划下一个可验证原子动作；不后台执行不可逆动作。 |
+| `agent_companion_chat_min_seconds` / `agent_companion_chat_max_seconds` | `20` / `60` | 主动搭话的随机间隔；模型失败时不向游戏报错，而是指数退避。 |
+| `agent_companion_linger_seconds` | `600` | 高层目标完成后继续停留陪伴的时间。 |
+| `agent_companion_chat_provider_id` | 空 | 主动对话模型；留空时依次回退到知识分析模型和 AstrBot 默认模型。 |
 
 服务端 Agent 工具只有在执行后程真正进入服务器后才可执行动作。Mod 可为同机 Bot 提供限定 NeoForge 兼容层，已实测 NeoForge 21.1.219 + Create 6.0.9 可登录；状态中的 `degraded_mod_data=true` 表示自定义 Mod 数据未完整解析，不应被当成完整模组客户端。0.10.3 会把 AstrBot 实际 `bot_display_name` 下发给 Mod，符合 Minecraft 玩家名规则时可自动用作 Mineflayer 名称。0.10.4 的服务端 Mod 可在 Bot 每次进入世界后先执行 `/login` 等前置指令，全部发送并等待认证完成后才放行 AI 任务；密码仅配置在 Minecraft 服务端 TOML 中，不应填写到 AstrBot 插件设置或聊天中。0.10.5 起，Agent 动作工具会继续轮询同一任务，只有收到 `completed` 才向模型报告成功；`failed`、`canceled`、状态链路中断或等待超时不会再被 `accepted=true` 掩盖。0.10.6 可透传 Mod 的自动防卫状态，包括当前目标、攻击次数、危险事件和最近错误；攻击选择与执行仍由服务端 Mod 控制。0.10.7 修复新登录时的空路径提前完成；0.10.8 进一步保留 `NoPath`/规划超时返回的局部最佳路径。0.11.0 可透传 RoadWeaver 混合寻路、断路改道和重启续行状态；Agent 任务协议及工具名称不变。
 
 0.11.1 与现有 Agent 任务协议保持兼容，可继续轮询 Mod 在生存避险时返回的挂起与恢复状态。
 
 0.11.4 与现有 Agent 任务协议保持兼容，可透传服务端碰撞/姿态诊断、多策略脱困、受限脱嵌和全局重规划状态。
+
+0.11.6-dev.7 增加持续陪伴协调、高层单步重规划、主动聊天独立循环和容器/熔炉原子动作；两端陪伴开关默认均为关闭。
+
+陪伴模式将“高层自然语言目标”与“单个可验证动作”分开：模型先调用 `mineastr_manage_companion start/update`，再逐步观察并提交原子任务。原子动作保持串行，主动聊天使用独立循环，因此行走或等待熔炉时仍可以对话。主动发言始终用系统广播显示名，不占用 Agent `chat` 任务槽。会话状态原子保存在 `data/mineastr/companion_sessions.json`，只保留服务器 ID、玩家名、目标、时间和最近动作摘要。
+
+新的 `container_inspect` / `container_transfer` / `furnace_inspect` / `furnace_process` 任务通过原版兼容窗口读写，返回操作前后数量证据。未知 Mod GUI 不会被猜测点击；`degraded_mod_data=true` 时会明确拒绝容器/熔炉写入。`furnace_process` 因会消耗原料与燃料，工具只在玩家明确确认后允许 `confirm_irreversible=true`。容器摘要只在当次工具结果中提供，不写入任务持久化、Agent 事件历史或 RAG。
 
 ## 服务器事件推送
 
@@ -159,7 +171,8 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 | `mineastr_rescan_server_knowledge` | 管理员按 local/remote/rag/all 提交单实例重扫任务。 |
 | `mineastr_get_agent_status` | 查询服务端 Node、Mineflayer 按需会话、名称同步、上次退出/死亡原因、当前任务、自动防卫状态和渲染资源门槛。 |
 | `mineastr_observe_agent` | 查询 Bot 的生命、饥饿、位置、背包、视线、简单视场和附近实体。 |
-| `mineastr_submit_agent_task` | 提交并在需要时唤醒 Bot 执行聊天、连续下蹲、可验证的分段坐标/路径点移动（可按 Mod 配置挖掘/搭路）、跟随、转向、方块交互、物品使用、等待或进食任务。 |
+| `mineastr_submit_agent_task` | 提交并等待 Bot 完成移动、跟随、交互、物品使用、容器存取或熔炉加工等原子任务。 |
+| `mineastr_manage_companion` | 建立、更新、查询或停止高层陪伴会话，并在目标完成后进入停留阶段。 |
 | `mineastr_cancel_agent_task` | 紧急取消当前任务；不要求管理员审批。 |
 | `mineastr_manage_agent_waypoint` | 列出或管理私有路径点及步行/轨道连接。 |
 
