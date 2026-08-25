@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
+const { Vec3 } = require('vec3')
 const {
   activateNearbyOpenable, applyPathfinderCollisionCompatibility, findCanopyExit, findCanopyExitPath, findEscapeCheckpoint,
   localAvoidanceCost, navigateTo, obstaclePoint, performPhysicalUnstuck, planGlobalRoute, recoveryStrategy,
@@ -260,6 +261,52 @@ test('requests restricted server unembedding after three true zero-movement reco
   assert.equal(events.filter(event => event.type === 'navigation_global_replanned').length, 0)
 })
 
+test('authoritative collision requests a vertical server lift before applying indoor movement controls', async () => {
+  const events = []
+  const startedAt = Date.now()
+  let released = false
+  let collisionFree = false
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, goal => {
+    if (!released) return new Promise(() => {})
+    bot.entity.position.x = goal.x
+    bot.entity.position.y = goal.y
+    bot.entity.position.z = goal.z
+  })
+  bot.setControlState = () => assert.fail('embedded player must not receive blind movement controls')
+
+  const result = await navigateTo(bot, fakeGoals, { x: 20, y: 65, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    stallTimeoutMilliseconds: 5_000,
+    segmentTimeoutMilliseconds: 3_000,
+    watchdogIntervalMilliseconds: 25,
+    getServerAwareness: () => ({ server_physics: { collision_free: collisionFree } }),
+    emit(event) {
+      events.push(event)
+      if (event.type === 'navigation_server_unembed_requested') {
+        released = true
+        collisionFree = true
+        bot.entity.position.y = 65
+      }
+    }
+  })
+
+  assert.equal(result.remaining_distance, 0)
+  assert.ok(Date.now() - startedAt < 2_500)
+  assert.equal(events.find(event => event.type === 'navigation_watchdog_triggered')?.code,
+    'NAVIGATION_SERVER_COLLISION')
+  const request = events.find(event => event.type === 'navigation_server_unembed_requested')
+  assert.equal(request.attempt, 1)
+  assert.equal(request.strategy, 'authoritative_collision_lift')
+  assert.deepEqual(request.position, { x: 0, y: 64, z: 0 })
+  assert.deepEqual(request.target, { x: 20, y: 65, z: 0 })
+  assert.equal(events.filter(event => event.type === 'navigation_physical_unstuck').length, 0)
+  const segments = events.filter(event => event.type === 'navigation_segment_started')
+  assert.equal(segments.length, 2)
+  assert.equal(segments[1].recovery_offset, 0)
+  assert.deepEqual(segments[1].checkpoint, { x: 20, y: 65, z: 0 })
+  assert.equal(events.find(event => event.type === 'navigation_global_replanned')?.reason, 'server_unembed')
+})
+
 test('includes authoritative server physics in watchdog diagnostics', async () => {
   const events = []
   const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => new Promise(() => {}))
@@ -409,7 +456,101 @@ test('activates a nearby wooden or server-described Mod door', async () => {
   const result = await activateNearbyOpenable(bot, position =>
     position.x === 1 && position.y === 64 && position.z === 0 ? { openable: true, id: 'mod:door' } : null)
   assert.equal(result.activated, true)
-  assert.deepEqual(activated, [{ x: 1, y: 64, z: 0 }])
+  assert.equal(activated.length, 1)
+  assert.ok(activated[0] instanceof Vec3)
+  assert.deepEqual({ x: activated[0].x, y: activated[0].y, z: activated[0].z }, { x: 1, y: 64, z: 0 })
+})
+
+test('opens a server-described Mod door in the direct corridor before pathfinding can dig around it', async () => {
+  const events = []
+  let open = false
+  let activations = 0
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, goal => {
+    assert.equal(open, true)
+    bot.entity.position.x = goal.x
+    bot.entity.position.y = goal.y
+    bot.entity.position.z = goal.z
+  })
+  bot.blockAt = position => ({
+    name: position.x === 1 && position.y === 64 && position.z === 0 ? '' : 'air',
+    position: { ...position }, boundingBox: open ? 'empty' : 'block',
+    getProperties: () => ({ open })
+  })
+  bot.activateBlock = async block => {
+    assert.deepEqual(block.position, { x: 1, y: 64, z: 0 })
+    activations += 1
+    open = true
+  }
+
+  const result = await navigateTo(bot, fakeGoals, { x: 4, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    blockAwareness: position => position.x === 1 && position.y === 64 && position.z === 0
+      ? { id: 'biomesoplenty:redwood_door', openable: true, hand_openable: true, open }
+      : null,
+    emit: event => events.push(event)
+  })
+
+  assert.equal(result.remaining_distance, 0)
+  assert.equal(activations, 1)
+  assert.equal(bot.pathfinder.calls, 1)
+  assert.ok(events.some(event => event.type === 'navigation_openable_activated'))
+  assert.equal(events.some(event => event.type === 'navigation_physical_unstuck'), false)
+})
+
+test('uses the authoritative nearby-block list for a Mod door outside the local two-block scan', async () => {
+  let open = false
+  let activations = 0
+  const door = { id: 'biomesoplenty:redwood_door', x: 3, y: 64, z: 2,
+    openable: true, hand_openable: true, open: false }
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, goal => {
+    assert.equal(open, true)
+    bot.entity.position.x = goal.x
+    bot.entity.position.y = goal.y
+    bot.entity.position.z = goal.z
+  })
+  bot.blockAt = position => {
+    assert.ok(position instanceof Vec3)
+    return { name: '', position: { ...position }, boundingBox: open ? 'empty' : 'block',
+      getProperties: () => ({ open }) }
+  }
+  bot.activateBlock = async block => {
+    assert.deepEqual(block.position, { x: 3, y: 64, z: 2 })
+    activations += 1
+    open = true
+  }
+  const result = await navigateTo(bot, fakeGoals, { x: 6, y: 64, z: 3 }, {
+    timeoutMilliseconds: 10_000,
+    blockAwareness: position => position.x === 3 && position.y === 64 && position.z === 2
+      ? { ...door, open } : null,
+    getServerAwareness: () => ({ nearby_blocks: [{ ...door, open }] })
+  })
+  assert.equal(result.remaining_distance, 0)
+  assert.equal(activations, 1)
+  assert.equal(bot.pathfinder.calls, 1)
+})
+
+test('fails safely instead of digging through a building when a Mod door cannot be confirmed open', async () => {
+  const events = []
+  let activations = 0
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => assert.fail('pathfinding must not start past an unconfirmed door'))
+  bot.blockAt = position => ({
+    name: position.x === 1 && position.y === 64 && position.z === 0 ? '' : 'air',
+    position: { ...position }, boundingBox: 'block', getProperties: () => ({ open: false })
+  })
+  bot.activateBlock = async () => { activations += 1 }
+  bot.setControlState = () => assert.fail('physical recovery must not run at an unconfirmed door')
+
+  await assert.rejects(navigateTo(bot, fakeGoals, { x: 4, y: 64, z: 0 }, {
+    timeoutMilliseconds: 10_000,
+    blockAwareness: position => position.x === 1 && position.y === 64 && position.z === 0
+      ? { id: 'biomesoplenty:redwood_door', openable: true, hand_openable: true, open: false }
+      : null,
+    emit: event => events.push(event)
+  }), error => error.code === 'NAVIGATION_OPENABLE_FAILED')
+
+  assert.equal(activations, 2)
+  assert.equal(bot.pathfinder.calls, 0)
+  assert.equal(events.some(event => event.type === 'navigation_physical_unstuck'), false)
 })
 
 test('does not treat steady slow movement as a stall', async () => {
@@ -483,6 +624,22 @@ test('fails and replans immediately when an openable reports no state change', a
     watchdogIntervalMilliseconds: 25,
     assertActive() {}, emit() {}, attempt: 1
   }), error => error.code === 'NAVIGATION_INTERACTION_FAILED')
+})
+
+test('aborts immediately when the executor rejects digging a protected structure', async () => {
+  const bot = fakeBot({ x: 0, y: 64, z: 0 }, () => new Promise(() => {}))
+  setTimeout(() => bot.emit('path_dig_protected', {
+    name: 'glass', position: { x: 1, y: 64, z: 0 }, mineastrBreakProtected: true
+  }), 30)
+  await assert.rejects(runPathfinderSegment(bot, new GoalNear(4, 64, 0, 1), {
+    deadlineMilliseconds: 1_000,
+    stallTimeoutMilliseconds: 500,
+    actionStallTimeoutMilliseconds: 800,
+    interactionStallTimeoutMilliseconds: 100,
+    watchdogIntervalMilliseconds: 25,
+    assertActive() {}, emit() {}, attempt: 1
+  }), error => error.code === 'NAVIGATION_PROTECTED_BLOCK'
+    && error.protected_block?.structure_protected === true)
 })
 
 test('cancels an in-flight local path as soon as the task is canceled', async () => {

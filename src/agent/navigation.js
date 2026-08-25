@@ -1,5 +1,7 @@
 'use strict'
 
+const { Vec3 } = require('vec3')
+
 function floorNode(position) {
   return {
     x: Math.floor(Number(position.x)),
@@ -88,6 +90,7 @@ async function navigateTo(bot, goals, target, options = {}) {
   let zeroMovementRecoveries = 0
   let lastServerUnembedRequestAt = 0
   let recoveryOffset = 0
+  const openableFailures = new Map()
   const recoveryOffsets = [3, -3, 5, -5]
   let globalRoute = planGlobalRoute(bot.entity.position, target, { ...options, bot })
   let corridor = globalRoute.points
@@ -172,6 +175,32 @@ async function navigateTo(bot, goals, target, options = {}) {
         remaining_distance: round(beforeTargetDistance)
       })
 
+      // A server-described Mod door can have no usable Prismarine registry ID,
+      // so mineflayer-pathfinder may not put a toUse action in the first local
+      // path. Open a closed hand-operable block only when it lies directly in
+      // the short corridor ahead. This happens before A* is allowed to consider
+      // digging around it.
+      const proactiveInteraction = await activateNearbyOpenable(
+        bot, options.blockAwareness, emit, checkpoint, {
+          corridorOnly: true,
+          authoritativeBlocks: authoritativeNearbyBlocks(options.getServerAwareness)
+        }
+      )
+      if (proactiveInteraction.attempted) {
+        cancelPathfinder(bot)
+        const key = nodeKey(proactiveInteraction.position || checkpoint)
+        if (proactiveInteraction.activated) {
+          openableFailures.delete(key)
+          consecutiveStalls = 0
+          continue
+        }
+        const failures = (openableFailures.get(key) || 0) + 1
+        openableFailures.set(key, failures)
+        if (failures >= 2) throw openableNavigationError(proactiveInteraction)
+        await sleep(500)
+        continue
+      }
+
       let pathError = null
       try {
         await runPathfinderSegment(bot, goal, {
@@ -192,47 +221,121 @@ async function navigateTo(bot, goals, target, options = {}) {
         pathError = error
       }
       assertActive()
+      if (pathError?.code === 'NAVIGATION_PROTECTED_BLOCK') throw pathError
 
       let physicalRecovery = null
       let pathfinderMovedBeforeRecovery = null
       let stalledAvoidancePoint = null
-      if (pathError?.code === 'NAVIGATION_STALLED') {
-        const interaction = await activateNearbyOpenable(bot, options.blockAwareness, emit, checkpoint)
-        if (interaction.activated) {
-          consecutiveStalls = Math.max(0, consecutiveStalls - 1)
-          continue
-        }
-        const stalledAt = { ...bot.entity.position }
-        pathfinderMovedBeforeRecovery = spatialDistance(attemptStart, stalledAt)
-        stalledAvoidancePoint = obstaclePoint(stalledAt, checkpoint)
-        addAvoidanceZone(localAvoidanceZones, stalledAvoidancePoint)
-        physicalRecovery = await performPhysicalUnstuck(bot, stitchedTarget, {
-          durationMilliseconds: unstuckMovementMilliseconds,
-          lateralOffset: recoveryOffset || (attempts % 2 === 0 ? -3 : 3),
-          strategyIndex: consecutiveStalls,
-          assertActive,
-          emit,
-          attempt: attempts,
-          roadNetwork: options.roadNetwork,
-          isForbidden: options.isForbidden
-        })
-        assertActive()
-        if (physicalRecovery?.attempted && Number(pathfinderMovedBeforeRecovery || 0) < 0.2
-            && Number(physicalRecovery.moved_distance || 0) < 0.2) {
-          zeroMovementRecoveries += 1
-        } else if (Number(physicalRecovery?.moved_distance || 0) >= 0.2) zeroMovementRecoveries = 0
-        if (zeroMovementRecoveries >= 3 && Date.now() - lastServerUnembedRequestAt >= 10_000) {
-          lastServerUnembedRequestAt = Date.now()
-          emit({
-            type: 'navigation_server_unembed_requested',
-            attempt: attempts,
-            position: vectorJson(bot.entity.position),
-            zero_movement_recoveries: zeroMovementRecoveries,
-            strategy: physicalRecovery?.strategy || null
-          })
-          await sleep(1_250)
+      let serverUnembedSucceeded = false
+      if (['NAVIGATION_STALLED', 'NAVIGATION_SERVER_COLLISION'].includes(pathError?.code)) {
+        const serverPhysics = authoritativeServerPhysics(options.getServerAwareness)
+        if (serverPhysics?.collision_free === false) {
+          // Do not apply blind movement controls while the authoritative server
+          // says the player is already inside a block. In indoor builds that
+          // used to push the Bot over a platform edge before the conservative
+          // server rescue threshold was reached.
+          const stalledAt = { ...bot.entity.position }
+          pathfinderMovedBeforeRecovery = spatialDistance(attemptStart, stalledAt)
+          const canRequest = Date.now() - lastServerUnembedRequestAt >= 10_000
+          if (canRequest) {
+            lastServerUnembedRequestAt = Date.now()
+            emit({
+              type: 'navigation_server_unembed_requested',
+              attempt: attempts,
+              position: vectorJson(stalledAt),
+              target: vectorJson(checkpoint),
+              zero_movement_recoveries: zeroMovementRecoveries,
+              strategy: 'authoritative_collision_lift'
+            })
+          }
+          await sleep(canRequest ? 1_250 : 500)
           assertActive()
+          const corrected = bot.entity.position
+          const correctedDistance = spatialDistance(stalledAt, corrected)
+          physicalRecovery = {
+            attempted: false,
+            reason: canRequest ? 'server_collision_unembed_requested' : 'server_collision_unembed_cooldown',
+            moved_distance: round(correctedDistance),
+            start: vectorJson(stalledAt),
+            position: vectorJson(corrected)
+          }
+          if (correctedDistance >= 0.2) {
+            zeroMovementRecoveries = 0
+            serverUnembedSucceeded = true
+          }
+          else zeroMovementRecoveries += 1
+        } else {
+          const interaction = await activateNearbyOpenable(bot, options.blockAwareness, emit, checkpoint, {
+            authoritativeBlocks: authoritativeNearbyBlocks(options.getServerAwareness)
+          })
+          if (interaction.attempted) {
+            const key = nodeKey(interaction.position || checkpoint)
+            if (!interaction.activated) {
+              const failures = (openableFailures.get(key) || 0) + 1
+              openableFailures.set(key, failures)
+              if (failures >= 2) throw openableNavigationError(interaction)
+            } else openableFailures.delete(key)
+            consecutiveStalls = Math.max(0, consecutiveStalls - 1)
+            continue
+          }
+          const stalledAt = { ...bot.entity.position }
+          pathfinderMovedBeforeRecovery = spatialDistance(attemptStart, stalledAt)
+          stalledAvoidancePoint = obstaclePoint(stalledAt, checkpoint)
+          addAvoidanceZone(localAvoidanceZones, stalledAvoidancePoint)
+          physicalRecovery = await performPhysicalUnstuck(bot, stitchedTarget, {
+            durationMilliseconds: unstuckMovementMilliseconds,
+            lateralOffset: recoveryOffset || (attempts % 2 === 0 ? -3 : 3),
+            strategyIndex: consecutiveStalls,
+            assertActive,
+            emit,
+            attempt: attempts,
+            roadNetwork: options.roadNetwork,
+            isForbidden: options.isForbidden
+          })
+          assertActive()
+          if (physicalRecovery?.attempted && Number(pathfinderMovedBeforeRecovery || 0) < 0.2
+              && Number(physicalRecovery.moved_distance || 0) < 0.2) {
+            zeroMovementRecoveries += 1
+          } else if (Number(physicalRecovery?.moved_distance || 0) >= 0.2) zeroMovementRecoveries = 0
+          if (zeroMovementRecoveries >= 3 && Date.now() - lastServerUnembedRequestAt >= 10_000) {
+            lastServerUnembedRequestAt = Date.now()
+            emit({
+              type: 'navigation_server_unembed_requested',
+              attempt: attempts,
+              position: vectorJson(bot.entity.position),
+              target: vectorJson(checkpoint),
+              zero_movement_recoveries: zeroMovementRecoveries,
+              strategy: physicalRecovery?.strategy || null
+            })
+            await sleep(1_250)
+            assertActive()
+          }
         }
+      }
+
+      if (serverUnembedSucceeded) {
+        // A teleport invalidates both the current path nodes and the movement
+        // controls derived from them. Treat the corrected position as a fresh
+        // route origin; otherwise the generic "insufficient target progress"
+        // branch schedules a lateral escape checkpoint and can walk straight
+        // past a nearby indoor goal.
+        cancelPathfinder(bot)
+        const corrected = bot.entity.position
+        globalRoute = planGlobalRoute(corrected, target, { ...options, bot })
+        corridor = globalRoute.points
+        routeBackend = globalRoute.backend
+        corridorIndex = 0
+        consecutiveStalls = 0
+        recoveryOffset = 0
+        emit({
+          type: 'navigation_global_replanned',
+          backend: routeBackend,
+          route_points: corridor.length,
+          global_reroutes: globalReroutes,
+          reason: 'server_unembed',
+          corrected_position: vectorJson(corrected)
+        })
+        continue
       }
 
       const actual = bot.entity.position
@@ -319,6 +422,16 @@ function addAvoidanceZone(zones, point) {
   zones.push(point)
   while (zones.length > 64) zones.shift()
   return true
+}
+
+function authoritativeServerPhysics(getServerAwareness) {
+  if (typeof getServerAwareness !== 'function') return null
+  try {
+    const physics = getServerAwareness()?.server_physics
+    return physics && typeof physics === 'object' ? physics : null
+  } catch (_) {
+    return null
+  }
 }
 
 async function performPhysicalUnstuck(bot, target, options = {}) {
@@ -508,54 +621,91 @@ function isSafeStandPositionAuthoritative(bot, point, awareness) {
   return supportSolid && feetPassable && headPassable && !supportKnown?.hazard
 }
 
-async function activateNearbyOpenable(bot, blockAwareness, emit = () => {}, target = null) {
+async function activateNearbyOpenable(bot, blockAwareness, emit = () => {}, target = null, options = {}) {
   if (!bot?.entity?.position || typeof bot.activateBlock !== 'function') return { activated: false }
   const awareness = typeof blockAwareness === 'function' ? blockAwareness : () => null
   const origin = floorNode(bot.entity.position)
   const candidates = []
+  const seen = new Set()
+  const consider = (position, knownOverride = null) => {
+    const key = nodeKey(position)
+    if (seen.has(key)) return
+    seen.add(key)
+    const block = safeBlockAt(bot, position)
+    const name = String(block?.name || '').toLowerCase()
+    const known = knownOverride || awareness(position)
+    if (!known?.openable && !/(?:door|trapdoor|fence_gate)$/.test(name)) return
+    if (/(?:^|_)iron_(?:door|trapdoor)$/.test(name)) return
+    if (known?.hand_openable === false || known?.open === true || blockOpen(block) === true) return
+    const distance = spatialDistance(origin, position)
+    let directionPenalty = 0
+    if (target) {
+      const tx = Number(target.x) - Number(origin.x)
+      const tz = Number(target.z) - Number(origin.z)
+      const bx = Number(position.x) - Number(origin.x)
+      const bz = Number(position.z) - Number(origin.z)
+      const targetLength = Math.hypot(tx, tz) || 1
+      const forward = (tx * bx + tz * bz) / targetLength
+      if (forward <= 0) return
+      directionPenalty = Math.abs(tx * bz - tz * bx) / targetLength
+      if (options.corridorOnly && (directionPenalty > 1.25 || forward > 5)) return
+    }
+    if (block) candidates.push({ block, position, distance, score: distance + directionPenalty, known })
+  }
+  for (const known of Array.isArray(options.authoritativeBlocks) ? options.authoritativeBlocks : []) {
+    if (!known?.openable || ![known.x, known.y, known.z].every(Number.isFinite)) continue
+    const position = { x: Math.floor(known.x), y: Math.floor(known.y), z: Math.floor(known.z) }
+    if (Math.abs(position.y - origin.y) > 2 || horizontalDistance(position, origin) > 5) continue
+    consider(position, known)
+  }
   for (let y = -1; y <= 2; y++) {
     for (let x = -2; x <= 2; x++) {
       for (let z = -2; z <= 2; z++) {
-        const position = { x: origin.x + x, y: origin.y + y, z: origin.z + z }
-        const block = safeBlockAt(bot, position)
-        const name = String(block?.name || '').toLowerCase()
-        const known = awareness(position)
-        if (!known?.openable && !/(?:door|trapdoor|fence_gate)$/.test(name)) continue
-        if (/(?:^|_)iron_(?:door|trapdoor)$/.test(name)) continue
-        if (known?.hand_openable === false || known?.open === true || blockOpen(block) === true) continue
-        const distance = spatialDistance(origin, position)
-        let directionPenalty = 0
-        if (target) {
-          const tx = Number(target.x) - Number(origin.x)
-          const tz = Number(target.z) - Number(origin.z)
-          const bx = Number(position.x) - Number(origin.x)
-          const bz = Number(position.z) - Number(origin.z)
-          if (tx * bx + tz * bz <= 0) continue
-          directionPenalty = Math.abs(tx * bz - tz * bx) / (Math.hypot(tx, tz) || 1)
-        }
-        candidates.push({ block, position, distance, score: distance + directionPenalty, known })
+        consider({ x: origin.x + x, y: origin.y + y, z: origin.z + z })
       }
     }
   }
   candidates.sort((left, right) => left.score - right.score)
   const candidate = candidates[0]
-  if (!candidate?.block) return { activated: false }
+  if (!candidate?.block) return { activated: false, attempted: false }
   try {
     await bot.activateBlock(candidate.block)
-    await sleep(1_100)
-    const refreshed = safeBlockAt(bot, candidate.position)
-    const refreshedKnown = awareness(candidate.position)
-    if (blockOpen(refreshed) !== true && refreshedKnown?.open !== true) {
-      emit({ type: 'navigation_openable_unchanged', position: vectorJson(candidate.position),
-        block: candidate.known?.id || candidate.block.name || null })
-      return { activated: false, error: 'openable state unchanged' }
+    for (let attempt = 0; attempt < 7; attempt++) {
+      await sleep(350)
+      const refreshed = safeBlockAt(bot, candidate.position)
+      const refreshedKnown = awareness(candidate.position)
+      if (blockOpen(refreshed) === true || refreshedKnown?.open === true) {
+        emit({ type: 'navigation_openable_activated', position: vectorJson(candidate.position),
+          block: candidate.known?.id || candidate.block.name || null })
+        return { activated: true, attempted: true, position: candidate.position }
+      }
     }
-    emit({ type: 'navigation_openable_activated', position: vectorJson(candidate.position),
+    emit({ type: 'navigation_openable_unchanged', position: vectorJson(candidate.position),
       block: candidate.known?.id || candidate.block.name || null })
-    return { activated: true, position: candidate.position }
+    return { activated: false, attempted: true, position: candidate.position,
+      block: candidate.known?.id || candidate.block.name || null,
+      error: 'openable state unchanged' }
   } catch (error) {
-    return { activated: false, error: safeMessage(error) }
+    return { activated: false, attempted: true, position: candidate.position,
+      block: candidate.known?.id || candidate.block.name || null, error: safeMessage(error) }
   }
+}
+
+function authoritativeNearbyBlocks(getServerAwareness) {
+  try {
+    const awareness = typeof getServerAwareness === 'function' ? getServerAwareness() : null
+    return Array.isArray(awareness?.nearby_blocks) ? awareness.nearby_blocks : []
+  } catch (_) {
+    return []
+  }
+}
+
+function openableNavigationError(interaction) {
+  const position = interaction?.position ? vectorJson(interaction.position) : null
+  const error = new Error(`无法确认门已打开；为保护建筑停止寻路${position ? ` (${position.x}, ${position.y}, ${position.z})` : ''}`)
+  error.code = 'NAVIGATION_OPENABLE_FAILED'
+  error.interaction = interaction
+  return error
 }
 
 function blockOpen(block) {
@@ -661,7 +811,11 @@ function passable(block) {
 }
 
 function safeBlockAt(bot, position) {
-  try { return bot.blockAt(position, false) } catch (_) { return null }
+  try {
+    const point = position instanceof Vec3
+      ? position : new Vec3(Number(position.x), Number(position.y), Number(position.z))
+    return bot.blockAt(point, false)
+  } catch (_) { return null }
 }
 
 function runPathfinderSegment(bot, goal, options) {
@@ -700,6 +854,7 @@ function runPathfinderSegment(bot, goal, options) {
       bot.removeListener?.('path_reset', onPathReset)
       bot.removeListener?.('goal_reached', onGoalReached)
       bot.removeListener?.('path_interaction_failed', onInteractionFailed)
+      bot.removeListener?.('path_dig_protected', onProtectedDig)
       if (error) reject(error)
       else resolve(value)
     }
@@ -726,7 +881,13 @@ function runPathfinderSegment(bot, goal, options) {
     const onInteractionFailed = error => stopWith(
       'NAVIGATION_INTERACTION_FAILED', `方块交互失败：${safeMessage(error)}`, { interaction_failed: true }
     )
+    const onProtectedDig = block => stopWith(
+      'NAVIGATION_PROTECTED_BLOCK', '自动寻路拒绝破坏建筑结构', {
+        protected_block: blockJsonForNavigation(block)
+      }
+    )
     bot.on?.('path_interaction_failed', onInteractionFailed)
+    bot.on?.('path_dig_protected', onProtectedDig)
 
     let pathPromise
     try {
@@ -797,6 +958,14 @@ function runPathfinderSegment(bot, goal, options) {
       }
       const now = Date.now()
       const current = bot.entity.position
+      const serverPhysics = authoritativeServerPhysics(options.getServerAwareness)
+      if (serverPhysics?.collision_free === false) {
+        stopWith('NAVIGATION_SERVER_COLLISION', '服务端检测到玩家碰撞嵌入', {
+          inactive_ms: now - lastProgressAt,
+          server_collision: true
+        })
+        return
+      }
       if (spatialDistance(lastPosition, current) >= 0.2) {
         lastPosition = { ...current }
         lastProgressAt = now
@@ -884,6 +1053,15 @@ function blockDiagnostic(bot, position) {
   let name = null
   try { name = bot?.blockAt?.(position, false)?.name || null } catch (_) {}
   return { position: vectorJson(position), name: name ? String(name).slice(0, 100) : null }
+}
+
+function blockJsonForNavigation(block) {
+  return {
+    name: block?.name ? String(block.name).slice(0, 100) : null,
+    position: block?.position ? vectorJson(block.position) : null,
+    server_authoritative: Boolean(block?.serverAuthoritative),
+    structure_protected: Boolean(block?.mineastrBreakProtected)
+  }
 }
 
 function finiteOrNull(value) {

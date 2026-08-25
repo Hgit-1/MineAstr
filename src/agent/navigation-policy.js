@@ -30,10 +30,47 @@ function isOpenableBlock(block) {
     /(?:^|_)(?:door|trapdoor|fence_gate)$/.test(name)
 }
 
+function installAuthoritativeWorldCollision(bot, blockAwareness) {
+  const world = bot?.world
+  if (!world || typeof world.getBlock !== 'function') return false
+  if (world.mineastrAuthoritativeCollision) return true
+  const awareness = typeof blockAwareness === 'function' ? blockAwareness : () => null
+  const localGetBlock = world.getBlock.bind(world)
+  world.getBlock = function (...args) {
+    const block = localGetBlock(...args)
+    return applyAuthoritativeCollisionShape(block, awareness(block?.position || args[0]))
+  }
+  world.mineastrAuthoritativeCollision = true
+  return true
+}
+
+function applyAuthoritativeCollisionShape(block, known) {
+  if (!block || !known || typeof known.collision !== 'boolean') return block
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(block)), block)
+  const boxes = normalizeCollisionBoxes(known.collision_boxes)
+  copy.serverAuthoritative = true
+  copy.modded = Boolean(known.modded)
+  copy.mineastrBreakProtected = Boolean(known.protected || known.openable
+    || Number(known.structure_confidence) >= 80)
+  if (known.id && (!copy.name || copy.name === 'unknown')) {
+    copy.name = String(known.id).split(':').pop()
+  }
+  copy.shapes = known.collision ? (boxes.length > 0 ? boxes : [[0, 0, 0, 1, 1, 1]]) : []
+  copy.boundingBox = known.collision ? 'block' : 'empty'
+  return copy
+}
+
+function normalizeCollisionBoxes(value) {
+  if (!Array.isArray(value)) return []
+  return value.filter(box => Array.isArray(box) && box.length === 6 && box.every(Number.isFinite))
+    .map(box => box.map(Number))
+}
+
 function applyNavigationPolicy(movements, bot, options) {
   const allowDigging = Boolean(options.allowDigging)
   const allowPlacing = Boolean(options.allowPlacing)
   const forbidden = typeof options.isForbidden === 'function' ? options.isForbidden : () => false
+  const canBreakBlock = typeof options.canBreakBlock === 'function' ? options.canBreakBlock : () => true
   const awareness = typeof options.blockAwareness === 'function' ? options.blockAwareness : () => null
   const structureCache = new Map()
   movements.canDig = allowDigging
@@ -65,6 +102,8 @@ function applyNavigationPolicy(movements, bot, options) {
       block.serverAuthoritative = true
       block.modded = Boolean(known.modded)
       block.leaf = Boolean(known.leaf)
+      block.mineastrBreakProtected = Boolean(known.protected || known.openable
+        || Number(known.structure_confidence) >= 80)
       if (known.openable) {
         block.openable = known.hand_openable !== false
         block.open = known.open === true
@@ -101,6 +140,7 @@ function applyNavigationPolicy(movements, bot, options) {
   movements.exclusionAreasPlace.push(forbiddenCost)
   movements.exclusionAreasBreak.push(block => {
     if (forbidden(block?.position, dimension)) return 100
+    if (!canBreakBlock(block)) return 100
     const known = awareness(block?.position)
     if (known?.protected || known?.hazard || known?.openable || isProtectedNavigationBlock(block)) return 100
     const key = block?.position ? `${block.position.x},${block.position.y},${block.position.z}` : null
@@ -114,6 +154,12 @@ function applyNavigationPolicy(movements, bot, options) {
     }
     const confidence = Math.max(0, Math.min(100,
       Number(known?.structure_confidence) || localConfidence))
+    // Automatic navigation must never regard a verified building envelope as
+    // a merely expensive shortcut. The live BOP-door regression demonstrated
+    // that a cost of 70 still lets A* choose glass walls after an interaction
+    // failure. Keep ordinary terrain diggable, but make high-confidence
+    // structures an absolute exclusion.
+    if (confidence >= 80) return 100
     const configured = Math.max(1, Math.min(99, Number(options.structureBreakCost) || 70))
     return Math.round(configured * confidence / 100)
   })
@@ -164,6 +210,7 @@ function localCollision(bot, position) {
 }
 
 module.exports = {
-  applyNavigationPolicy, estimateLocalStructureConfidence, isLeafLike, isOpenableBlock,
-  isProtectedNavigationBlock, pathfinderDigMultiplier
+  applyAuthoritativeCollisionShape, applyNavigationPolicy, estimateLocalStructureConfidence,
+  installAuthoritativeWorldCollision, isLeafLike, isOpenableBlock, isProtectedNavigationBlock,
+  normalizeCollisionBoxes, pathfinderDigMultiplier
 }

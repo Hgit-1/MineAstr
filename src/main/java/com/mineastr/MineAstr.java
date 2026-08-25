@@ -25,7 +25,7 @@ import org.slf4j.Logger;
 @Mod(MineAstr.MODID)
 public final class MineAstr {
     public static final String MODID = "mineastr";
-    public static final String MOD_VERSION = "0.11.5";
+    public static final String MOD_VERSION = "0.11.6-dev.7";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     private static MineAstrBridge activeBridge;

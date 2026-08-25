@@ -246,6 +246,16 @@ public final class MineAstrConfig {
                     "AstrBot 可额外启用分级审批；服务端禁区、预算和紧急停止始终生效。")
             .define("agentFullAutonomy", true);
 
+    public static final ModConfigSpec.BooleanValue AGENT_COMPANION_ENABLED = BUILDER
+            .comment(
+                    "是否允许 AstrBot 启动持续陪伴会话、保持 Mineflayer 在线并执行自然动作。默认关闭。",
+                    "主动聊天由 AstrBot 插件独立配置；开启本项不会在没有陪伴会话时自动登录。")
+            .define("agentCompanionEnabled", false);
+
+    public static final ModConfigSpec.IntValue AGENT_COMPANION_LINGER_SECONDS = BUILDER
+            .comment("陪伴目标完成后继续保持会话的默认秒数；玩家离线或明确停止时提前结束。")
+            .defineInRange("agentCompanionLingerSeconds", 600, 60, 3600);
+
     public static final ModConfigSpec.BooleanValue AGENT_COMBAT_ENABLED = BUILDER
             .comment(
                     "是否允许 Agent 自主反击近距离的明确敌对生物。默认开启。",

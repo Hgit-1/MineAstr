@@ -97,7 +97,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             if (!isAgentPlayer(player)) humanAgentPlayers.add(player.getUUID());
         }
-        agentManager.updateHumanPlayerCount(humanAgentPlayers.size());
+        syncAgentHumanPlayers();
         roadNetworkSnapshot.start(server);
         agentManager.start(server);
         activityData = MineAstrActivityData.get(server);
@@ -209,7 +209,19 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if (isAgentPlayer(player)) return;
         if (joined) humanAgentPlayers.add(player.getUUID());
         else humanAgentPlayers.remove(player.getUUID());
-        agentManager.updateHumanPlayerCount(humanAgentPlayers.size());
+        syncAgentHumanPlayers();
+    }
+
+    private void syncAgentHumanPlayers() {
+        MinecraftServer currentServer = server;
+        if (currentServer == null) {
+            agentManager.updateHumanPlayers(List.of());
+            return;
+        }
+        agentManager.updateHumanPlayers(currentServer.getPlayerList().getPlayers().stream()
+                .filter(player -> humanAgentPlayers.contains(player.getUUID()))
+                .map(player -> player.getGameProfile().getName())
+                .toList());
     }
 
     private boolean isAgentPlayer(ServerPlayer player) {
@@ -445,6 +457,10 @@ public final class MineAstrBridge implements WebSocket.Listener {
             capabilities.add("agent_task");
             capabilities.add("agent_cancel");
             capabilities.add("agent_observe");
+            capabilities.add("agent_events");
+            if (MineAstrConfig.AGENT_COMPANION_ENABLED.getAsBoolean()) {
+                capabilities.add("agent_companion");
+            }
             capabilities.add("agent_waypoints");
             capabilities.add("transport_graph");
         }
@@ -624,6 +640,8 @@ public final class MineAstrBridge implements WebSocket.Listener {
                     case "agent_task" -> handleAgentQuery(socket, messageId, query, "/task", payload, Duration.ofSeconds(10));
                     case "agent_cancel" -> handleAgentQuery(socket, messageId, query, "/cancel", payload, Duration.ofSeconds(5));
                     case "agent_observe" -> handleAgentQuery(socket, messageId, query, "/observe", payload, Duration.ofSeconds(10));
+                    case "agent_companion" -> handleAgentQuery(socket, messageId, query, "/companion", payload, Duration.ofSeconds(10));
+                    case "agent_events" -> handleAgentQuery(socket, messageId, query, "/events", payload, Duration.ofSeconds(10));
                     case "agent_waypoints", "transport_graph" -> handleAgentQuery(socket, messageId, query, "/waypoints", payload, Duration.ofSeconds(10));
                     default -> sendQueryError(socket, messageId, query, "不支持的查询类型：" + query);
                 }

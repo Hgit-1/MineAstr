@@ -9,12 +9,15 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const { applyPathfinderCollisionCompatibility, navigateTo } = require('./navigation')
 const { ChunkNavigationCache } = require('./chunk-cache')
-const { applyNavigationPolicy } = require('./navigation-policy')
+const { applyNavigationPolicy, installAuthoritativeWorldCollision } = require('./navigation-policy')
 const { executeJoinCommands, initialJoinCommandState, parseJoinCommands } = require('./join-commands')
 const { createCombatController, isAttackableHostile, isRetreatThreat } = require('./combat')
 const { RoadNetwork } = require('./road-network')
 const { RESUMABLE_TYPES, TaskStore } = require('./task-store')
 const { resumeNavigationRecord, suspendNavigationRecord } = require('./task-lifecycle')
+const { AgentEventBuffer } = require('./agent-events')
+const { CompanionController } = require('./companion')
+const { executeInventoryTask } = require('./inventory-actions')
 const { version: runtimeVersion } = require('./package.json')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
@@ -60,6 +63,8 @@ const combatEnabled = process.env.MINEASTR_COMBAT_ENABLED !== 'false'
 const combatRadius = parseInteger(process.env.MINEASTR_COMBAT_RADIUS, 6, 3, 16)
 const combatMinimumHealth = parseInteger(process.env.MINEASTR_COMBAT_MIN_HEALTH, 10, 1, 20)
 const combatAttackCooldownMilliseconds = parseInteger(process.env.MINEASTR_COMBAT_ATTACK_COOLDOWN_MS, 650, 250, 2000)
+const companionEnabled = process.env.MINEASTR_COMPANION_ENABLED === 'true'
+const companionLingerSeconds = parseInteger(process.env.MINEASTR_COMPANION_LINGER_SECONDS, 600, 60, 3600)
 const navigationCache = new ChunkNavigationCache(path.join(dataDir, 'navigation-cache'), {
   maxChunks: parseInteger(process.env.MINEASTR_NAV_CACHE_MAX_CHUNKS, 2048, 64, 16384)
 })
@@ -79,6 +84,7 @@ let connectionBlocked = false
 let sessionDisconnecting = false
 let sessionReady = false
 let humanPlayerCount = 0
+let humanPlayers = []
 let wakeReason = null
 let idleDisconnectAt = 0
 let connectedAt = 0
@@ -103,6 +109,8 @@ let pendingSessionExit = null
 let lastSessionExit = null
 let lastDeathAt = 0
 let joinCommandState = initialJoinCommandState(joinCommands.length)
+const agentEvents = new AgentEventBuffer(128)
+let companionController = null
 
 const waypointFile = path.join(dataDir, 'waypoints.json')
 let waypointData = loadWaypointData()
@@ -209,13 +217,25 @@ function persistTasks(activeOverride = undefined, argsOverride = undefined) {
 }
 
 function emit(record) {
-  const event = { time_ms: Date.now(), ...record }
+  const event = agentEvents.append({ time_ms: Date.now(), ...record })
   if (record?.type === 'navigation_physical_unstuck') lastPhysicalRecovery = event
   process.stdout.write(`${JSON.stringify(event)}\n`)
 }
 
+companionController = new CompanionController(path.join(dataDir, 'companion.json'), {
+  enabled: companionEnabled,
+  lingerSeconds: companionLingerSeconds,
+  emit,
+  getBot: () => bot,
+  shouldPause: () => !bot || !sessionReady || sessionDisconnecting || eating || retreating || hunting
+    || activeTask?.state === 'running' || bot.isUsingHeldItem || bot.pathfinder?.isMining?.()
+    || bot.pathfinder?.isBuilding?.() || bot.pathfinder?.isInteracting?.()
+    || Boolean(nearbySurvivalThreat())
+})
+
 function taskNeedsSession() {
   return ['waiting_for_connection', 'running', 'suspended'].includes(activeTask?.state)
+    || companionController.needsSession(humanPlayerCount, humanPlayers)
 }
 
 function maintenanceNeedsSession() {
@@ -227,8 +247,22 @@ function awarenessAt(position) {
   return nearbyBlockAwareness.get(`${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`) || null
 }
 
+function automaticNavigationBreakAllowed(block) {
+  const known = awarenessAt(block?.position)
+  if (known?.protected || known?.openable || Number(known?.structure_confidence) >= 80) return false
+  const origin = bot?.entity?.position
+  if (!origin) return true
+  return !(Array.isArray(serverAwareness?.nearby_blocks) ? serverAwareness.nearby_blocks : [])
+    .some(entry => entry?.openable
+      && Math.abs(Number(entry.y) - Number(origin.y)) <= 4
+      && Math.hypot(Number(entry.x) - Number(origin.x), Number(entry.z) - Number(origin.z)) <= 10)
+}
+
 function desiredWakeReason() {
-  if (taskNeedsSession()) return activeTask?.task_type === 'chat' ? 'conversation_task' : 'task'
+  if (['waiting_for_connection', 'running', 'suspended'].includes(activeTask?.state)) {
+    return activeTask?.task_type === 'chat' ? 'conversation_task' : 'task'
+  }
+  if (companionController.needsSession(humanPlayerCount, humanPlayers)) return 'companion'
   if (maintenanceNeedsSession()) return 'self_care'
   if (sessionPolicy === 'always') return 'always'
   if (sessionPolicy === 'players_online' && humanPlayerCount > 0) return 'players_online'
@@ -361,6 +395,8 @@ function connectBot() {
         emit({ type: 'pathfinder_compatibility_applied', compatibility: navigationCompatibility })
       }
       try {
+        installAuthoritativeWorldCollision(created, awarenessAt)
+        created.mineastrCanDigBlock = automaticNavigationBreakAllowed
         const movements = new Movements(created)
         applyNavigationPolicy(movements, created, {
           allowDigging: navigationAllowDigging,
@@ -370,6 +406,7 @@ function connectBot() {
           placeCost: navigationPlaceCost,
           liquidCost: navigationLiquidCost,
           isForbidden,
+          canBreakBlock: automaticNavigationBreakAllowed,
           blockAwareness: awarenessAt
         })
         created.pathfinder.setMovements(movements)
@@ -421,6 +458,7 @@ function connectBot() {
         onDanger: (threat, reason) => handleCombatDanger(threat, reason)
       })
       combatController.start()
+      companionController.startMotion()
       survivalTimer = setInterval(() => void selfCare(), 1000)
       survivalTimer.unref?.()
       startWaitingTask()
@@ -568,6 +606,7 @@ function status() {
     recent_tasks: Array.from(recentTasks.values()).slice(-10).map(task => taskStatus(task, false)),
     session_policy: sessionPolicy,
     human_player_count: humanPlayerCount,
+    human_players: humanPlayers,
     wake_reason: wakeReason,
     idle_disconnect_seconds: idleDisconnectSeconds,
     idle_disconnect_at_ms: idleDisconnectAt || null,
@@ -617,6 +656,17 @@ function status() {
       task_persistence: taskStore.status(),
       collision_compatibility: navigationCompatibility,
       last_physical_recovery: lastPhysicalRecovery
+    },
+    companion: companionController.status(),
+    capabilities: {
+      companion_sessions: companionEnabled,
+      human_motion: companionEnabled,
+      agent_events: true,
+      container_inspect: !neoForgeNegotiated,
+      container_transfer: !neoForgeNegotiated,
+      furnace_inspect: !neoForgeNegotiated,
+      furnace_process: !neoForgeNegotiated,
+      inventory_protocol_degraded: neoForgeNegotiated
     }
   }
 }
@@ -938,6 +988,7 @@ function startWaitingTask() {
   persistTasks()
   emit({ type: 'task_started', task: activeTask })
   queueMicrotask(async () => {
+    let operationResult = null
     try {
       if (type === 'chat') {
         bot.chat(String(args.message || '').slice(0, 256))
@@ -988,6 +1039,14 @@ function startWaitingTask() {
         const block = bot.blockAt(position)
         if (!block) throw new Error('目标方块不可见')
         await bot.activateBlock(block)
+      } else if (['container_inspect', 'container_transfer', 'furnace_inspect', 'furnace_process'].includes(type)) {
+        operationResult = await executeInventoryTask(bot, type, args, {
+          inventoryDegraded: neoForgeNegotiated,
+          navigate: (target, navigationArgs) => navigateTask(target, navigationArgs, runId),
+          assertAllowed: assertAllowedTarget,
+          assertActive: () => assertTaskActive(runId),
+          emit
+        })
       } else if (type === 'use_item') {
         const itemName = String(args.item_name || '').toLowerCase()
         const shortName = itemName.includes(':') ? itemName.slice(itemName.indexOf(':') + 1) : itemName
@@ -1003,6 +1062,7 @@ function startWaitingTask() {
       assertTaskActive(runId)
       let observation = null
       try { observation = observe(8) } catch (_) {}
+      if (operationResult) observation = { ...(observation || {}), operation_result: operationResult }
       finishTask(runId, true, '任务完成', observation)
     } catch (error) {
       if (error?.code !== 'TASK_CANCELED') finishTask(runId, false, safeError(error))
@@ -1092,6 +1152,9 @@ function cancelTask() {
 
 function updateSession(input) {
   humanPlayerCount = parseInteger(input.human_player_count, 0, 0, 100000)
+  humanPlayers = Array.isArray(input.human_players)
+    ? input.human_players.map(value => String(value || '').slice(0, 16)).filter(Boolean).slice(0, 100)
+    : []
   const preferredUsername = validMinecraftUsername(input.preferred_username)
   if (preferredUsername && preferredUsername !== username) {
     const previous = username
@@ -1109,11 +1172,17 @@ function updateSession(input) {
     nearbyBlockAwareness.set(`${Math.floor(block.x)},${Math.floor(block.y)},${Math.floor(block.z)}`, block)
   }
   emit({
-    type: 'session_presence', human_player_count: humanPlayerCount,
+    type: 'session_presence', human_player_count: humanPlayerCount, human_players: humanPlayers,
     session_policy: sessionPolicy, preferred_username: username
   })
   reconcileSession()
   return status()
+}
+
+function companionOperation(input) {
+  const result = companionController.operate(input)
+  reconcileSession()
+  return result
 }
 
 function loadWaypointData() {
@@ -1199,6 +1268,10 @@ const control = http.createServer(async (request, response) => {
     if (request.url === '/observe') return send(response, 200, observe(parseInteger(body.distance, 8, 1, 32)))
     if (request.url === '/task') return send(response, 202, await runTask(body))
     if (request.url === '/cancel') return send(response, 200, cancelTask())
+    if (request.url === '/companion') return send(response, 200, companionOperation(body))
+    if (request.url === '/events') return send(response, 200,
+      agentEvents.since(parseInteger(body.since_sequence, 0, 0, Number.MAX_SAFE_INTEGER),
+        parseInteger(body.limit, 64, 1, 128)))
     if (request.url === '/waypoints') return send(response, 200, waypointOperation(body))
     if (request.url === '/session') return send(response, 200, updateSession(body))
     return send(response, 404, { ok: false, error: 'not_found' })
@@ -1217,6 +1290,7 @@ function shutdown() {
   taskConnectionTimer = null
   if (survivalTimer) clearInterval(survivalTimer)
   survivalTimer = null
+  companionController.stopMotion()
   if (activeTask && ['waiting_for_connection', 'running'].includes(activeTask.state)) {
     if (resumeInterruptedNavigation && RESUMABLE_TYPES.has(activeTask.task_type)) {
       const suspended = { ...activeTask, state: 'suspended', suspended_at_ms: Date.now(), updated_at_ms: Date.now() }

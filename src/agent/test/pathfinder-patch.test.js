@@ -90,11 +90,12 @@ test('the real executor activates a door only once while awaiting confirmation',
   let activations = 0
   const controls = { forward: false, back: false, left: false, right: false, jump: false, sprint: false, sneak: false }
   const bot = Object.assign(new EventEmitter(), {
+    version: '1.21.1',
     registry: minecraftData,
     game: { minY: -64 },
     entity: { position: new Vec3(0.5, 64, 0.5), velocity: new Vec3(0, 0, 0), onGround: true,
-      effects: {}, height: 1.8, width: 0.6 },
-    inventory: { items: () => [] },
+      effects: {}, attributes: {}, yaw: 0, pitch: 0, height: 1.8, width: 0.6 },
+    inventory: { items: () => [], slots: [] },
     entities: {},
     controlState: controls,
     physics: { simulatePlayer() {} },
@@ -130,4 +131,49 @@ test('the real executor activates a door only once while awaiting confirmation',
   await new Promise(resolve => setTimeout(resolve, 800))
   assert.equal(activations, 1)
   assert.equal(bot.pathfinder.isInteracting(), false)
+})
+
+test('the real executor refuses a stale plan that attempts to dig a protected structure', async () => {
+  let digs = 0
+  let protectedEvents = 0
+  const controls = { forward: false, back: false, left: false, right: false, jump: false, sprint: false, sneak: false }
+  const bot = Object.assign(new EventEmitter(), {
+    version: '1.21.1',
+    registry: minecraftData,
+    game: { minY: -64 },
+    entity: { position: new Vec3(0.5, 64, 0.5), velocity: new Vec3(0, 0, 0), onGround: true,
+      effects: {}, attributes: {}, yaw: 0, pitch: 0, height: 1.8, width: 0.6 },
+    inventory: { items: () => [], slots: [] },
+    entities: {}, controlState: controls,
+    physics: { simulatePlayer() {} },
+    blockAt(position) {
+      const obstructing = position.x === 1 && position.y === 64 && position.z === 0
+      const wall = position.x === 1 && Math.abs(position.z) <= 5
+        && (position.y === 64 || (position.y === 65 && position.z !== 0))
+      const id = obstructing || position.y === 63
+        ? minecraftData.blocksByName.stone.defaultState
+        : wall ? minecraftData.blocksByName.bedrock.defaultState : minecraftData.blocksByName.air.defaultState
+      const block = blockAtState(id, position)
+      block.position = new Vec3(position.x, position.y, position.z)
+      return block
+    },
+    setControlState(name, value) { controls[name] = value },
+    clearControlStates() { for (const name of Object.keys(controls)) controls[name] = false },
+    look() { return Promise.resolve() },
+    dig() { digs += 1; return Promise.resolve() },
+    equip() { return Promise.resolve() }
+  })
+  bot.mineastrCanDigBlock = () => false
+  bot.on('path_dig_protected', () => { protectedEvents += 1 })
+  pathfinder(bot)
+  const configured = new Movements(bot)
+  configured.allowSprinting = false
+  bot.pathfinder.setMovements(configured)
+  bot.pathfinder.setGoal(new goals.GoalBlock(1, 64, 0))
+  for (let tick = 0; tick < 8; tick++) {
+    bot.emit('physicsTick')
+    await new Promise(resolve => setTimeout(resolve, 30))
+  }
+  assert.equal(digs, 0)
+  assert.ok(protectedEvents >= 1)
 })

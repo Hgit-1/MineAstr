@@ -20,7 +20,6 @@ function replaceOnce(source, before, after, file) {
 function patchFile(relative, operations) {
   const file = path.join(root, relative)
   let source = fs.readFileSync(file, 'utf8')
-  if (source.includes(marker)) return
   for (const [before, after] of operations) source = replaceOnce(source, before, after, relative)
   fs.writeFileSync(file, source)
 }
@@ -113,6 +112,39 @@ patchFile('index.js', [[
   `  bot.pathfinder.isBuilding = () => placing
   bot.pathfinder.isInteracting = () => interacting
 `
+], [
+  `        const tool = bot.pathfinder.bestHarvestTool(block)
+        fullStop()
+
+        const digBlock = () => {`,
+  `        if (block?.mineastrBreakProtected) {
+          digging = false
+          fullStop()
+          bot.emit('path_dig_protected', block)
+          resetPath('protected_block')
+          return
+        }
+        const tool = bot.pathfinder.bestHarvestTool(block)
+        fullStop()
+
+        const digBlock = () => {`
+], [
+  `        if (block?.mineastrBreakProtected) {
+          digging = false
+          fullStop()
+          bot.emit('path_dig_protected', block)
+          resetPath('protected_block')
+          return
+        }`,
+  `        const mineastrCanDig = typeof bot.mineastrCanDigBlock === 'function'
+          ? bot.mineastrCanDigBlock(block) : !block?.mineastrBreakProtected
+        if (!mineastrCanDig || block?.mineastrBreakProtected) {
+          digging = false
+          fullStop()
+          bot.emit('path_dig_protected', block)
+          resetPath('protected_block')
+          return
+        }`
 ], [
   'curPoint.toBreak.length > 0 || curPoint.toPlace.length > 0',
   'curPoint.toBreak.length > 0 || curPoint.toPlace.length > 0 || curPoint.toUse.length > 0'

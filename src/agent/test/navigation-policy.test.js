@@ -3,8 +3,8 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const {
-  applyNavigationPolicy, estimateLocalStructureConfidence, isLeafLike, isOpenableBlock,
-  isProtectedNavigationBlock, pathfinderDigMultiplier
+  applyNavigationPolicy, estimateLocalStructureConfidence, installAuthoritativeWorldCollision,
+  isLeafLike, isOpenableBlock, isProtectedNavigationBlock, pathfinderDigMultiplier
 } = require('../navigation-policy')
 
 function fakeMovements() {
@@ -93,7 +93,7 @@ test('penalizes tree canopies and protects server-described Mod machinery', () =
   assert.equal(movements.exclusionAreasBreak[0]({ name: 'unknown', position }), 100)
 })
 
-test('uses geometry confidence rather than material names for structure break cost', () => {
+test('hard-protects high-confidence structures rather than treating them as expensive shortcuts', () => {
   const position = { x: 4, y: 70, z: 9 }
   const movements = applyNavigationPolicy(fakeMovements(), null, {
     allowDigging: true, allowPlacing: true, digCost: 12, structureBreakCost: 70,
@@ -101,7 +101,26 @@ test('uses geometry confidence rather than material names for structure break co
     blockAwareness: candidate => candidate === position
       ? { structure_confidence: 100, protected: false, hazard: false } : null
   })
-  assert.equal(movements.exclusionAreasBreak[0]({ name: 'stone', position }), 70)
+  assert.equal(movements.exclusionAreasBreak[0]({ name: 'glass', position }), 100)
+})
+
+test('keeps low-confidence terrain diggable with its configured relative cost', () => {
+  const position = { x: 4, y: 12, z: 9 }
+  const movements = applyNavigationPolicy(fakeMovements(), null, {
+    allowDigging: true, allowPlacing: true, digCost: 12, structureBreakCost: 70,
+    placeCost: 18, liquidCost: 8,
+    blockAwareness: candidate => candidate === position
+      ? { structure_confidence: 40, protected: false, hazard: false } : null
+  })
+  assert.equal(movements.exclusionAreasBreak[0]({ name: 'stone', position }), 28)
+})
+
+test('a nearby-door safety guard disables all fallback digging even for an unclassified wall', () => {
+  const movements = applyNavigationPolicy(fakeMovements(), null, {
+    allowDigging: true, allowPlacing: true, digCost: 12, structureBreakCost: 70,
+    placeCost: 18, liquidCost: 8, canBreakBlock: () => false
+  })
+  assert.equal(movements.exclusionAreasBreak[0]({ name: 'glass', position: { x: 3, y: 70, z: 4 } }), 100)
 })
 
 test('authoritative Mod collision overrides a locally passable unknown block', () => {
@@ -122,6 +141,54 @@ test('authoritative Mod collision overrides a locally passable unknown block', (
   assert.equal(block.physical, true)
   assert.equal(block.safe, false)
   assert.equal(block.leaf, true)
+})
+
+test('projects authoritative Mod collision boxes into Mineflayer world physics', () => {
+  const original = { name: 'unknown', position: { x: 2, y: 64, z: 3 }, boundingBox: 'empty', shapes: [] }
+  const world = { getBlock: () => original }
+  const bot = { world }
+  assert.equal(installAuthoritativeWorldCollision(bot, () => ({
+    modded: true, collision: true, collision_boxes: [[0, 0, 0, 1, 0.5, 1]]
+  })), true)
+  const block = world.getBlock(original.position)
+  assert.notEqual(block, original)
+  assert.equal(block.boundingBox, 'block')
+  assert.deepEqual(block.shapes, [[0, 0, 0, 1, 0.5, 1]])
+  assert.equal(block.serverAuthoritative, true)
+  assert.equal(original.boundingBox, 'empty')
+  assert.deepEqual(original.shapes, [])
+})
+
+test('keeps a continuous server-described Mod floor solid across repeated physics reads', () => {
+  const world = {
+    getBlock(position) {
+      return { name: 'unknown', position, boundingBox: 'empty', shapes: [] }
+    }
+  }
+  const known = new Map(Array.from({ length: 12 }, (_, x) => [
+    `${x},63,0`, { modded: true, collision: true, collision_boxes: [[0, 0, 0, 1, 1, 1]] }
+  ]))
+  assert.equal(installAuthoritativeWorldCollision({ world }, position =>
+    known.get(`${position.x},${position.y},${position.z}`) || null), true)
+  assert.equal(installAuthoritativeWorldCollision({ world }, () => null), true)
+  for (let x = 0; x < 12; x++) {
+    const support = world.getBlock({ x, y: 63, z: 0 })
+    assert.equal(support.boundingBox, 'block')
+    assert.deepEqual(support.shapes, [[0, 0, 0, 1, 1, 1]])
+  }
+  assert.equal(world.getBlock({ x: 12, y: 63, z: 0 }).boundingBox, 'empty')
+})
+
+test('authoritative empty collision clears a locally solid stale Mod door', () => {
+  const world = {
+    getBlock(position) {
+      return { name: 'unknown', position, boundingBox: 'block', shapes: [[0, 0, 0, 1, 1, 1]] }
+    }
+  }
+  installAuthoritativeWorldCollision({ world }, () => ({ modded: true, collision: false, collision_boxes: [] }))
+  const block = world.getBlock({ x: 1, y: 64, z: 0 })
+  assert.equal(block.boundingBox, 'empty')
+  assert.deepEqual(block.shapes, [])
 })
 
 test('recognizes an enclosed stone room without relying on artificial materials', () => {

@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.Locale;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -98,6 +99,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private final AtomicInteger controlPort = new AtomicInteger();
     private final AtomicInteger restartCount = new AtomicInteger();
     private final AtomicInteger humanPlayerCount = new AtomicInteger();
+    private volatile List<String> humanPlayerNames = List.of();
 
     private volatile MinecraftServer server;
     private volatile Process process;
@@ -178,6 +180,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     MineAstrConfig.AGENT_SESSION_POLICY.get().toLowerCase(Locale.ROOT));
             environment.put("MINEASTR_AGENT_IDLE_DISCONNECT_SECONDS",
                     Integer.toString(MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt()));
+            environment.put("MINEASTR_COMPANION_ENABLED",
+                    Boolean.toString(MineAstrConfig.AGENT_COMPANION_ENABLED.getAsBoolean()));
+            environment.put("MINEASTR_COMPANION_LINGER_SECONDS",
+                    Integer.toString(MineAstrConfig.AGENT_COMPANION_LINGER_SECONDS.getAsInt()));
             environment.put("MINEASTR_NAV_ALLOW_DIGGING",
                     Boolean.toString(MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean()));
             environment.put("MINEASTR_NAV_ALLOW_PLACING",
@@ -430,6 +436,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
                                 sanitizeAudit(jsonString(payload, "moved_distance", "0")),
                                 safeLogText(payload.has("target") ? payload.get("target").toString() : "unknown"),
                                 safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"));
+                    } else if ("navigation_openable_activated".equals(type)) {
+                        MineAstr.LOGGER.info("MineAstr Agent 已主动打开通路方块：block={} position={}",
+                                sanitizeAudit(jsonString(payload, "block", "unknown")),
+                                safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"));
+                    } else if ("navigation_openable_unchanged".equals(type)) {
+                        MineAstr.LOGGER.warn("MineAstr Agent 无法确认通路方块已打开：block={} position={}",
+                                sanitizeAudit(jsonString(payload, "block", "unknown")),
+                                safeLogText(payload.has("position") ? payload.get("position").toString() : "unknown"));
                     } else if ("navigation_server_unembed_requested".equals(type)) {
                         scheduleServerUnembed(payload.deepCopy());
                     } else if ("navigation_route_planned".equals(type)
@@ -546,6 +560,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         result.addProperty("session_policy", MineAstrConfig.AGENT_SESSION_POLICY.get());
         result.addProperty("human_player_count", humanPlayerCount.get());
         result.addProperty("idle_disconnect_seconds", MineAstrConfig.AGENT_IDLE_DISCONNECT_SECONDS.getAsInt());
+        result.addProperty("companion_enabled", MineAstrConfig.AGENT_COMPANION_ENABLED.getAsBoolean());
+        result.addProperty("companion_linger_seconds", MineAstrConfig.AGENT_COMPANION_LINGER_SECONDS.getAsInt());
         result.addProperty("preferred_username", preferredAgentUsername);
         result.add("server_side_awareness", serverAwareness.deepCopy());
         JsonObject joinCommands = new JsonObject();
@@ -638,7 +654,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     }
 
     public CompletableFuture<JsonObject> request(String endpoint, JsonObject body, Duration timeout) {
-        if (!endpoint.matches("/(?:status|observe|task|cancel|waypoints|session)")) {
+        if (!endpoint.matches("/(?:status|observe|task|cancel|waypoints|session|companion|events)")) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("不支持的 Agent 端点"));
         }
         int port = controlPort.get();
@@ -676,8 +692,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 });
     }
 
-    public void updateHumanPlayerCount(int count) {
-        humanPlayerCount.set(Math.max(0, count));
+    public void updateHumanPlayers(List<String> names) {
+        humanPlayerNames = names == null ? List.of() : names.stream()
+                .filter(name -> name != null && name.matches("[A-Za-z0-9_]{3,16}"))
+                .filter(name -> !isAgentUsername(name))
+                .distinct()
+                .limit(100)
+                .toList();
+        humanPlayerCount.set(humanPlayerNames.size());
         syncSessionPresence();
     }
 
@@ -887,7 +909,19 @@ public final class MineAstrAgentManager implements AutoCloseable {
         player.setDeltaMovement(Vec3.ZERO);
         player.fallDistance = 0.0F;
 
-        BlockPos safe = nearestSafeUnembedPosition(player);
+        Vec3 navigationTarget = null;
+        if (payload.has("target") && payload.get("target").isJsonObject()) {
+            JsonObject target = payload.getAsJsonObject("target");
+            double targetX = jsonDouble(target, "x", Double.NaN);
+            double targetY = jsonDouble(target, "y", Double.NaN);
+            double targetZ = jsonDouble(target, "z", Double.NaN);
+            if (Double.isFinite(targetX) && Double.isFinite(targetY) && Double.isFinite(targetZ)
+                    && Math.abs(targetX) <= 30_000_000D && Math.abs(targetZ) <= 30_000_000D) {
+                navigationTarget = new Vec3(targetX, targetY, targetZ);
+            }
+        }
+
+        BlockPos safe = nearestSafeUnembedPosition(player, navigationTarget);
         if (safe == null) {
             MineAstr.LOGGER.warn(
                     "MineAstr Agent 受限脱嵌未找到邻近安全位置：position={} posture_reset={} physics={}",
@@ -898,18 +932,30 @@ public final class MineAstrAgentManager implements AutoCloseable {
         player.teleportTo(player.serverLevel(), safe.getX() + 0.5D, safe.getY(), safe.getZ() + 0.5D,
                 player.getYRot(), player.getXRot());
         MineAstr.LOGGER.warn(
-                "MineAstr Agent 已执行受限服务端脱嵌：from={} to={} distance={} posture_reset={}",
+                "MineAstr Agent 已执行受限服务端脱嵌：from={} to={} distance={} posture_reset={} target={}",
                 before, player.position(), Math.round(before.distanceTo(player.position()) * 100.0D) / 100.0D,
-                postureReset);
+                postureReset, navigationTarget == null ? "unknown" : navigationTarget);
     }
 
-    private static BlockPos nearestSafeUnembedPosition(ServerPlayer player) {
+    private static BlockPos nearestSafeUnembedPosition(ServerPlayer player, Vec3 target) {
         BlockPos origin = player.blockPosition();
-        return nearestSafeUnembedPosition(origin, candidate -> isSafeUnembedPosition(player, candidate));
+        BlockPos targetBlock = target == null ? null : BlockPos.containing(target);
+        return nearestSafeUnembedPosition(origin, targetBlock,
+                candidate -> isSafeUnembedPosition(player, candidate));
     }
 
     static BlockPos nearestSafeUnembedPosition(BlockPos origin, Predicate<BlockPos> isSafe) {
+        return nearestSafeUnembedPosition(origin, null, isSafe);
+    }
+
+    static BlockPos nearestSafeUnembedPosition(BlockPos origin, BlockPos target, Predicate<BlockPos> isSafe) {
         ArrayList<BlockPos> candidates = new ArrayList<>();
+        // A player embedded in a floor should first be lifted onto that same
+        // floor. Older ordering only considered horizontal rings, so physical
+        // recovery could push the Agent off an indoor platform before the
+        // server rescue was ever attempted.
+        candidates.add(origin.above());
+        candidates.add(origin.above(2));
         for (int dy : new int[]{0, 1, -1, 2}) {
             for (int radius = 1; radius <= 2; radius++) {
                 for (int dx = -radius; dx <= radius; dx++) {
@@ -920,9 +966,30 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 }
             }
         }
-        candidates.sort(Comparator.comparingDouble(candidate -> candidate.distSqr(origin)));
+        candidates.sort(Comparator.comparingDouble(candidate ->
+                unembedCandidateScore(origin, target, candidate)));
         for (BlockPos candidate : candidates) if (isSafe.test(candidate)) return candidate;
         return null;
+    }
+
+    static double unembedCandidateScore(BlockPos origin, BlockPos target, BlockPos candidate) {
+        int dx = candidate.getX() - origin.getX();
+        int dy = candidate.getY() - origin.getY();
+        int dz = candidate.getZ() - origin.getZ();
+        double score = (dx * dx + dz * dz) * 4.0D + Math.abs(dy) * 3.0D;
+        if (dy < 0) score += 50.0D;
+        if (dx == 0 && dz == 0 && dy > 0) score -= 25.0D;
+        if (target != null) {
+            double gain = origin.distSqr(target) - candidate.distSqr(target);
+            score -= Math.max(-20.0D, Math.min(20.0D, gain)) * 0.25D;
+        }
+        return score;
+    }
+
+    static boolean isDirectVerticalUnembed(BlockPos origin, BlockPos candidate, boolean startsColliding) {
+        int dy = candidate.getY() - origin.getY();
+        return startsColliding && candidate.getX() == origin.getX() && candidate.getZ() == origin.getZ()
+                && dy >= 1 && dy <= 2;
     }
 
     private static boolean isSafeUnembedPosition(ServerPlayer player, BlockPos candidate) {
@@ -946,6 +1013,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         AABB start = player.getBoundingBox();
         if (!level.noCollision(player, start.move(dx, dy, dz))) return false;
         boolean startsColliding = !level.noCollision(player, start);
+        if (isDirectVerticalUnembed(player.blockPosition(), candidate, startsColliding)) return true;
         for (int step = 1; step <= 4; step++) {
             if (startsColliding && step == 1) continue;
             double ratio = step / 4.0D;
@@ -1197,6 +1265,9 @@ public final class MineAstrAgentManager implements AutoCloseable {
         if (state.get() != State.RUNNING || controlPort.get() <= 0 || stopping) return;
         JsonObject body = new JsonObject();
         body.addProperty("human_player_count", humanPlayerCount.get());
+        JsonArray humanPlayers = new JsonArray();
+        humanPlayerNames.forEach(humanPlayers::add);
+        body.add("human_players", humanPlayers);
         body.addProperty("preferred_username", preferredAgentUsername);
         body.add("server_awareness", serverAwareness.deepCopy());
         request("/session", body, Duration.ofSeconds(3)).whenComplete((ignored, throwable) -> {
@@ -1208,6 +1279,20 @@ public final class MineAstrAgentManager implements AutoCloseable {
     }
 
     private static void validateRequest(String endpoint, JsonObject body) {
+        if ("/companion".equals(endpoint)) {
+            String action = jsonString(body, "action", "status").toLowerCase(Locale.ROOT);
+            if (!Set.of("start", "update", "stop", "status").contains(action)) {
+                throw new IllegalArgumentException("不支持的陪伴操作：" + action);
+            }
+            if (!"status".equals(action) && !MineAstrConfig.AGENT_COMPANION_ENABLED.getAsBoolean()) {
+                throw new IllegalStateException("服务端未开启 Agent 陪伴模式");
+            }
+            if (Set.of("start", "update").contains(action) && body.has("focus_player")
+                    && !body.get("focus_player").getAsString().matches("[A-Za-z0-9_]{3,16}")) {
+                throw new IllegalArgumentException("陪伴关注玩家名无效");
+            }
+            return;
+        }
         if (!"/task".equals(endpoint)) return;
         if (!MineAstrConfig.AGENT_FULL_AUTONOMY.getAsBoolean()
                 && (!body.has("approved_by_admin") || !body.get("approved_by_admin").getAsBoolean())) {
@@ -1215,7 +1300,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         }
         String type = body.has("task_type") ? body.get("task_type").getAsString().toLowerCase(Locale.ROOT) : "";
         if (!Set.of("chat", "crouch_greet", "goto", "goto_waypoint", "follow_player", "look_at",
-                "wait", "eat", "interact_block", "use_item").contains(type)) {
+                "wait", "eat", "interact_block", "use_item", "container_inspect", "container_transfer",
+                "furnace_inspect", "furnace_process").contains(type)) {
             throw new IllegalArgumentException("服务端不允许任务类型：" + type);
         }
         JsonObject args = body.has("args") && body.get("args").isJsonObject()
@@ -1223,7 +1309,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
         if ("chat".equals(type) && args.has("message") && args.get("message").getAsString().length() > 256) {
             throw new IllegalArgumentException("Agent 聊天内容超过 256 字符");
         }
-        if (Set.of("goto", "look_at", "interact_block").contains(type)) {
+        if (Set.of("goto", "look_at", "interact_block", "container_inspect", "container_transfer",
+                "furnace_inspect", "furnace_process").contains(type)) {
             int x = requiredCoordinate(args, "x");
             int y = requiredCoordinate(args, "y");
             int z = requiredCoordinate(args, "z");
