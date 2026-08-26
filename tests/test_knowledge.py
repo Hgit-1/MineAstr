@@ -179,6 +179,34 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         second = json.dumps(self.coordinator._rag_documents(self.coordinator._snapshots["server-a"]), sort_keys=True)
         self.assertEqual(first, second)
 
+    async def test_worldmind_rag_excludes_raw_traces_contributors_and_exact_coordinates(self):
+        adapter = types.SimpleNamespace(knowledge_embedding_provider_id="")
+        await self.coordinator.merge_worldmind(adapter, "server-a", {
+            "snapshot_id": "wm-1", "synced_at_ms": 5,
+            "nodes": [
+                {"node_id": "confirmed-device", "node_type": "device", "name": "压缩机",
+                 "state": "confirmed", "dimension": "minecraft:overworld", "x": 123, "y": 64, "z": -456},
+                {"node_id": "candidate-device", "node_type": "device", "name": "未确认设备",
+                 "state": "candidate", "x": 9, "y": 9, "z": 9},
+            ],
+            "demonstrations": [{"trace_id": "secret-trace", "contributor_key": "private-key", "events": []}],
+        }, [{
+            "skill_id": "validated-skill", "name": "启动压缩机", "state": "validated",
+            "risk_level": 2, "validation_successes": 3, "anchor": {"x": 123, "y": 64, "z": -456},
+        }, {"skill_id": "candidate-skill", "state": "candidate"}])
+
+        published = self.coordinator._snapshots["server-a"]["worldmind"]
+        rendered = json.dumps(published, ensure_ascii=False)
+        self.assertIn("confirmed-device", rendered)
+        self.assertIn("validated-skill", rendered)
+        self.assertNotIn("candidate-device", rendered)
+        self.assertNotIn("candidate-skill", rendered)
+        self.assertNotIn("secret-trace", rendered)
+        self.assertNotIn("private-key", rendered)
+        self.assertNotIn('"x"', rendered)
+        self.assertNotIn('"y"', rendered)
+        self.assertNotIn('"z"', rendered)
+
     def test_rag_documents_bound_prechunked_embedding_inputs(self):
         snapshot = self.coordinator._snapshots["server-a"]
         long_marker = "机械动力轨道-唯一尾部标记"

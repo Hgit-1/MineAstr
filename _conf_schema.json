@@ -143,6 +143,24 @@
     "hint": "用于选择官网页面和整理地区简介；留空时使用 AstrBot 默认聊天模型，失败则安全降级为规则选择。",
     "default": ""
   },
+  "worldmind_enabled": {
+    "description": "WorldMind 世界语义与技能学习",
+    "type": "bool",
+    "hint": "同步已发现地点/设备，并允许显式玩家示范编译为候选技能。原始示范不会写入 RAG；技能须管理员确认并连续三次沙盒验证。",
+    "default": true
+  },
+  "worldmind_sync_seconds": {
+    "description": "WorldMind 同步间隔秒数",
+    "type": "int",
+    "hint": "定期从服务端同步世界语义与示范清单；最低按 60 秒执行。",
+    "default": 300
+  },
+  "worldmind_provider_id": {
+    "description": "WorldMind 技能编译模型 Provider ID",
+    "type": "string",
+    "hint": "把显式示范整理为受限技能 DSL；留空时使用知识分析模型或 AstrBot 当前模型，失败会回退确定性编译器。",
+    "default": ""
+  },
   "agent_actions_enabled": {
     "description": "AI 玩家 Agent 操作",
     "type": "bool",

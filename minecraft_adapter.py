@@ -904,6 +904,32 @@ class MinecraftPlatformAdapter(Platform):
             timeout=15.0,
         )
 
+    async def query_worldmind_status(self, server_id: str | None = None) -> dict[str, Any]:
+        return await self.connection_manager.query("worldmind_status", server_id, timeout=10.0)
+
+    async def query_worldmind_manifest(self, server_id: str | None = None) -> dict[str, Any]:
+        return await self.connection_manager.query("worldmind_manifest", server_id, timeout=15.0)
+
+    async def query_worldmind_page(
+        self, server_id: str | None, snapshot_id: str, category: str, cursor: int = 0, page_size: int = 100
+    ) -> dict[str, Any]:
+        return await self.connection_manager.query(
+            "worldmind_page", server_id,
+            params={"snapshot_id": snapshot_id, "category": category, "cursor": max(0, int(cursor)),
+                    "page_size": max(1, min(100, int(page_size)))}, timeout=20.0,
+        )
+
+    async def manage_skill_trace(
+        self, server_id: str | None, action: str, player_name: str, name: str = ""
+    ) -> dict[str, Any]:
+        selected = action.strip().lower()
+        if selected not in {"start", "stop"}:
+            raise ValueError("技能示范操作必须是 start 或 stop")
+        return await self.connection_manager.query(
+            f"skill_trace_{selected}", server_id,
+            params={"player_name": player_name.strip()[:16], "name": name.strip()[:80]}, timeout=15.0,
+        )
+
     async def send_server_chat(self, server_id: str, content: str) -> None:
         await self.connection_manager.send_server_chat(server_id, content, self.bot_display_name)
 
@@ -1065,12 +1091,14 @@ class MinecraftPlatformAdapter(Platform):
         task_id: str = "",
         approved_by_admin: bool = False,
         requester: dict[str, str] | None = None,
+        confirmed_irreversible: bool = False,
     ) -> dict[str, Any]:
         if not self.agent_actions_enabled:
             raise RuntimeError("AstrBot 配置已禁用 AI 玩家 Agent 操作")
         params: dict[str, Any] = {
             "task_id": task_id.strip(), "task_type": task_type.strip(), "args": args,
             "approved_by_admin": bool(approved_by_admin),
+            "confirmed_irreversible": bool(confirmed_irreversible),
         }
         if requester:
             params.update({key: str(value)[:100] for key, value in requester.items() if value})
@@ -1298,6 +1326,23 @@ class MinecraftPlatformAdapter(Platform):
                 )
         except Exception as exc:
             logger.warning("MineAstr 无法启动服务器知识同步：%s", exc)
+        try:
+            from .worldmind import get_worldmind_coordinator
+
+            worldmind = get_worldmind_coordinator()
+            if worldmind is not None:
+                worldmind.server_connected(
+                    self,
+                    str(payload.get("server_id") or "minecraft"),
+                    [str(item) for item in payload.get("query_capabilities") or []],
+                    {
+                        "mod_version": str(payload.get("mod_version") or "unknown"),
+                        "minecraft_version": str(payload.get("minecraft_version") or "unknown"),
+                        "server_name": str(payload.get("server_name") or "Minecraft Server"),
+                    },
+                )
+        except Exception as exc:
+            logger.warning("MineAstr 无法启动 WorldMind 同步：%s", exc)
         logger.info(
             "MineAstr 已注册服务器 %s（%s）",
             payload.get("server_id", "minecraft"),

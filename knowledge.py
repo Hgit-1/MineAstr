@@ -207,6 +207,54 @@ class KnowledgeCoordinator:
         if _COORDINATOR is self:
             _COORDINATOR = None
 
+    async def merge_worldmind(
+        self, adapter: Any, server_id: str, worldmind_snapshot: dict[str, Any], skills: list[dict[str, Any]]
+    ) -> bool:
+        """Publish reviewed WorldMind semantics to RAG without raw traces or exact coordinates."""
+        lock = self._locks.setdefault(server_id, asyncio.Lock())
+        async with lock:
+            snapshot = self._snapshots.get(server_id)
+            if snapshot is None:
+                return False
+            nodes = []
+            for node in worldmind_snapshot.get("nodes", []):
+                if not isinstance(node, dict) or str(node.get("state") or "") != "confirmed":
+                    continue
+                node_id = str(node.get("node_id") or "")[:120]
+                if not node_id:
+                    continue
+                nodes.append({
+                    "node_id": node_id,
+                    "node_type": str(node.get("node_type") or "unknown")[:40],
+                    "name": str(node.get("name") or node_id).replace("\r", " ").replace("\n", " ")[:200],
+                    "description": str(node.get("description") or "").replace("\r", " ").replace("\n", " ")[:500],
+                    "dimension": str(node.get("dimension") or "")[:100],
+                    "confidence": max(0.0, min(1.0, float(node.get("confidence") or 0))),
+                    "source": str(node.get("source") or "worldmind")[:80],
+                })
+            safe_skills = []
+            for skill in skills:
+                if not isinstance(skill, dict) or skill.get("state") != "validated":
+                    continue
+                safe_skills.append({
+                    "skill_id": str(skill.get("skill_id") or "")[:80],
+                    "name": str(skill.get("name") or "已学习技能")[:100],
+                    "description": str(skill.get("description") or "")[:500],
+                    "risk_level": min(2, max(0, int(skill.get("risk_level") or 0))),
+                    "confidence": max(0.0, min(1.0, float(skill.get("confidence") or 0))),
+                    "validation_successes": int(skill.get("validation_successes") or 0),
+                })
+            snapshot["worldmind"] = {
+                "snapshot_id": str(worldmind_snapshot.get("snapshot_id") or "")[:120],
+                "synced_at_ms": int(worldmind_snapshot.get("synced_at_ms") or time.time() * 1000),
+                "nodes": nodes,
+                "skills": safe_skills,
+                "privacy": "仅发布已确认语义与已验证技能；不含原始示范、玩家标识或精确坐标。",
+            }
+            self._save_snapshot(server_id, snapshot)
+            await self._ensure_rag(adapter, server_id, snapshot)
+            return True
+
     def restore_cached_rag(self, adapter: Any) -> list[str]:
         """Build missing native RAG indexes from durable snapshots after hot reload."""
         provider_id = str(getattr(adapter, "knowledge_embedding_provider_id", "") or "").strip()
@@ -1760,6 +1808,31 @@ class KnowledgeCoordinator:
                     "隐私说明: 未保存玩家 UUID、逐点轨迹或精确地区边界。",
                 ])
             ]
+        worldmind = snapshot.get("worldmind") or {}
+        for node in worldmind.get("nodes", []):
+            if not isinstance(node, dict) or not node.get("node_id"):
+                continue
+            node_id = str(node["node_id"])
+            documents[f"worldmind-node:{node_id}"] = ["\n".join([
+                f"# WorldMind 地点/设备：{node.get('name') or node_id}",
+                f"类型: {node.get('node_type') or 'unknown'}",
+                f"维度: {node.get('dimension') or 'unknown'}",
+                f"说明: {node.get('description') or '无'}",
+                f"置信度: {node.get('confidence') or 0}",
+                "状态: 已由 WorldMind 确认；RAG 版本不含精确坐标。",
+            ])]
+        for skill in worldmind.get("skills", []):
+            if not isinstance(skill, dict) or not skill.get("skill_id"):
+                continue
+            skill_id = str(skill["skill_id"])
+            documents[f"worldmind-skill:{skill_id}"] = ["\n".join([
+                f"# WorldMind 已验证技能：{skill.get('name') or skill_id}",
+                f"技能 ID: {skill_id}",
+                f"说明: {skill.get('description') or '无'}",
+                f"风险等级: L{skill.get('risk_level') or 0}",
+                f"验证成功次数: {skill.get('validation_successes') or 0}",
+                "执行仍受实时观察、权限和一次性确认约束。",
+            ])]
         return {
             stable_key: [
                 piece

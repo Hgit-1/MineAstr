@@ -224,6 +224,29 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("player-1", calls[0][2]["requester_id"])
         self.assertEqual("Alex", calls[0][2]["requester_name"])
 
+    async def test_worldmind_queries_are_typed_and_irreversible_confirmation_is_forwarded(self):
+        calls = []
+
+        class Manager:
+            async def query(self, query, server_id, params=None, timeout=0):
+                calls.append((query, server_id, params, timeout))
+                return {"ok": True}
+
+        self.adapter.connection_manager = Manager()
+        self.adapter.agent_actions_enabled = True
+        await self.adapter.query_worldmind_manifest("server-a")
+        await self.adapter.query_worldmind_page("server-a", "snap-1", "nodes", 0, 25)
+        await self.adapter.manage_skill_trace("server-a", "start", "Alex", "开机器")
+        await self.adapter.submit_agent_task(
+            "server-a", "dig_block", {"x": 1, "y": 64, "z": 2},
+            confirmed_irreversible=True,
+        )
+
+        self.assertEqual(["worldmind_manifest", "worldmind_page", "skill_trace_start", "agent_task"],
+                         [call[0] for call in calls])
+        self.assertEqual("snap-1", calls[1][2]["snapshot_id"])
+        self.assertTrue(calls[3][2]["confirmed_irreversible"])
+
     async def test_agent_master_switch_blocks_mutation_but_not_observation(self):
         calls = []
 
