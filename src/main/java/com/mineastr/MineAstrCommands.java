@@ -1,6 +1,7 @@
 package com.mineastr;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -11,6 +12,25 @@ public final class MineAstrCommands {
     }
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, MineAstrBridge bridge) {
+        var learning = Commands.literal("learning")
+                .then(Commands.literal("status")
+                        .executes(context -> learningStatus(context.getSource(), bridge)))
+                .then(Commands.literal("optout")
+                        .executes(context -> learning(context.getSource(), bridge, true)))
+                .then(Commands.literal("optin")
+                        .executes(context -> learning(context.getSource(), bridge, false)))
+                .then(Commands.literal("record")
+                        .then(Commands.literal("start")
+                                .then(Commands.argument("name", StringArgumentType.greedyString())
+                                        .executes(context -> startLearningRecord(
+                                                context.getSource(), bridge,
+                                                StringArgumentType.getString(context, "name")))))
+                        .then(Commands.literal("stop")
+                                .executes(context -> stopLearningRecord(context.getSource(), bridge))))
+                .then(Commands.literal("candidate")
+                        .requires(source -> source.hasPermission(2))
+                        .then(Commands.literal("list")
+                                .executes(context -> listLearningCandidates(context.getSource(), bridge))));
         dispatcher.register(Commands.literal("mineastr")
                 .then(Commands.literal("status")
                         .requires(source -> source.hasPermission(2))
@@ -27,13 +47,7 @@ public final class MineAstrCommands {
                                 .executes(context -> tracking(context.getSource(), bridge, true)))
                         .then(Commands.literal("optin")
                                 .executes(context -> tracking(context.getSource(), bridge, false))))
-                .then(Commands.literal("learning")
-                        .then(Commands.literal("status")
-                                .executes(context -> learningStatus(context.getSource(), bridge)))
-                        .then(Commands.literal("optout")
-                                .executes(context -> learning(context.getSource(), bridge, true)))
-                        .then(Commands.literal("optin")
-                                .executes(context -> learning(context.getSource(), bridge, false))))
+                .then(learning)
                 .then(Commands.literal("agent")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("status")
@@ -118,6 +132,43 @@ public final class MineAstrCommands {
         source.sendSuccess(() -> Component.literal(optout
                 ? "已退出 MineAstr 设备技能学习；之后不会使用你的设备交互生成候选技能。"
                 : "已重新加入 MineAstr 设备技能学习；仅在服主启用功能后采集高信息量设备交互。"), false);
+        return 1;
+    }
+
+    private static int startLearningRecord(CommandSourceStack source, MineAstrBridge bridge, String name)
+            throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        try {
+            var result = bridge.startSkillRecording(player, name);
+            source.sendSuccess(() -> Component.literal("MineAstr 已开始录制示范：" + result.get("name").getAsString()
+                    + "。只记录抽象交互和物品数量差；使用 /mineastr learning record stop 结束。"), false);
+            return 1;
+        } catch (IllegalStateException exc) {
+            source.sendFailure(Component.literal(exc.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int stopLearningRecord(CommandSourceStack source, MineAstrBridge bridge)
+            throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        ServerPlayer player = source.getPlayerOrException();
+        try {
+            var result = bridge.stopSkillRecording(player);
+            source.sendSuccess(() -> Component.literal("MineAstr 示范录制已结束：事件="
+                    + result.get("event_count").getAsInt() + "；候选轨迹=" + result.get("trace_id").getAsString()), false);
+            return 1;
+        } catch (IllegalStateException exc) {
+            source.sendFailure(Component.literal(exc.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int listLearningCandidates(CommandSourceStack source, MineAstrBridge bridge) {
+        var status = bridge.worldMindStatus();
+        source.sendSuccess(() -> Component.literal("MineAstr WorldMind：候选示范="
+                + status.get("demonstration_count").getAsInt() + "；设备节点="
+                + status.get("node_count").getAsInt() + "；沙盒="
+                + (status.get("sandbox_configured").getAsBoolean() ? "已配置" : "未配置")), false);
         return 1;
     }
 

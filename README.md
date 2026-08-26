@@ -158,6 +158,13 @@ enablePrivacyNotice = true
 privacyNoticeText = "本服使用 MineAstr 统计活动与建筑特征；服务器还可运行 AI 玩家 Bot，并在服主显式启用后观察高信息量设备交互。普通聊天和公开事件也可转发给 AstrBot。不保存完整容器快照或完整建筑蓝图。使用 /mineastr privacy 查看详情，/mineastr tracking optout 与 /mineastr learning optout 可分别退出。"
 privacyNoticeVersion = "4"
 
+# WorldMind 设备示范。被动学习默认关闭；显式 /mineastr learning record 不依赖该开关。
+enablePassiveSkillLearning = false
+worldMindRawRetentionDays = 7
+worldMindMaxDemonstrations = 256
+# 自动验证必须限制在专用沙盒；留空时禁止自动验证。
+skillSandboxRegion = ""
+
 # 高风险命令工具默认关闭。
 enableCommandTool = false
 trustedCommandUsers = []
@@ -314,6 +321,8 @@ Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_cha
 
 高信息量设备学习使用独立的 `enablePassiveSkillLearning` 开关，默认关闭。玩家可用 `/mineastr learning optout` 独立退出；该选择不影响活动地区统计。
 
+0.12.0-dev.1 加入 WorldMind 开发预览：世界存档内保存候选设备节点与受限示范轨迹，AstrBot 将示范编译成最多 32 步的白名单技能 DSL。技能必须由管理员确认，并在 `skillSandboxRegion` 内连续成功验证三次后才能正常执行；会改变物品或世界的 L2 技能每次还需要十分钟内有效、绑定请求者和计划哈希的一次性确认。服务器 Mod/注册表指纹变化会把旧技能标记为 `stale`。该版本只完成安全闭环的首个垂直切片，不代表后续世界图谱、复杂设备学习与长期人格路线全部完成。
+
 ## 命令
 
 - `/mineastr status`：查看连接状态。
@@ -321,6 +330,8 @@ Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_cha
 - `/mineastr privacy`：查看服务器提供者配置的简要数据告知和活动数据期限。
 - `/mineastr tracking status|optout|optin`：查看、退出或重新加入活动地区统计；退出时删除仍可归属于该玩家的原始活动贡献。
 - `/mineastr learning status|optout|optin`：查看、退出或重新加入高信息量设备技能学习。
+- `/mineastr learning record start <name>` / `stop`：由在线玩家显式开始或停止设备操作示范；最长 15 分钟、最多 256 个事件。
+- `/mineastr learning candidate list`：管理员查看服务端候选示范清单。
 - `/mineastr agent status`：管理员查看 Node、Agent、最近错误和渲染资源门槛。
 - `/mineastr regions analyze-now`：管理员立即执行一次地区聚类分析。
 - `/mineastr knowledge status`：查看本地扫描任务、快照 ID、各分类数量与最近错误。
@@ -352,10 +363,12 @@ Mod 支持 AstrBot 发来的 `query` 协议消息：
 - `agent_companion`：建立、更新、查询或停止显式启用的陪伴会话。
 - `agent_events`：按序号读取最近 128 条经脱敏的 Agent 运行事件；不包含容器内容、NBT 或物品组件。
 - `agent_waypoints` / `transport_graph`：管理世界私有路径点以及步行/轨道连接。
+- `worldmind_status` / `worldmind_manifest` / `worldmind_page`：读取世界语义节点和示范清单；原始文件位于世界目录 `data/mineastr/worldmind/snapshot.json`。
+- `skill_trace_start` / `skill_trace_stop`：控制指定在线玩家的显式示范录制。
 
 扫描是只读的：不加载 Mod 代码，不读取玩家、世界存档、容器内容或方块实体 NBT。语言 JSON 受单文件 512 KiB、总计 4 MiB 和固定路径限制。自定义配方使用 Minecraft serializer codec 生成受深度、节点数与 512 KiB 限制的结构摘要；失败时仍保留 ID、type、serializer 并标记 `opaque`。
 
-WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.11 服务端；旧 AstrBot 插件会忽略新增 Agent 能力，仍可使用原有功能。
+WebSocket 基础包仍兼容协议 1，并通过 `protocol_min=1`、`protocol_max=2`、`query_capabilities` 和可选 JSON 字段协商。MineAstr 0.4 客户端仍可连接 0.12 开发版服务端；旧 AstrBot 插件会忽略新增 Agent/WorldMind 能力，仍可使用原有功能。
 
 MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`player_join`、`player_leave`、`player_death` 和 `player_advancement`。死亡和进度推送尊重 `showDeathMessages` 与 `announceAdvancements` 游戏规则；只推送会在游戏聊天中公开宣告的进度，不推送隐藏配方解锁。事件不含 IP 地址、精确坐标、背包或 NBT。
 
@@ -379,14 +392,14 @@ MineAstr 0.8 会以兼容的 `chat` 包推送 `message_kind=server_event`：`pla
 部署前至少完成以下事项：
 
 1. 根据实际情况修改 `privacyNoticeText`，写明服务器提供者及联系方式、收集的数据、用途、保存期限、AI/Embedding 服务商与所在地、玩家如何查阅/删除/撤回，以及未成年人规则。
-2. 决定是否开启 `enableActivityTracking`、`enableAutomaticRegionFeatureScan`、三类服务器事件推送、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。关闭内置告知不会免除自行告知的责任。
+2. 决定是否开启 `enableActivityTracking`、`enableAutomaticRegionFeatureScan`、`enablePassiveSkillLearning`、三类服务器事件推送、`enablePrivacyNotice`、普通聊天桥接、截图和各实时工具。被动设备学习默认关闭；关闭内置告知不会免除自行告知的责任。
 3. 若改变告知内容，递增 `privacyNoticeVersion`，使所有玩家下次加入时再次看到。完整政策应放在服规或官网，简要告知不能替代必要的完整说明。
 4. 确认你有权把官网页面、玩家明确提供的地区简介和其他内容放入知识库。官网中包含玩家名单、聊天记录或其他个人信息时，不应直接自动收录。
 5. 不清楚模型、Embedding 或 RAG 数据在哪里处理、是否留存或用于训练时，优先使用本地服务，或关闭对应同步功能。
 
 告知文本支持 `{server_name}`、`{retention_days}` 占位符和 `\n` 换行；这样修改实际保存期限后，简要告知可自动显示配置值。
 
-活动退出会删除保留期内仍可归属于该玩家的原始区块贡献；已经形成且无法反向识别个人的聚合地区不会重算。地区贡献者只以服务器特定 SHA-256 匹配键发送到 AstrBot，RAG 文本不含玩家 UUID、精确轨迹或精确边界。普通 Minecraft 聊天以及已开启的上下线、死亡和公开成就事件会转发给 AstrBot；服主必须在告知中说明其用途和可能留存方式。`tracking optout` 只退出活动区块统计，不会隐藏这些公开服务器事件。
+活动退出会删除保留期内仍可归属于该玩家的原始区块贡献；已经形成且无法反向识别个人的聚合地区不会重算。地区贡献者和示范贡献者只使用服务器特定 SHA-256 匹配键。WorldMind 原始示范不记录聊天、NBT、告示牌文本、完整容器内容或连续移动轨迹，默认保存 7 天；只有已确认的语义节点和已验证技能会进入 RAG，且会移除精确坐标。普通 Minecraft 聊天以及已开启的上下线、死亡和公开成就事件会转发给 AstrBot；服主必须在告知中说明其用途和可能留存方式。`tracking optout` 只退出活动区块统计，`learning optout` 只退出设备学习，均不会隐藏公开服务器事件。
 
 安全建议：两端使用长随机 Token；跨机器部署通过可信反向代理使用 `wss://`；限制世界存档、`data/mineastr/` 和备份的文件权限；只向必要管理员授予知识库、截图和玩家工具权限；制定备份恢复、删除请求和数据泄露响应流程。
 

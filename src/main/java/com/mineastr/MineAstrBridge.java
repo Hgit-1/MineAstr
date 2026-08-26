@@ -69,6 +69,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     private final MineAstrKnowledgeSnapshot knowledgeSnapshot = new MineAstrKnowledgeSnapshot();
     private final MineAstrAgentManager agentManager = new MineAstrAgentManager();
     private final MineAstrRoadNetworkSnapshot roadNetworkSnapshot = new MineAstrRoadNetworkSnapshot();
+    private final MineAstrWorldMind worldMind = new MineAstrWorldMind();
 
     private volatile MineAstrActivityData activityData;
     private volatile long nextActivitySampleMs;
@@ -99,6 +100,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         }
         syncAgentHumanPlayers();
         roadNetworkSnapshot.start(server);
+        worldMind.start(server);
         agentManager.start(server);
         activityData = MineAstrActivityData.get(server);
         nextActivitySampleMs = 0;
@@ -117,6 +119,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         clearScreenshotState("Minecraft 服务器正在停止。");
         knowledgeSnapshot.close();
         roadNetworkSnapshot.close();
+        worldMind.close();
         agentManager.close();
         humanAgentPlayers.clear();
         activityData = null;
@@ -168,6 +171,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
         if (server == null || !MineAstrConfig.ENABLED.getAsBoolean()) {
             return;
         }
+        if (!isAgentPlayer(player)) agentManager.recordSocialEvent("player_chat", player.getGameProfile().getName());
         WebSocket socket = webSocket.get();
         if (socket == null || socket.isOutputClosed()) {
             MineAstr.LOGGER.debug("MineAstr 未连接，已丢弃本条 Minecraft 聊天。");
@@ -192,6 +196,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
 
     public void forwardPlayerPresence(ServerPlayer player, boolean joined) {
         if (isAgentPlayer(player)) return;
+        agentManager.recordSocialEvent(joined ? "player_join" : "player_leave", player.getGameProfile().getName());
         if (!MineAstrConfig.ENABLE_PLAYER_PRESENCE_PUSH.getAsBoolean()) {
             return;
         }
@@ -229,6 +234,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     }
 
     public void forwardPlayerDeath(ServerPlayer player, Component deathMessage) {
+        if (!isAgentPlayer(player)) agentManager.recordSocialEvent("player_death", player.getGameProfile().getName());
         if (!MineAstrConfig.ENABLE_PLAYER_DEATH_PUSH.getAsBoolean()
                 || !player.level().getGameRules().getBoolean(GameRules.RULE_SHOWDEATHMESSAGES)) {
             return;
@@ -239,6 +245,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     }
 
     public void forwardPlayerAdvancement(ServerPlayer player, AdvancementHolder advancement) {
+        if (!isAgentPlayer(player)) agentManager.recordSocialEvent("player_advancement", player.getGameProfile().getName());
         if (!MineAstrConfig.ENABLE_ADVANCEMENT_PUSH.getAsBoolean()) {
             return;
         }
@@ -334,6 +341,7 @@ public final class MineAstrBridge implements WebSocket.Listener {
     public void tickActivity(MinecraftServer currentServer) {
         agentManager.tickServerAwareness(currentServer);
         roadNetworkSnapshot.tick(currentServer);
+        worldMind.tick(currentServer);
         MineAstrActivityData data = activityData;
         if (data == null || !MineAstrConfig.ENABLE_ACTIVITY_TRACKING.getAsBoolean()) return;
         long now = System.currentTimeMillis();
@@ -381,6 +389,38 @@ public final class MineAstrBridge implements WebSocket.Listener {
     public void setLearningOptedOut(UUID playerUuid, boolean optedOut) {
         MineAstrActivityData data = activityData;
         if (data != null) data.setLearningOptedOut(playerUuid, optedOut);
+        if (optedOut && server != null) {
+            ServerPlayer player = server.getPlayerList().getPlayer(playerUuid);
+            if (player != null) worldMind.removeContributor(player);
+        }
+    }
+
+    public JsonObject startSkillRecording(ServerPlayer player, String name) {
+        return worldMind.startRecording(player, name);
+    }
+
+    public JsonObject stopSkillRecording(ServerPlayer player) {
+        return worldMind.stopRecording(player);
+    }
+
+    public JsonObject worldMindStatus() {
+        return worldMind.status();
+    }
+
+    public boolean isSkillRecording(UUID playerUuid) {
+        return worldMind.isRecording(playerUuid);
+    }
+
+    public void recordLearningInteraction(ServerPlayer player, BlockPos position,
+                                          net.minecraft.world.level.block.state.BlockState state,
+                                          net.minecraft.world.item.ItemStack heldItem) {
+        if (!isAgentPlayer(player)) worldMind.recordInteraction(player, position, state, heldItem);
+    }
+
+    public void recordLearningBlockChange(ServerPlayer player, String eventType, ServerLevel level,
+                                          BlockPos position,
+                                          net.minecraft.world.level.block.state.BlockState state) {
+        if (!isAgentPlayer(player)) worldMind.recordBlockChange(player, eventType, level, position, state);
     }
 
     private void connectNow() {
@@ -474,6 +514,11 @@ public final class MineAstrBridge implements WebSocket.Listener {
             capabilities.add("activity_regions_manifest");
             capabilities.add("activity_regions_page");
         }
+        capabilities.add("worldmind_status");
+        capabilities.add("worldmind_manifest");
+        capabilities.add("worldmind_page");
+        capabilities.add("skill_trace_start");
+        capabilities.add("skill_trace_stop");
         payload.add("query_capabilities", capabilities);
         sendJson(socket, payload);
     }
@@ -636,6 +681,11 @@ public final class MineAstrBridge implements WebSocket.Listener {
                     case "knowledge_rescan" -> handleKnowledgeRescanQuery(socket, messageId, payload, currentServer);
                     case "activity_regions_manifest" -> handleActivityRegionsManifest(socket, messageId);
                     case "activity_regions_page" -> handleActivityRegionsPage(socket, messageId, payload);
+                    case "worldmind_status" -> sendQueryResult(socket, messageId, query, worldMind.status());
+                    case "worldmind_manifest" -> sendQueryResult(socket, messageId, query, worldMind.manifest());
+                    case "worldmind_page" -> handleWorldMindPage(socket, messageId, payload);
+                    case "skill_trace_start" -> handleSkillTrace(socket, messageId, payload, currentServer, true);
+                    case "skill_trace_stop" -> handleSkillTrace(socket, messageId, payload, currentServer, false);
                     case "agent_status" -> handleAgentQuery(socket, messageId, query, "/status", payload, Duration.ofSeconds(5));
                     case "agent_task" -> handleAgentQuery(socket, messageId, query, "/task", payload, Duration.ofSeconds(10));
                     case "agent_cancel" -> handleAgentQuery(socket, messageId, query, "/cancel", payload, Duration.ofSeconds(5));
@@ -785,6 +835,39 @@ public final class MineAstrBridge implements WebSocket.Listener {
             sendQueryResult(socket, messageId, "activity_regions_page", data.page(snapshot, cursor, pageSize));
         } catch (IllegalStateException exc) {
             sendQueryError(socket, messageId, "activity_regions_page", exc.getMessage());
+        }
+    }
+
+    private void handleWorldMindPage(WebSocket socket, String messageId, JsonObject payload) {
+        String snapshot = trimFlatContent(getString(payload, "snapshot_id", ""), 128);
+        String category = trimFlatContent(getString(payload, "category", ""), 32).toLowerCase(Locale.ROOT);
+        int cursor = getInt(payload, "cursor", 0, 0, Integer.MAX_VALUE);
+        int pageSize = getInt(payload, "page_size", 50, 1, 100);
+        try {
+            sendQueryResult(socket, messageId, "worldmind_page", worldMind.page(snapshot, category, cursor, pageSize));
+        } catch (IllegalArgumentException | IllegalStateException exc) {
+            sendQueryError(socket, messageId, "worldmind_page", exc.getMessage());
+        }
+    }
+
+    private void handleSkillTrace(WebSocket socket, String messageId, JsonObject payload,
+                                  MinecraftServer currentServer, boolean start) {
+        ServerPlayer player = findTargetPlayer(currentServer, payload);
+        if (player == null || isAgentPlayer(player)) {
+            sendQueryError(socket, messageId, start ? "skill_trace_start" : "skill_trace_stop",
+                    "未找到要录制示范的在线真人玩家。");
+            return;
+        }
+        try {
+            JsonObject result = start
+                    ? worldMind.startRecording(player, trimFlatContent(getString(payload, "name", "未命名示范"), 80))
+                    : worldMind.stopRecording(player);
+            player.sendSystemMessage(Component.literal(start
+                    ? "MineAstr 已开始记录设备示范；不会记录聊天、NBT、告示牌文字或连续移动轨迹。"
+                    : "MineAstr 设备示范记录已停止。"));
+            sendQueryResult(socket, messageId, start ? "skill_trace_start" : "skill_trace_stop", result);
+        } catch (IllegalStateException exc) {
+            sendQueryError(socket, messageId, start ? "skill_trace_start" : "skill_trace_stop", exc.getMessage());
         }
     }
 

@@ -131,6 +131,8 @@ agentRendererMaxMinutes = 10
 
 # 高信息量 Mod 设备交互学习默认关闭；启用前更新告知并配置验证沙盒。
 enablePassiveSkillLearning = false
+worldMindRawRetentionDays = 7
+worldMindMaxDemonstrations = 256
 skillSandboxRegion = ""
 
 # 高风险：是否允许受控 LLM 服务器命令。默认必须保持 false，按需显式开启。

@@ -18,6 +18,8 @@ const { resumeNavigationRecord, suspendNavigationRecord } = require('./task-life
 const { AgentEventBuffer } = require('./agent-events')
 const { CompanionController } = require('./companion')
 const { executeInventoryTask } = require('./inventory-actions')
+const { HumanBehaviorController } = require('./human-behavior')
+const { executeHumanAction } = require('./human-actions')
 const { version: runtimeVersion } = require('./package.json')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
@@ -65,6 +67,9 @@ const combatMinimumHealth = parseInteger(process.env.MINEASTR_COMBAT_MIN_HEALTH,
 const combatAttackCooldownMilliseconds = parseInteger(process.env.MINEASTR_COMBAT_ATTACK_COOLDOWN_MS, 650, 250, 2000)
 const companionEnabled = process.env.MINEASTR_COMPANION_ENABLED === 'true'
 const companionLingerSeconds = parseInteger(process.env.MINEASTR_COMPANION_LINGER_SECONDS, 600, 60, 3600)
+const humanBehaviorEnabled = process.env.MINEASTR_HUMAN_BEHAVIOR_ENABLED !== 'false'
+const humanBehaviorIntensity = parseInteger(process.env.MINEASTR_HUMAN_BEHAVIOR_INTENSITY, 50, 0, 100)
+const socialDistance = parseInteger(process.env.MINEASTR_SOCIAL_DISTANCE, 3, 2, 8)
 const navigationCache = new ChunkNavigationCache(path.join(dataDir, 'navigation-cache'), {
   maxChunks: parseInteger(process.env.MINEASTR_NAV_CACHE_MAX_CHUNKS, 2048, 64, 16384)
 })
@@ -111,6 +116,7 @@ let lastDeathAt = 0
 let joinCommandState = initialJoinCommandState(joinCommands.length)
 const agentEvents = new AgentEventBuffer(128)
 let companionController = null
+let humanBehaviorController = null
 
 const waypointFile = path.join(dataDir, 'waypoints.json')
 let waypointData = loadWaypointData()
@@ -227,6 +233,19 @@ companionController = new CompanionController(path.join(dataDir, 'companion.json
   lingerSeconds: companionLingerSeconds,
   emit,
   getBot: () => bot,
+  shouldPause: () => !bot || !sessionReady || sessionDisconnecting || eating || retreating || hunting
+    || activeTask?.state === 'running' || bot.isUsingHeldItem || bot.pathfinder?.isMining?.()
+    || bot.pathfinder?.isBuilding?.() || bot.pathfinder?.isInteracting?.()
+    || Boolean(nearbySurvivalThreat())
+})
+
+humanBehaviorController = new HumanBehaviorController({
+  enabled: companionEnabled && humanBehaviorEnabled,
+  intensity: humanBehaviorIntensity,
+  socialDistance,
+  emit,
+  getBot: () => bot,
+  getCompanion: () => companionController.status(),
   shouldPause: () => !bot || !sessionReady || sessionDisconnecting || eating || retreating || hunting
     || activeTask?.state === 'running' || bot.isUsingHeldItem || bot.pathfinder?.isMining?.()
     || bot.pathfinder?.isBuilding?.() || bot.pathfinder?.isInteracting?.()
@@ -658,14 +677,23 @@ function status() {
       last_physical_recovery: lastPhysicalRecovery
     },
     companion: companionController.status(),
+    behavior: humanBehaviorController.status(),
     capabilities: {
       companion_sessions: companionEnabled,
       human_motion: companionEnabled,
+      human_attention: companionEnabled && humanBehaviorEnabled,
       agent_events: true,
       container_inspect: !neoForgeNegotiated,
       container_transfer: !neoForgeNegotiated,
       furnace_inspect: !neoForgeNegotiated,
       furnace_process: !neoForgeNegotiated,
+      equip_best: !neoForgeNegotiated,
+      sleep: true,
+      inspect_entity: true,
+      pickup_item: true,
+      craft: !neoForgeNegotiated,
+      place_block: !neoForgeNegotiated,
+      dig_block: navigationAllowDigging,
       inventory_protocol_degraded: neoForgeNegotiated
     }
   }
@@ -1047,6 +1075,16 @@ function startWaitingTask() {
           assertActive: () => assertTaskActive(runId),
           emit
         })
+      } else if (['equip_best', 'sleep', 'inspect_entity', 'pickup_item', 'craft', 'place_block', 'dig_block'].includes(type)) {
+        operationResult = await executeHumanAction(bot, type, args, {
+          inventoryDegraded: neoForgeNegotiated,
+          navigate: (target, navigationArgs) => navigateTask(target, navigationArgs, runId),
+          assertAllowed: assertAllowedTarget,
+          assertActive: () => assertTaskActive(runId),
+          awarenessAt,
+          canBreak: automaticNavigationBreakAllowed,
+          emit
+        })
       } else if (type === 'use_item') {
         const itemName = String(args.item_name || '').toLowerCase()
         const shortName = itemName.includes(':') ? itemName.slice(itemName.indexOf(':') + 1) : itemName
@@ -1171,6 +1209,7 @@ function updateSession(input) {
     if (![block?.x, block?.y, block?.z].every(Number.isFinite)) continue
     nearbyBlockAwareness.set(`${Math.floor(block.x)},${Math.floor(block.y)},${Math.floor(block.z)}`, block)
   }
+  humanBehaviorController.ingest(Array.isArray(input.social_events) ? input.social_events : [])
   emit({
     type: 'session_presence', human_player_count: humanPlayerCount, human_players: humanPlayers,
     session_policy: sessionPolicy, preferred_username: username
@@ -1291,6 +1330,7 @@ function shutdown() {
   if (survivalTimer) clearInterval(survivalTimer)
   survivalTimer = null
   companionController.stopMotion()
+  humanBehaviorController.reset()
   if (activeTask && ['waiting_for_connection', 'running'].includes(activeTask.state)) {
     if (resumeInterruptedNavigation && RESUMABLE_TYPES.has(activeTask.task_type)) {
       const suspended = { ...activeTask, state: 'suspended', suspended_at_ms: Date.now(), updated_at_ms: Date.now() }

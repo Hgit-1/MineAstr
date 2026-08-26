@@ -14,6 +14,7 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.ServerChatEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.entity.player.AdvancementEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -25,7 +26,7 @@ import org.slf4j.Logger;
 @Mod(MineAstr.MODID)
 public final class MineAstr {
     public static final String MODID = "mineastr";
-    public static final String MOD_VERSION = "0.11.6-dev.7";
+    public static final String MOD_VERSION = "0.12.0-dev.1";
     public static final Logger LOGGER = LogUtils.getLogger();
 
     private static MineAstrBridge activeBridge;
@@ -135,6 +136,9 @@ public final class MineAstr {
     public void onBlockBroken(BlockEvent.BreakEvent event) {
         if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
             bridge.invalidateAgentNavigationStructure(level.dimension().location().toString(), event.getPos());
+            if (event.getPlayer() instanceof net.minecraft.server.level.ServerPlayer player) {
+                bridge.recordLearningBlockChange(player, "block_break", level, event.getPos(), event.getState());
+            }
         }
     }
 
@@ -142,6 +146,18 @@ public final class MineAstr {
     public void onBlockPlaced(BlockEvent.EntityPlaceEvent event) {
         if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
             bridge.invalidateAgentNavigationStructure(level.dimension().location().toString(), event.getPos());
+            if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
+                bridge.recordLearningBlockChange(player, "block_place", level, event.getPos(), event.getPlacedBlock());
+            }
+        }
+    }
+
+    @SubscribeEvent
+    public void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player
+                && event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
+            bridge.recordLearningInteraction(
+                    player, event.getPos(), level.getBlockState(event.getPos()), event.getItemStack());
         }
     }
 }

@@ -22,6 +22,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.Base64;
 import java.util.HashSet;
@@ -100,6 +101,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private final AtomicInteger restartCount = new AtomicInteger();
     private final AtomicInteger humanPlayerCount = new AtomicInteger();
     private volatile List<String> humanPlayerNames = List.of();
+    private final ArrayDeque<JsonObject> socialEvents = new ArrayDeque<>();
+    private long socialEventSequence;
 
     private volatile MinecraftServer server;
     private volatile Process process;
@@ -135,6 +138,10 @@ public final class MineAstrAgentManager implements AutoCloseable {
         this.serverAwareness = new JsonObject();
         this.nextServerAwarenessAtMs = 0L;
         this.lastServerUnembedAtMs = 0L;
+        synchronized (this) {
+            socialEvents.clear();
+            socialEventSequence = 0L;
+        }
         this.controlPort.set(0);
         this.previousAgentUsername = this.preferredAgentUsername;
         this.preferredAgentUsername = resolveAgentUsername(MineAstrConfig.BOT_DISPLAY_NAME.get());
@@ -184,6 +191,12 @@ public final class MineAstrAgentManager implements AutoCloseable {
                     Boolean.toString(MineAstrConfig.AGENT_COMPANION_ENABLED.getAsBoolean()));
             environment.put("MINEASTR_COMPANION_LINGER_SECONDS",
                     Integer.toString(MineAstrConfig.AGENT_COMPANION_LINGER_SECONDS.getAsInt()));
+            environment.put("MINEASTR_HUMAN_BEHAVIOR_ENABLED",
+                    Boolean.toString(MineAstrConfig.AGENT_HUMAN_BEHAVIOR_ENABLED.getAsBoolean()));
+            environment.put("MINEASTR_HUMAN_BEHAVIOR_INTENSITY",
+                    Integer.toString(MineAstrConfig.AGENT_HUMAN_BEHAVIOR_INTENSITY.getAsInt()));
+            environment.put("MINEASTR_SOCIAL_DISTANCE",
+                    Integer.toString(MineAstrConfig.AGENT_SOCIAL_DISTANCE.getAsInt()));
             environment.put("MINEASTR_NAV_ALLOW_DIGGING",
                     Boolean.toString(MineAstrConfig.AGENT_NAVIGATION_ALLOW_DIGGING.getAsBoolean()));
             environment.put("MINEASTR_NAV_ALLOW_PLACING",
@@ -700,6 +713,25 @@ public final class MineAstrAgentManager implements AutoCloseable {
                 .limit(100)
                 .toList();
         humanPlayerCount.set(humanPlayerNames.size());
+        syncSessionPresence();
+    }
+
+    public void recordSocialEvent(String type, String playerName) {
+        if (!MineAstrConfig.AGENT_HUMAN_BEHAVIOR_ENABLED.getAsBoolean()) return;
+        String actor = playerName == null ? "" : playerName.strip();
+        if (!actor.matches("[A-Za-z0-9_]{3,16}") || isAgentUsername(actor)) return;
+        String eventType = type == null ? "" : type.strip().toLowerCase(Locale.ROOT);
+        if (!Set.of("player_chat", "player_join", "player_leave", "player_death", "player_advancement",
+                "player_interact", "player_hurt").contains(eventType)) return;
+        synchronized (this) {
+            JsonObject event = new JsonObject();
+            event.addProperty("sequence", ++socialEventSequence);
+            event.addProperty("type", eventType);
+            event.addProperty("actor", actor);
+            event.addProperty("time_ms", System.currentTimeMillis());
+            socialEvents.addLast(event);
+            while (socialEvents.size() > 32) socialEvents.removeFirst();
+        }
         syncSessionPresence();
     }
 
@@ -1270,12 +1302,19 @@ public final class MineAstrAgentManager implements AutoCloseable {
         body.add("human_players", humanPlayers);
         body.addProperty("preferred_username", preferredAgentUsername);
         body.add("server_awareness", serverAwareness.deepCopy());
+        body.add("social_events", socialEventsSnapshot());
         request("/session", body, Duration.ofSeconds(3)).whenComplete((ignored, throwable) -> {
             if (throwable != null && !stopping) {
                 Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
                 MineAstr.LOGGER.debug("MineAstr Agent 玩家会话状态同步失败：{}", safeMessage(cause));
             }
         });
+    }
+
+    private synchronized JsonArray socialEventsSnapshot() {
+        JsonArray result = new JsonArray();
+        socialEvents.forEach(item -> result.add(item.deepCopy()));
+        return result;
     }
 
     private static void validateRequest(String endpoint, JsonObject body) {
@@ -1301,8 +1340,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
         String type = body.has("task_type") ? body.get("task_type").getAsString().toLowerCase(Locale.ROOT) : "";
         if (!Set.of("chat", "crouch_greet", "goto", "goto_waypoint", "follow_player", "look_at",
                 "wait", "eat", "interact_block", "use_item", "container_inspect", "container_transfer",
-                "furnace_inspect", "furnace_process").contains(type)) {
+                "furnace_inspect", "furnace_process", "equip_best", "sleep", "inspect_entity",
+                "pickup_item", "craft", "place_block", "dig_block").contains(type)) {
             throw new IllegalArgumentException("服务端不允许任务类型：" + type);
+        }
+        if (Set.of("container_transfer", "furnace_process", "pickup_item", "craft", "place_block", "dig_block")
+                .contains(type)
+                && (!body.has("confirmed_irreversible") || !body.get("confirmed_irreversible").getAsBoolean())) {
+            throw new IllegalStateException("该任务会改变物品或世界状态，需要绑定本次请求的明确确认");
         }
         JsonObject args = body.has("args") && body.get("args").isJsonObject()
                 ? body.getAsJsonObject("args") : new JsonObject();
@@ -1310,7 +1355,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
             throw new IllegalArgumentException("Agent 聊天内容超过 256 字符");
         }
         if (Set.of("goto", "look_at", "interact_block", "container_inspect", "container_transfer",
-                "furnace_inspect", "furnace_process").contains(type)) {
+                "furnace_inspect", "furnace_process", "place_block", "dig_block").contains(type)) {
             int x = requiredCoordinate(args, "x");
             int y = requiredCoordinate(args, "y");
             int z = requiredCoordinate(args, "z");
@@ -1376,6 +1421,9 @@ public final class MineAstrAgentManager implements AutoCloseable {
         }
         state.set(State.STOPPED);
         server = null;
+        synchronized (this) {
+            socialEvents.clear();
+        }
         ExecutorService executor = ioExecutor;
         ioExecutor = null;
         if (executor != null) executor.shutdownNow();

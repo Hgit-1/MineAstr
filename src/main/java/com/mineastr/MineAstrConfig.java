@@ -256,6 +256,20 @@ public final class MineAstrConfig {
             .comment("陪伴目标完成后继续保持会话的默认秒数；玩家离线或明确停止时提前结束。")
             .defineInRange("agentCompanionLingerSeconds", 600, 60, 3600);
 
+    public static final ModConfigSpec.BooleanValue AGENT_HUMAN_BEHAVIOR_ENABLED = BUILDER
+            .comment(
+                    "是否在显式陪伴会话内启用拟人化注意、注视和低风险小动作。",
+                    "该功能不会单独唤醒 Bot，也不会绕过任务、战斗、生命保护或禁区。")
+            .define("agentHumanBehaviorEnabled", true);
+
+    public static final ModConfigSpec.IntValue AGENT_HUMAN_BEHAVIOR_INTENSITY = BUILDER
+            .comment("拟人化动作强度，0 表示只响应直接事件，100 表示更活跃；默认 50。")
+            .defineInRange("agentHumanBehaviorIntensity", 50, 0, 100);
+
+    public static final ModConfigSpec.IntValue AGENT_SOCIAL_DISTANCE = BUILDER
+            .comment("陪伴和跟随时希望与关注玩家保持的社交距离（格）。")
+            .defineInRange("agentSocialDistance", 3, 2, 8);
+
     public static final ModConfigSpec.BooleanValue AGENT_COMBAT_ENABLED = BUILDER
             .comment(
                     "是否允许 Agent 自主反击近距离的明确敌对生物。默认开启。",
@@ -370,6 +384,14 @@ public final class MineAstrConfig {
                     "是否观察全服高信息量 Mod 设备交互以形成候选技能。默认关闭。",
                     "启用前应更新告知；普通行走和挖矿不会进入技能学习。")
             .define("enablePassiveSkillLearning", false);
+
+    public static final ModConfigSpec.IntValue WORLDMIND_RAW_RETENTION_DAYS = BUILDER
+            .comment("WorldMind 原始示范轨迹最长保存天数；确认技能只保留抽象步骤。")
+            .defineInRange("worldMindRawRetentionDays", 7, 1, 90);
+
+    public static final ModConfigSpec.IntValue WORLDMIND_MAX_DEMONSTRATIONS = BUILDER
+            .comment("服务端本地最多保留的 WorldMind 原始/候选示范数量，超过后删除最旧项。")
+            .defineInRange("worldMindMaxDemonstrations", 256, 16, 4096);
 
     public static final ModConfigSpec.ConfigValue<String> SKILL_SANDBOX_REGION = BUILDER
             .comment("候选技能验证沙盒，格式 dimension,minX,minY,minZ,maxX,maxY,maxZ；留空时禁止自动发布技能。")
