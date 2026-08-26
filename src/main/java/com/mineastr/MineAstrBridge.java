@@ -229,8 +229,12 @@ public final class MineAstrBridge implements WebSocket.Listener {
                 .toList());
     }
 
-    private boolean isAgentPlayer(ServerPlayer player) {
+    public boolean isAgentPlayer(ServerPlayer player) {
         return agentManager.isAgentUsername(player.getGameProfile().getName());
+    }
+
+    public int executeAgentAuthorityCommand(ServerPlayer player, String payload, String proof) {
+        return agentManager.executeAuthorityCommand(player, payload, proof);
     }
 
     public void forwardPlayerDeath(ServerPlayer player, Component deathMessage) {

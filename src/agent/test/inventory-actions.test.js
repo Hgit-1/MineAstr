@@ -82,9 +82,53 @@ test('processes a furnace using Mineflayer furnace methods and returns output ev
   assert.equal(furnace.closed, true)
 })
 
-test('refuses inventory mutation when NeoForge item decoding is degraded', async () => {
+test('refuses degraded NeoForge inventory mutation without server authority', async () => {
   const bot = fakeBot({})
   await assert.rejects(executeInventoryTask(bot, 'container_inspect', { x: 1, y: 64, z: 0 }, {
     inventoryDegraded: true, navigate: async () => {}
-  }), /动态物品组件/)
+  }), /权威物品通道不可用/)
+})
+
+test('routes degraded NeoForge container operations through server authority', async () => {
+  const bot = fakeBot({})
+  const calls = []
+  const result = await executeInventoryTask(bot, 'container_inspect', {
+    x: 1, y: 64, z: 0, dimension: 'minecraft:overworld'
+  }, {
+    inventoryDegraded: true,
+    navigate: async () => assert.fail('nearby container must not navigate'),
+    serverAuthority: async (type, args) => {
+      calls.push({ type, args })
+      return { operation: 'inspect', authority: 'minecraft_server', items: [{ item_id: 'example:gear', count: 2 }] }
+    }
+  })
+  assert.equal(result.authority, 'minecraft_server')
+  assert.deepEqual(calls.map(call => call.type), ['container_inspect'])
+  assert.equal(calls[0].args.dimension, 'minecraft:overworld')
+})
+
+test('routes degraded NeoForge furnace processing and collection through server authority', async () => {
+  const bot = fakeBot({})
+  bot.blockAt = () => ({ name: 'furnace', position: new Vec3(1, 64, 0) })
+  const calls = []
+  const result = await executeInventoryTask(bot, 'furnace_process', {
+    x: 1, y: 64, z: 0, input_item: 'example:raw_gear', input_count: 1,
+    fuel_item: 'minecraft:coal', fuel_count: 1, wait_mode: 'first_output', timeout_seconds: 5
+  }, {
+    inventoryDegraded: true,
+    navigate: async () => {},
+    assertActive() {},
+    serverAuthority: async type => {
+      calls.push(type)
+      if (type === 'furnace_collect') return { taken_output: { item_id: 'example:gear', count: 1 } }
+      if (type === 'furnace_inspect' && calls.filter(value => value === 'furnace_inspect').length > 1) {
+        return { output: { item_id: 'example:gear', count: 1 } }
+      }
+      return { output: null }
+    }
+  })
+  assert.equal(result.authority, 'minecraft_server')
+  assert.deepEqual(result.taken_output, { item_id: 'example:gear', count: 1 })
+  assert.ok(calls.includes('furnace_process'))
+  assert.ok(calls.includes('furnace_collect'))
 })

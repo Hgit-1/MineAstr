@@ -20,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
+import java.security.GeneralSecurityException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
@@ -44,6 +45,8 @@ import java.util.function.Predicate;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -102,6 +105,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
     private final AtomicInteger humanPlayerCount = new AtomicInteger();
     private volatile List<String> humanPlayerNames = List.of();
     private final ArrayDeque<JsonObject> socialEvents = new ArrayDeque<>();
+    private final ArrayDeque<JsonObject> authorityOperations = new ArrayDeque<>();
     private long socialEventSequence;
 
     private volatile MinecraftServer server;
@@ -140,6 +144,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         this.lastServerUnembedAtMs = 0L;
         synchronized (this) {
             socialEvents.clear();
+            authorityOperations.clear();
             socialEventSequence = 0L;
         }
         this.controlPort.set(0);
@@ -177,6 +182,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
             builder.redirectErrorStream(true);
             Map<String, String> environment = builder.environment();
             environment.put("MINEASTR_AGENT_TOKEN", token);
+            environment.put("MINEASTR_SERVER_AUTHORITY", "true");
             environment.put("MINEASTR_AGENT_DATA_DIR", dataDir.toString());
             environment.put("MINEASTR_MC_HOST", MineAstrConfig.AGENT_SERVER_HOST.get());
             environment.put("MINEASTR_MC_PORT", Integer.toString(MineAstrConfig.AGENT_SERVER_PORT.getAsInt()));
@@ -843,8 +849,90 @@ public final class MineAstrAgentManager implements AutoCloseable {
         }
         awareness.add("permitted_prey", prey);
         awareness.add("nearby_blocks", scanNearbyBlocks(player));
+        awareness.add("agent_operations", recentAuthorityOperations(now));
         serverAwareness = awareness;
         syncSessionPresence();
+    }
+
+    public boolean canUseAuthorityCommand(ServerPlayer player) {
+        return player != null && !token.isBlank() && isAgentUsername(player.getGameProfile().getName());
+    }
+
+    public int executeAuthorityCommand(ServerPlayer player, String encodedPayload, String proof) {
+        if (!canUseAuthorityCommand(player)) return 0;
+        if (encodedPayload == null || encodedPayload.length() > 16_384
+                || proof == null || !proof.matches("[0-9a-f]{64}")) return 0;
+        JsonObject operation = null;
+        String operationId = "unknown";
+        String taskType = "unknown";
+        try {
+            String expected = authorityProof(encodedPayload);
+            if (!MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII),
+                    proof.getBytes(StandardCharsets.US_ASCII))) return 0;
+            byte[] decoded = Base64.getUrlDecoder().decode(encodedPayload);
+            if (decoded.length > 12_288) throw new IllegalArgumentException("服务端物品操作请求过大");
+            operation = JsonParser.parseString(new String(decoded, StandardCharsets.UTF_8)).getAsJsonObject();
+            operationId = operation.has("operation_id") ? operation.get("operation_id").getAsString() : "";
+            taskType = operation.has("task_type") ? operation.get("task_type").getAsString().toLowerCase(Locale.ROOT) : "";
+            if (!operationId.matches("[A-Za-z0-9_.-]{8,80}")) throw new IllegalArgumentException("物品操作 ID 无效");
+            if (!Set.of("container_inspect", "container_transfer", "furnace_inspect",
+                    "furnace_process", "furnace_collect").contains(taskType)) {
+                throw new IllegalArgumentException("不支持的服务端物品操作：" + taskType);
+            }
+            JsonObject args = operation.has("args") && operation.get("args").isJsonObject()
+                    ? operation.getAsJsonObject("args") : new JsonObject();
+            int x = requiredCoordinate(args, "x");
+            int y = requiredCoordinate(args, "y");
+            int z = requiredCoordinate(args, "z");
+            String dimension = args.has("dimension") ? args.get("dimension").getAsString() : "minecraft:overworld";
+            if (!dimension.equals(player.serverLevel().dimension().location().toString())) {
+                throw new IllegalStateException("目标容器与 Agent 不在同一维度");
+            }
+            if (insideForbiddenRegion(dimension, x, y, z)) {
+                throw new IllegalStateException("目标坐标位于 Agent 禁区内");
+            }
+            Vec3 center = Vec3.atCenterOf(new BlockPos(x, y, z));
+            if (player.position().distanceToSqr(center) > 36.0D) {
+                throw new IllegalStateException("Agent 距离目标容器超过 6 格");
+            }
+            JsonObject result = MineAstrAgentInventoryAuthority.execute(player, taskType, args);
+            recordAuthorityOperation(operationId, taskType, true, result, "");
+            return 1;
+        } catch (RuntimeException | GeneralSecurityException exc) {
+            recordAuthorityOperation(operationId, taskType, false, null,
+                    exc.getMessage() == null ? exc.getClass().getSimpleName() : exc.getMessage());
+            return 0;
+        }
+    }
+
+    private String authorityProof(String payload) throws GeneralSecurityException {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(token.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        return HexFormat.of().formatHex(mac.doFinal(payload.getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    private synchronized void recordAuthorityOperation(
+            String operationId, String taskType, boolean ok, JsonObject result, String error) {
+        JsonObject record = new JsonObject();
+        record.addProperty("operation_id", operationId == null ? "unknown" : operationId);
+        record.addProperty("task_type", taskType == null ? "unknown" : taskType);
+        record.addProperty("ok", ok);
+        record.addProperty("completed_at_ms", System.currentTimeMillis());
+        if (result != null) record.add("result", result);
+        if (!ok) record.addProperty("error", error == null ? "服务端物品操作失败" : error.strip().substring(0, Math.min(300, error.strip().length())));
+        authorityOperations.addLast(record);
+        while (authorityOperations.size() > 16) authorityOperations.removeFirst();
+        nextServerAwarenessAtMs = 0L;
+    }
+
+    private synchronized JsonArray recentAuthorityOperations(long now) {
+        while (!authorityOperations.isEmpty()
+                && now - authorityOperations.peekFirst().get("completed_at_ms").getAsLong() > 30_000L) {
+            authorityOperations.removeFirst();
+        }
+        JsonArray result = new JsonArray();
+        authorityOperations.forEach(record -> result.add(record.deepCopy()));
+        return result;
     }
 
     private static JsonObject serverPhysicsDiagnostic(ServerPlayer player) {

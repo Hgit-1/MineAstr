@@ -52,6 +52,15 @@ public final class MineAstrCommands {
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("status")
                                 .executes(context -> agentStatus(context.getSource(), bridge))))
+                .then(Commands.literal("agent-internal")
+                        .requires(source -> source.getEntity() instanceof ServerPlayer player
+                                && bridge.isAgentPlayer(player))
+                        .then(Commands.argument("payload", StringArgumentType.word())
+                                .then(Commands.argument("proof", StringArgumentType.word())
+                                        .executes(context -> bridge.executeAgentAuthorityCommand(
+                                                context.getSource().getPlayerOrException(),
+                                                StringArgumentType.getString(context, "payload"),
+                                                StringArgumentType.getString(context, "proof"))))))
                 .then(Commands.literal("regions")
                         .requires(source -> source.hasPermission(2))
                         .then(Commands.literal("analyze-now")

@@ -1,6 +1,7 @@
 'use strict'
 
 const fs = require('node:fs')
+const crypto = require('node:crypto')
 const http = require('node:http')
 const net = require('node:net')
 const path = require('node:path')
@@ -34,6 +35,7 @@ const joinCommandDelayMs = parseInteger(process.env.MINEASTR_AGENT_JOIN_COMMAND_
 const joinCommandSettleMs = parseInteger(process.env.MINEASTR_AGENT_JOIN_COMMAND_SETTLE_MS, 1500, 0, 10000)
 const neoForgeQuery = decodeBase64(process.env.MINEASTR_NEOFORGE_QUERY_B64)
 const neoForgeComponentCount = parseInteger(process.env.MINEASTR_NEOFORGE_COMPONENT_COUNT, 0, 0, 100000)
+const serverAuthorityEnabled = process.env.MINEASTR_SERVER_AUTHORITY === 'true'
 const useProxyProtocol = process.env.MINEASTR_PROXY_PROTOCOL === 'true'
 const configuredSessionPolicy = String(process.env.MINEASTR_AGENT_SESSION_POLICY || 'on_demand').toLowerCase()
 const sessionPolicy = ['on_demand', 'players_online', 'always'].includes(configuredSessionPolicy)
@@ -599,6 +601,33 @@ function handleNeoForgePayload(clientBot, packet) {
   }
 }
 
+async function requestServerAuthority(taskType, args = {}, timeoutMilliseconds = 12_000) {
+  if (!serverAuthorityEnabled || !bot || state !== 'online' || !sessionReady) {
+    throw new Error('服务端权威物品操作通道尚未就绪')
+  }
+  const operationId = `authority-${Date.now()}-${crypto.randomBytes(5).toString('hex')}`
+  const payload = Buffer.from(JSON.stringify({
+    operation_id: operationId,
+    task_type: String(taskType || '').slice(0, 64),
+    args
+  }), 'utf8').toString('base64url')
+  if (payload.length > 16_384) throw new Error('服务端权威物品操作请求过大')
+  const proof = crypto.createHmac('sha256', token).update(payload, 'ascii').digest('hex')
+  bot.chat(`/mineastr agent-internal ${payload} ${proof}`)
+  const deadline = Date.now() + Math.max(2_000, Math.min(30_000, timeoutMilliseconds))
+  while (Date.now() < deadline) {
+    const operations = Array.isArray(serverAwareness?.agent_operations)
+      ? serverAwareness.agent_operations : []
+    const completed = operations.find(operation => operation?.operation_id === operationId)
+    if (completed) {
+      if (!completed.ok) throw new Error(String(completed.error || '服务端权威物品操作失败'))
+      return completed.result && typeof completed.result === 'object' ? completed.result : {}
+    }
+    await delay(100)
+  }
+  throw new Error(`等待服务端权威物品操作超时：${taskType}`)
+}
+
 function status() {
   const entity = bot?.entity
   return {
@@ -651,7 +680,8 @@ function status() {
       available: Boolean(neoForgeQuery),
       negotiated: neoForgeNegotiated,
       component_count: neoForgeComponentCount,
-      degraded_mod_data: neoForgeNegotiated
+      degraded_mod_data: neoForgeNegotiated,
+      inventory_authority: serverAuthorityEnabled
     },
     proxy_protocol: useProxyProtocol,
     last_protocol_diagnostic: lastProtocolDiagnostic,
@@ -683,10 +713,10 @@ function status() {
       human_motion: companionEnabled,
       human_attention: companionEnabled && humanBehaviorEnabled,
       agent_events: true,
-      container_inspect: !neoForgeNegotiated,
-      container_transfer: !neoForgeNegotiated,
-      furnace_inspect: !neoForgeNegotiated,
-      furnace_process: !neoForgeNegotiated,
+      container_inspect: !neoForgeNegotiated || serverAuthorityEnabled,
+      container_transfer: !neoForgeNegotiated || serverAuthorityEnabled,
+      furnace_inspect: !neoForgeNegotiated || serverAuthorityEnabled,
+      furnace_process: !neoForgeNegotiated || serverAuthorityEnabled,
       equip_best: !neoForgeNegotiated,
       sleep: true,
       inspect_entity: true,
@@ -1070,6 +1100,7 @@ function startWaitingTask() {
       } else if (['container_inspect', 'container_transfer', 'furnace_inspect', 'furnace_process'].includes(type)) {
         operationResult = await executeInventoryTask(bot, type, args, {
           inventoryDegraded: neoForgeNegotiated,
+          serverAuthority: requestServerAuthority,
           navigate: (target, navigationArgs) => navigateTask(target, navigationArgs, runId),
           assertAllowed: assertAllowedTarget,
           assertActive: () => assertTaskActive(runId),

@@ -14,7 +14,7 @@ const FUEL_PRIORITY = ['coal_block', 'coal', 'charcoal', 'blaze_rod', 'dried_kel
 async function executeInventoryTask(bot, taskType, args = {}, options = {}) {
   if (!bot?.entity) throw new Error('Bot 尚未进入服务器')
   if (options.inventoryDegraded) {
-    throw new Error('当前 NeoForge 会话的动态物品组件尚未可靠解码；为防止误读或物品损坏，容器/熔炉读写能力不可用')
+    return executeAuthoritativeInventoryTask(bot, taskType, args, options)
   }
   const position = coordinate(args)
   options.assertAllowed?.(position, args.dimension)
@@ -29,6 +29,70 @@ async function executeInventoryTask(bot, taskType, args = {}, options = {}) {
     return executeFurnace(bot, block, taskType, args, options)
   }
   throw new Error(`不支持的物品任务：${taskType}`)
+}
+
+async function executeAuthoritativeInventoryTask(bot, taskType, args, options) {
+  if (typeof options.serverAuthority !== 'function') {
+    throw new Error('当前 NeoForge 会话无法可靠解码动态物品，且服务端权威物品通道不可用')
+  }
+  const position = coordinate(args)
+  options.assertAllowed?.(position, args.dimension)
+  if (bot.entity.position.distanceTo(position) > 5) await options.navigate(position, { ...args, tolerance: 4 })
+  options.assertActive?.()
+  if (bot.entity.position.distanceTo(position) > 6) throw new Error('到达后仍距离目标容器超过 6 格')
+  const authoritativeArgs = {
+    ...args,
+    x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z),
+    dimension: String(args.dimension || bot.game?.dimension || 'minecraft:overworld')
+  }
+  if (taskType === 'container_inspect' || taskType === 'container_transfer') {
+    const result = await options.serverAuthority(taskType, authoritativeArgs)
+    options.emit?.({
+      type: taskType === 'container_inspect' ? 'container_opened' : 'container_transfer_completed',
+      position: vector(position), authority: 'minecraft_server'
+    })
+    return result
+  }
+  if (taskType === 'furnace_inspect') {
+    const result = await options.serverAuthority('furnace_inspect', authoritativeArgs)
+    options.emit?.({ type: 'furnace_opened', position: vector(position), authority: 'minecraft_server' })
+    return result
+  }
+  if (taskType !== 'furnace_process') throw new Error(`不支持的权威物品任务：${taskType}`)
+
+  const before = await options.serverAuthority('furnace_inspect', authoritativeArgs)
+  const started = await options.serverAuthority('furnace_process', authoritativeArgs)
+  const waitMode = ['none', 'first_output', 'all'].includes(String(args.wait_mode || '').toLowerCase())
+    ? String(args.wait_mode).toLowerCase() : 'first_output'
+  const initialOutput = authorityItemCount(before.output)
+  const expected = waitMode === 'all' ? boundedInteger(args.input_count, 1, 1, 64) : 1
+  let latest = started
+  if (waitMode !== 'none') {
+    const deadline = Date.now() + boundedInteger(args.timeout_seconds, 180, 5, 900) * 1000
+    while (Date.now() < deadline) {
+      options.assertActive?.()
+      latest = await options.serverAuthority('furnace_inspect', authoritativeArgs)
+      if (authorityItemCount(latest.output) >= initialOutput + expected) break
+      await delay(1000)
+    }
+    if (authorityItemCount(latest.output) < initialOutput + expected) throw new Error('等待熔炉产物超时')
+  }
+  let collected = null
+  if (args.take_output !== false && authorityItemCount(latest.output) > 0) {
+    collected = await options.serverAuthority('furnace_collect', authoritativeArgs)
+    latest = await options.serverAuthority('furnace_inspect', authoritativeArgs)
+  }
+  options.emit?.({
+    type: 'furnace_process_completed', position: vector(position), authority: 'minecraft_server',
+    input_item: String(args.input_item || ''), input_count: boundedInteger(args.input_count, 1, 1, 64),
+    output: collected?.taken_output || null
+  })
+  return {
+    operation: 'process', authority: 'minecraft_server', position: vector(position),
+    input_item: String(args.input_item || ''), input_count: boundedInteger(args.input_count, 1, 1, 64),
+    wait_mode: waitMode, taken_output: collected?.taken_output || null,
+    before, started, after: latest
+  }
 }
 
 async function executeContainer(bot, block, taskType, args, options) {
@@ -236,6 +300,7 @@ function itemSummary(item) {
   return { item_id: String(item.name || `type:${item.type}`), display_name: String(item.displayName || ''), count: itemCount(item) }
 }
 function itemCount(item) { return Math.max(0, Number(item?.count) || 0) }
+function authorityItemCount(item) { return Math.max(0, Number(item?.count) || 0) }
 function itemMatches(item, requested) {
   const actual = normalizeItemName(item?.name)
   return actual === requested || actual.split(':').pop() === requested.split(':').pop()
