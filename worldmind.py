@@ -12,18 +12,22 @@ from astrbot.api import logger
 
 DATA_ROOT = Path("data") / "mineastr" / "worldmind"
 SAFE_ACTIONS = {
-    "wait", "look_at", "goto", "goto_waypoint", "follow_player", "interact_block",
+    "wait", "look_at", "goto", "goto_waypoint", "follow_player", "interact_block", "interact_entity",
     "container_inspect", "furnace_inspect", "eat", "equip_best", "sleep", "inspect_entity",
-    "container_transfer", "furnace_process", "pickup_item", "craft", "place_block", "dig_block",
+    "container_transfer", "container_deposit", "furnace_process", "pickup_item", "collect_items",
+    "farm_tend", "craft", "place_block", "dig_block",
 }
 RISK_TWO_ACTIONS = {
-    "container_transfer", "furnace_process", "pickup_item", "craft", "place_block", "dig_block",
+    "container_transfer", "container_deposit", "furnace_process", "pickup_item", "collect_items",
+    "farm_tend", "interact_entity", "craft", "place_block", "dig_block",
 }
 TRACE_COORDINATE_ACTIONS = {
     "look_at", "goto", "interact_block", "container_inspect", "furnace_inspect",
-    "container_transfer", "furnace_process", "place_block", "dig_block",
+    "container_transfer", "container_deposit", "farm_tend", "furnace_process", "place_block", "dig_block",
 }
-NON_DETERMINISTIC_SKILL_ACTIONS = {"goto_waypoint", "follow_player", "inspect_entity", "pickup_item", "sleep"}
+NON_DETERMINISTIC_SKILL_ACTIONS = {
+    "goto_waypoint", "follow_player", "inspect_entity", "interact_entity", "pickup_item", "collect_items", "sleep"
+}
 TRACE_ALLOWED_ACTIONS = TRACE_COORDINATE_ACTIONS | {"wait"}
 MAX_SKILL_STEPS = 32
 _COORDINATOR: "WorldMindCoordinator | None" = None

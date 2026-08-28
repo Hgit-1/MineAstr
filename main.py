@@ -36,7 +36,7 @@ MINEASTR_TOOL_HINTS = {
     "mineastr_get_knowledge_status": "询问知识扫描、RAG 或来源健康状态时调用 mineastr_get_knowledge_status。",
     "mineastr_get_agent_status": "询问 AI 玩家 Bot 是否在线、当前任务或 Node 状态时调用 mineastr_get_agent_status。",
     "mineastr_observe_agent": "需要确认 AI 玩家 Bot 当前视场、附近实体、背包和生命状态时调用 mineastr_observe_agent。",
-    "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、交互、进食、装备、睡觉、检查/拾取实体、合成、放置或挖掘时调用 mineastr_submit_agent_task；该工具会等待实际完成或失败，不能把 accepted 当成完成；改变物品或世界的动作必须取得明确确认。",
+    "mineastr_submit_agent_task": "需要 AI 玩家移动、跟随、收菜补种、范围拾取、整理入箱、实体交互、进食、装备、熔炼、合成、放置或挖掘时调用 mineastr_submit_agent_task；该工具会等待实际完成或失败，不能把 accepted 当成完成；改变物品或世界的动作必须取得明确确认。",
     "mineastr_manage_companion": "玩家要求一起工作、陪同旅行或给出高层目标时，先用 mineastr_manage_companion start/update 建立陪伴会话；然后观察环境并逐个提交原子动作。目标完成时 update goal_completed=true，会再停留约 10 分钟。",
     "mineastr_cancel_agent_task": "需要紧急停止 AI 玩家当前任务时调用 mineastr_cancel_agent_task。",
     "mineastr_manage_agent_waypoint": "需要列出或管理 AI 玩家路径点与步行/轨道连接时调用 mineastr_manage_agent_waypoint。",
@@ -56,7 +56,7 @@ MINEASTR_EXTERNAL_HINT_KEYWORDS = (
 )
 SCREENSHOT_DIR = Path("data") / "mineastr" / "screenshots"
 MAX_SCREENSHOT_SAVE_BYTES = 2 * 1024 * 1024
-MINEASTR_VERSION = "0.12.0-dev.1"
+MINEASTR_VERSION = "0.12.0-dev.2"
 MINECRAFT_PLATFORM_TYPE = "minecraft"
 MINECRAFT_PLATFORM_ID = "minecraft"
 
@@ -966,11 +966,17 @@ class MineAstrPlugin(Star):
         take_output: bool = True,
         confirm_irreversible: bool = False,
         entity_id: str = "",
+        entity_name: str = "",
+        radius: int = 6,
+        max_count: int = 32,
+        keep_count: int = 0,
+        include_hotbar: bool = False,
+        pickup_timeout_seconds: int = 20,
     ) -> str:
         """向服务端托管的 AI 玩家提交一个受类型约束的动作任务，并等待实际完成或失败。
 
         Args:
-            task_type(str): 基础动作，或容器、熔炉、装备、实体检查、睡眠、拾取、合成、放置和挖掘动作。
+            task_type(str): 动作类型；新增 farm_tend、collect_items、interact_entity、container_deposit，另支持移动、交互、容器、熔炉、装备、睡眠、合成、放置和挖掘等既有动作。
             server_id(str): 可选服务器 ID；单服时留空。
             message(str): chat 使用的消息，最多 256 字符。
             x(int): goto/look_at 的 X 坐标。
@@ -995,18 +1001,26 @@ class MineAstrPlugin(Star):
             take_output(bool): 熔炼后是否取出产物。
             confirm_irreversible(bool): 玩家已明确确认搬运、消耗、拾取、合成、放置或挖掘时才可设为 true。
             entity_id(str): inspect_entity 或 pickup_item 使用的可观察实体 ID。
+            entity_name(str): interact_entity 可使用的实体名称；有 entity_id 时优先使用 ID。
+            radius(int): farm_tend/collect_items 的操作半径。
+            max_count(int): farm_tend/collect_items 的单次最大目标数，或 container_deposit 的最大存入数。
+            keep_count(int): container_deposit 对每种匹配物品至少保留的数量。
+            include_hotbar(bool): container_deposit 是否允许整理非当前手持的快捷栏物品。
+            pickup_timeout_seconds(int): farm_tend 或 collect_items 收集掉落物的最长等待秒数。
         """
         adapter = self._minecraft_adapter()
         if adapter is None or not hasattr(adapter, "submit_agent_task"):
             return "MineAstr minecraft 平台适配器未启用或版本过旧，无法操作 Agent。"
         selected = task_type.strip().lower()
         allowed = {"chat", "crouch_greet", "goto", "goto_waypoint", "follow_player", "look_at",
-                   "wait", "eat", "interact_block", "use_item", "container_inspect", "container_transfer",
+                   "wait", "eat", "interact_block", "interact_entity", "use_item", "container_inspect",
+                   "container_transfer", "container_deposit", "farm_tend", "collect_items",
                    "furnace_inspect", "furnace_process", "equip_best", "inspect_entity", "sleep",
                    "pickup_item", "craft", "place_block", "dig_block"}
         if selected not in allowed:
             return self._tool_json("MineAstr AI 玩家任务", {"ok": False, "error": f"不支持的任务类型：{selected}"})
-        irreversible = {"container_transfer", "furnace_process", "pickup_item", "craft", "place_block", "dig_block"}
+        irreversible = {"container_transfer", "container_deposit", "farm_tend", "collect_items",
+                        "interact_entity", "furnace_process", "pickup_item", "craft", "place_block", "dig_block"}
         if selected in irreversible and not confirm_irreversible:
             return self._tool_json(
                 "MineAstr AI 玩家任务",
@@ -1022,11 +1036,19 @@ class MineAstrPlugin(Star):
         if selected == "chat":
             args["message"] = message.strip()[:256]
         elif selected in {"goto", "look_at", "interact_block", "container_inspect", "container_transfer",
+                        "container_deposit", "farm_tend",
                         "furnace_inspect", "furnace_process", "place_block", "dig_block"}:
             args.update({"x": int(x), "y": int(y), "z": int(z), "dimension": dimension.strip()})
             if selected == "container_transfer":
                 args.update({"direction": direction.strip().lower(), "item_id": item_name.strip(),
                              "count": max(1, min(2304, int(count)))})
+            elif selected == "container_deposit":
+                args.update({"item_id": item_name.strip(), "keep_count": max(0, min(2304, int(keep_count))),
+                             "include_hotbar": bool(include_hotbar),
+                             "max_items": max(1, min(2304, int(max_count)))})
+            elif selected == "farm_tend":
+                args.update({"radius": max(1, min(8, int(radius))), "max_count": max(1, min(64, int(max_count))),
+                             "pickup_timeout_seconds": max(2, min(120, int(pickup_timeout_seconds)))})
             elif selected == "furnace_process":
                 args.update({
                     "input_item": input_item.strip(), "input_count": max(1, min(64, int(input_count))),
@@ -1050,6 +1072,14 @@ class MineAstrPlugin(Star):
             args["milliseconds"] = max(100, min(30000, int(milliseconds)))
         elif selected == "inspect_entity":
             args.update({"entity_id": entity_id.strip(), "distance": max(1, min(16, int(distance)))})
+        elif selected == "interact_entity":
+            args.update({"entity_id": entity_id.strip(), "entity_name": entity_name.strip()[:80],
+                         "item_name": item_name.strip(), "distance": max(2, min(32, int(distance))),
+                         "dimension": dimension.strip()})
+        elif selected == "collect_items":
+            args.update({"radius": max(1, min(16, int(radius))), "max_count": max(1, min(128, int(max_count))),
+                         "timeout_seconds": max(2, min(120, int(pickup_timeout_seconds))),
+                         "dimension": dimension.strip()})
         elif selected == "pickup_item":
             args.update({"entity_id": entity_id.strip(), "timeout_seconds": max(1, min(60, int(timeout_seconds)))})
         elif selected == "craft":

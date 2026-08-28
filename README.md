@@ -136,11 +136,13 @@ pip install -r requirements.txt
 
 0.12.0-dev.1 增加 WorldMind 开发预览：同步世界语义和显式设备示范，将示范编译为白名单技能 DSL，并要求管理员确认、专用沙盒内连续三次验证。L2 技能的正常执行使用十分钟一次性确认，绑定请求者与计划哈希；原始示范和精确坐标不进入 RAG。插件提供 `mineastr_search_worldmind`、`mineastr_record_demonstration`、`mineastr_manage_learned_skill`、`mineastr_run_learned_skill` 与计划解释工具。该版本是安全闭环的首个垂直切片，不是完整长期路线的最终实现。
 
+0.12.0-dev.2 扩展通用 Agent 工作流：`farm_tend` 扫描成熟的原版及 `CropBlock` 兼容 Mod 作物并逐株收割、消耗真实种子补种和收集掉落物；`collect_items` 批量拾取附近掉落物；`interact_entity` 可拿取指定背包物品后与实体交互；`container_deposit` 可按物品、保留数量和快捷栏策略批量整理入容器。四类动作都会改变世界或物品，必须绑定当前玩家明确确认。
+
 WorldMind 默认开启同步；`worldmind_sync_seconds` 默认 300。若要让模型辅助整理示范，可配置 `worldmind_provider_id`；留空或模型失败时使用确定性编译器。服务端的 `enablePassiveSkillLearning` 默认关闭，服主启用前必须更新数据告知。原始服务端数据位于世界目录 `data/mineastr/worldmind/snapshot.json`，插件候选技能位于 AstrBot 的 `data/mineastr/worldmind/<server_id>/skills.json`。
 
 陪伴模式将“高层自然语言目标”与“单个可验证动作”分开：模型先调用 `mineastr_manage_companion start/update`，再逐步观察并提交原子任务。原子动作保持串行，主动聊天使用独立循环，因此行走或等待熔炉时仍可以对话。主动发言始终用系统广播显示名，不占用 Agent `chat` 任务槽。会话状态原子保存在 `data/mineastr/companion_sessions.json`，只保留服务器 ID、玩家名、目标、时间和最近动作摘要。
 
-新的 `container_inspect` / `container_transfer` / `furnace_inspect` / `furnace_process` 任务通过原版兼容窗口读写，返回操作前后数量证据。未知 Mod GUI 不会被猜测点击；`degraded_mod_data=true` 时会明确拒绝容器/熔炉写入。`furnace_process` 因会消耗原料与燃料，工具只在玩家明确确认后允许 `confirm_irreversible=true`。容器摘要只在当次工具结果中提供，不写入任务持久化、Agent 事件历史或 RAG。
+新的 `container_inspect` / `container_transfer` / `container_deposit` / `furnace_inspect` / `furnace_process` 任务返回操作前后数量证据。NeoForge 动态物品组件会话由服务端权威背包通道执行，不再依赖 Mineflayer 猜测槽位；未知 Mod GUI 仍不会被猜测点击。会消耗或搬动物品的任务只在玩家明确确认后允许 `confirm_irreversible=true`。容器摘要只在当次工具结果中提供，不写入任务持久化、Agent 事件历史或 RAG。
 
 ## 服务器事件推送
 
@@ -150,7 +152,7 @@ MineAstr Mod 0.8 可推送 `player_join`、`player_leave`、`player_death` 和 `
 
 ## 机器人可调用工具
 
-插件会注册原有知识与实时工具以及五个服务端 Agent 工具。插件只会向模型提示当次请求实际可用的工具；AstrBot 全局开关、人格过滤或提供商不支持工具时，不会诱导模型调用一个不存在的工具。
+插件会注册知识、实时查询和服务端 Agent 工具。插件只会向模型提示当次请求实际可用的工具；AstrBot 全局开关、人格过滤或提供商不支持工具时，不会诱导模型调用一个不存在的工具。
 
 | 工具 | 用途 |
 | --- | --- |

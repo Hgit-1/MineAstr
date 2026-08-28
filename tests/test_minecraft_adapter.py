@@ -291,6 +291,28 @@ class MinecraftAdapterEventTests(unittest.IsolatedAsyncioTestCase):
             self.adapter._agent_task_wait_seconds("furnace_process", {"timeout_seconds": 200}),
         )
 
+    def test_farm_tend_wait_budget_scales_with_bounded_crop_count(self):
+        self.assertEqual(
+            464.0,
+            self.adapter._agent_task_wait_seconds(
+                "farm_tend", {"max_count": 32, "pickup_timeout_seconds": 20}
+            ),
+        )
+        self.assertEqual(
+            948.0,
+            self.adapter._agent_task_wait_seconds(
+                "farm_tend", {"max_count": 99, "pickup_timeout_seconds": 120}
+            ),
+        )
+
+    def test_collect_items_wait_budget_is_bounded(self):
+        self.assertEqual(
+            180.0,
+            self.adapter._agent_task_wait_seconds(
+                "collect_items", {"timeout_seconds": 999}
+            ),
+        )
+
     async def test_agent_task_waits_for_terminal_state_instead_of_treating_acceptance_as_completion(self):
         calls = []
         status_calls = 0

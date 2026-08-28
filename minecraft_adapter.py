@@ -1220,6 +1220,15 @@ class MinecraftPlatformAdapter(Platform):
             return max(120.0, min(30.0, float(args.get("milliseconds") or 1000) / 1000.0) + 120.0)
         if selected == "furnace_process":
             return max(180.0, min(900.0, float(args.get("timeout_seconds") or 180) + 30.0))
+        if selected == "farm_tend":
+            crop_budget = min(64.0, max(1.0, float(args.get("max_count") or 32))) * 12.0
+            pickup_budget = min(120.0, max(1.0, float(args.get("pickup_timeout_seconds") or 20)))
+            return max(180.0, min(960.0, crop_budget + pickup_budget + 60.0))
+        if selected == "collect_items":
+            pickup_budget = min(120.0, max(1.0, float(
+                args.get("timeout_seconds") or args.get("pickup_timeout_seconds") or 20
+            )))
+            return max(180.0, pickup_budget + 60.0)
         return 180.0
 
     async def cancel_agent_task(self, server_id: str | None = None) -> dict[str, Any]:

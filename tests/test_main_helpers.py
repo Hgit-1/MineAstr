@@ -324,6 +324,56 @@ class MainHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(json.loads(accepted.split("\n", 1)[1])["ok"])
         self.assertEqual("iron_ore", calls[0][2]["input_item"])
 
+    async def test_extended_workflows_require_confirmation_and_forward_bounded_arguments(self):
+        calls = []
+
+        class Adapter:
+            agent_require_admin_approval = False
+
+            async def submit_agent_task(self, *args):
+                calls.append(args)
+                return {"ok": True}
+
+        plugin = object.__new__(MAIN.MineAstrPlugin)
+        plugin._minecraft_adapter = lambda: Adapter()
+        event = types.SimpleNamespace(
+            is_admin=lambda: False,
+            message_obj=types.SimpleNamespace(raw_message={"server_id": "server-a"}),
+        )
+
+        rejected = await plugin.mineastr_submit_agent_task(
+            event, "farm_tend", x=10, y=64, z=20, radius=99
+        )
+        self.assertTrue(json.loads(rejected.split("\n", 1)[1])["confirmation_required"])
+        self.assertEqual([], calls)
+
+        await plugin.mineastr_submit_agent_task(
+            event, "farm_tend", x=10, y=64, z=20, radius=99, max_count=99,
+            pickup_timeout_seconds=999, confirm_irreversible=True,
+        )
+        self.assertEqual("farm_tend", calls[-1][1])
+        self.assertEqual(8, calls[-1][2]["radius"])
+        self.assertEqual(64, calls[-1][2]["max_count"])
+        self.assertEqual(120, calls[-1][2]["pickup_timeout_seconds"])
+
+        await plugin.mineastr_submit_agent_task(
+            event, "container_deposit", x=1, y=64, z=2, item_name="minecraft:wheat",
+            keep_count=8, include_hotbar=True, max_count=64, confirm_irreversible=True,
+        )
+        self.assertEqual("container_deposit", calls[-1][1])
+        self.assertEqual("minecraft:wheat", calls[-1][2]["item_id"])
+        self.assertEqual(8, calls[-1][2]["keep_count"])
+        self.assertTrue(calls[-1][2]["include_hotbar"])
+        self.assertEqual(64, calls[-1][2]["max_items"])
+
+        await plugin.mineastr_submit_agent_task(
+            event, "interact_entity", entity_id="9", item_name="minecraft:wheat",
+            distance=8, confirm_irreversible=True,
+        )
+        self.assertEqual("interact_entity", calls[-1][1])
+        self.assertEqual("9", calls[-1][2]["entity_id"])
+        self.assertEqual("minecraft:wheat", calls[-1][2]["item_name"])
+
 
 if __name__ == "__main__":
     unittest.main()
