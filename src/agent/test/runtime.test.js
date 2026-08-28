@@ -36,7 +36,7 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(response.status, 200)
     const status = await response.json()
     assert.equal(status.ok, true)
-    assert.equal(status.runtime_version, '0.12.0-dev.2')
+    assert.equal(status.runtime_version, '0.12.0-dev.3')
     assert.equal(status.username, 'MineAstrTest')
     assert.equal(status.state, 'standby')
     assert.equal(status.connection_attempts, 0)
@@ -50,6 +50,7 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
       human_player_count: 1, preferred_username: 'Aria',
       server_awareness: {
         online: false, food: 6, hunting_needed: true,
+        agent_inventory: { hotbar: [{ id: 'example:meal', name: 'Meal', count: 2, slot: 'hotbar_0', slot_index: 0 }] },
         nearby_blocks: [{ id: 'create:mechanical_press', x: 1, y: 64, z: 2, modded: true, protected: true }]
       }
     }, 'test-token')
@@ -62,6 +63,7 @@ test('on-demand control stays in standby and an offline task wakes the bot', asy
     assert.equal(presentButIdle.state, 'standby')
     assert.equal(presentButIdle.connection_attempts, 0)
     assert.equal(presentButIdle.server_awareness.hunting_needed, true)
+    assert.equal(presentButIdle.server_awareness.agent_inventory.hotbar[0].id, 'example:meal')
     assert.equal(presentButIdle.server_awareness.nearby_blocks[0].id, 'create:mechanical_press')
 
     const accepted = await postJson(port, '/task', {

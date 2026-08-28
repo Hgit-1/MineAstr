@@ -50,3 +50,68 @@ test('inventory-degraded sessions refuse equipment, crafting, and item placement
     x: 1, y: 64, z: 1, item_name: 'stone'
   }, { inventoryDegraded: true }), /无法可靠解码/)
 })
+
+test('inventory-degraded equipment uses the server-authoritative backpack', async () => {
+  const calls = []
+  const bot = { entity: { position: new Vec3(0, 64, 0) } }
+  const result = await executeHumanAction(bot, 'equip_best', {}, {
+    inventoryDegraded: true,
+    serverAuthority: async (type, args) => {
+      calls.push({ type, args })
+      return { operation: 'inventory_equip_best', authority: 'minecraft_server', equipped: [
+        { item_id: 'example:steel_helmet', destination: 'head' }
+      ] }
+    }
+  })
+  assert.equal(result.authority, 'minecraft_server')
+  assert.deepEqual(calls, [{ type: 'inventory_equip_best', args: {} }])
+})
+
+test('inventory-degraded placement selects the requested server item before placing', async () => {
+  const calls = []
+  const target = new Vec3(1, 64, 0)
+  const bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt(position) {
+      if (position.equals(target)) return { name: 'air', position, boundingBox: 'empty' }
+      return { name: 'stone', position, boundingBox: 'block' }
+    },
+    async placeBlock(reference, face) {
+      calls.push({ type: 'place', reference: reference.position, face })
+      this.blockAt = position => position.equals(target)
+        ? { name: 'example_block', position, boundingBox: 'block' }
+        : { name: 'stone', position, boundingBox: 'block' }
+    }
+  }
+  const result = await executeHumanAction(bot, 'place_block', {
+    x: 1, y: 64, z: 0, item_name: 'example:example_block'
+  }, {
+    inventoryDegraded: true, awarenessAt: () => ({}), assertAllowed() {}, assertActive() {},
+    navigate: async () => {},
+    serverAuthority: async (type, args) => calls.push({ type, args })
+  })
+  assert.equal(result.block, 'example_block')
+  assert.equal(calls[0].type, 'inventory_select')
+  assert.equal(calls[0].args.item_id, 'example:example_block')
+  assert.equal(calls.some(call => call.type === 'place'), true)
+})
+
+test('inventory-degraded digging asks the server to select the best real tool', async () => {
+  const calls = []
+  const target = new Vec3(1, 64, 0)
+  const block = { name: 'example_ore', position: target, boundingBox: 'block' }
+  const bot = {
+    entity: { position: new Vec3(0, 64, 0) }, blockAt: () => block,
+    canDigBlock: () => true, async dig() { calls.push({ type: 'dig' }) }
+  }
+  await executeHumanAction(bot, 'dig_block', {
+    x: 1, y: 64, z: 0, dimension: 'minecraft:overworld'
+  }, {
+    inventoryDegraded: true, awarenessAt: () => ({}), assertAllowed() {}, assertActive() {},
+    navigate: async () => {}, canBreak: () => true,
+    serverAuthority: async (type, args) => calls.push({ type, args })
+  })
+  assert.equal(calls[0].type, 'inventory_select_tool')
+  assert.deepEqual(calls[0].args, { x: 1, y: 64, z: 0, dimension: 'minecraft:overworld' })
+  assert.equal(calls[1].type, 'dig')
+})

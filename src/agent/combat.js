@@ -90,6 +90,7 @@ function createCombatController(bot, options = {}) {
   const attackCooldownMilliseconds = finiteNumber(options.attackCooldownMilliseconds, 650)
   const tickMilliseconds = finiteNumber(options.tickMilliseconds, 200)
   const emit = typeof options.emit === 'function' ? options.emit : () => {}
+  const selectWeapon = typeof options.selectWeapon === 'function' ? options.selectWeapon : null
   const shouldPause = typeof options.shouldPause === 'function' ? options.shouldPause : () => false
   const onDanger = typeof options.onDanger === 'function' ? options.onDanger : () => {}
   let timer = null
@@ -146,9 +147,16 @@ function createCombatController(bot, options = {}) {
 
     busy = true
     try {
-      const weapon = selectBestWeapon(bot)
-      if (weapon && bot.heldItem?.type !== weapon.type) {
-        try { await bot.equip(weapon, 'hand') } catch (_) {}
+      let weapon = null
+      let authoritativeWeapon = null
+      if (selectWeapon) {
+        authoritativeWeapon = await selectWeapon()
+      }
+      if (!authoritativeWeapon) {
+        weapon = selectBestWeapon(bot)
+        if (weapon && bot.heldItem?.type !== weapon.type) {
+          try { await bot.equip(weapon, 'hand') } catch (_) {}
+        }
       }
       const liveTarget = bot.entities?.[target.id]
       if (!liveTarget?.position || distanceToBot(bot, liveTarget) > attackRange) return false
@@ -157,7 +165,11 @@ function createCombatController(bot, options = {}) {
       bot.attack(liveTarget, true)
       lastAttackAt = now
       attacks += 1
-      emit({ type: 'combat_attack', target: currentTarget, weapon: weapon?.name || null, attack_count: attacks })
+      emit({
+        type: 'combat_attack', target: currentTarget,
+        weapon: authoritativeWeapon?.item_id || authoritativeWeapon?.id || weapon?.name || null,
+        weapon_authority: authoritativeWeapon ? 'minecraft_server' : 'mineflayer', attack_count: attacks
+      })
       return true
     } catch (error) {
       lastError = String(error?.message || error || 'unknown error').replace(/[\r\n\t]+/g, ' ').slice(0, 200)

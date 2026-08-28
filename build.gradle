@@ -29,14 +29,16 @@ def agentSourceDir = layout.projectDirectory.dir('src/agent')
 def agentInstallDir = layout.buildDirectory.dir('agent-runtime')
 
 tasks.register('installAgentDependencies', Exec) {
-    inputs.files(agentSourceDir.files('package.json', 'package-lock.json', 'patch-pathfinder.js', 'index.js', 'navigation.js', 'navigation-policy.js', 'chunk-cache.js', 'road-network.js', 'task-store.js', 'task-lifecycle.js', 'join-commands.js', 'combat.js', 'agent-events.js', 'companion.js', 'inventory-actions.js', 'human-behavior.js', 'human-actions.js'))
+    inputs.files(fileTree(agentSourceDir) {
+        include '*.js', 'package.json', 'package-lock.json'
+    })
     outputs.dir(agentInstallDir.map { it.dir('node_modules') })
     workingDir agentSourceDir
     commandLine 'npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'
     doFirst {
         copy {
             from agentSourceDir
-            include 'package.json', 'package-lock.json', 'patch-pathfinder.js', 'index.js', 'navigation.js', 'navigation-policy.js', 'chunk-cache.js', 'road-network.js', 'task-store.js', 'task-lifecycle.js', 'join-commands.js', 'combat.js', 'agent-events.js', 'companion.js', 'inventory-actions.js', 'human-behavior.js', 'human-actions.js'
+            include '*.js', 'package.json', 'package-lock.json'
             into agentInstallDir
         }
     }

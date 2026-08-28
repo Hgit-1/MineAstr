@@ -233,7 +233,7 @@ MineAstr 可以把版本锁定的 Mineflayer 与 pathfinder 依赖打进 Mod JAR
 
 `agentNeoForgeCompatibility=true` 会在 Bot 连接同机地址时启用限定兼容层。服务端 Mod 从当前 NeoForge 运行时提取该服务器实际注册的必需频道、MineAstr 已实现确认的四个 NeoForge 核心配置握手频道，以及可由服务端在玩家进入世界后发送的可选 PLAY 频道，交给受监管的 Mineflayer 进程完成逐项协商。其他可选 CONFIGURATION 频道不会声明，避免触发 Mineflayer 无法确认的 Mod 专用配置任务；Mineflayer 不解析的 PLAY 自定义载荷会被安全忽略。它不会关闭或修改 NeoForge 对普通连接的全局校验；频道版本不一致时仍会失败并停止重连。已实测 NeoForge 21.1.219 + Create 6.0.9 可登录。
 
-在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。从 0.11.3 起，服务端 Mod 会用权威背包与 `FOOD` 数据组件完成自动进食，因而普通 Mod 食品不再依赖该 codec；但通用 Mod GUI、复杂物品主动使用与自定义效果语义仍不能视为完整支持。
+在这一“无客户端 Mod 过载”模式下，服务端动态注册的数据组件目前不能由 Mineflayer 的原版物品 codec 安全解码，因此背包全量/单槽同步包会作为不透明数据跳过，状态中的 `degraded_mod_data` 会保持为 `true`。服务端 Mod 会改用权威注册表同步 Agent 背包摘要，并完成普通/Mod 食品识别、手持物切换、装备和工具选择；基础主动使用随后仍由 Bot 发送真实玩家交互包。通用 Mod GUI 与复杂物品的自定义交互流程、效果语义仍不能视为完整支持。
 
 0.10.4 将私服二次认证正式纳入 Agent 就绪流程。如果服务器要求 `/login`，在 `config/mineastr-common.toml` 中配置：
 
@@ -263,9 +263,9 @@ Mineflayer 每次进入世界后会先等待 `agentJoinCommandDelayMs`，按顺�
 
 持续陪伴需要服务端显式设置 `agentCompanionEnabled=true`，且 AstrBot 插件也必须开启对应开关。陪伴会话绑定一名关注玩家和一个高层自然语言目标：Agent 在真人在线时保持会话，原子动作仍串行执行，闲时才做看向玩家、挥手或短暂下蹲等小动作。生命保护、战斗、寻路和物品操作会抑制这些动作。目标完成后默认停留 `agentCompanionLingerSeconds=600` 秒；无真人在线、明确停止或停留到期后不再因陪伴会话保持登录。会话仅持久化关注玩家名、目标、时间和最近动作摘要。
 
-容器/熔炉后端优先使用 Mineflayer 原生 `openBlock`/`openFurnace` 和标准窗口协议。未知 Mod GUI 不会猜测点击槽位；当 `degraded_mod_data=true` 时，因动态 Mod 物品组件无法可靠解码，容器与熔炉写入会明确失败。这不是完整 Mod GUI 自动化；需要专用菜单的机器仍要单独适配或 with-mod 执行后端。
+容器/熔炉后端在原版协议上优先使用 Mineflayer 原生 `openBlock`/`openFurnace` 和标准窗口协议；`degraded_mod_data=true` 时则转由服务端权威背包通道处理原版兼容容器和熔炉。未知 Mod GUI 不会猜测点击槽位；这不是完整 Mod GUI 自动化，需要专用菜单的机器仍要单独适配或 with-mod 执行后端。
 
-`agentCombatEnabled=true` 时，Agent 会周期检查 `agentCombatRadius` 内的明确敌对生物，在正常近战触及距离内选择背包中识别到的较优武器并按攻击冷却反击。该机制永不主动攻击玩家，并排除宠物、中立生物和可条件敌对的生物；苦力怕、监守者、凋灵和末影龙会触发撤退而不是迎战。生命值低于 `agentCombatMinHealth` 时同样优先撤退/进食；防卫时不会打断正在进行的挖掘、放置或物品使用。
+`agentCombatEnabled=true` 时，Agent 会周期检查 `agentCombatRadius` 内的明确敌对生物，在正常近战触及距离内选择背包中识别到的较优武器并按攻击冷却反击；NeoForge 降级会话的武器选择同样由服务端真实背包完成。该机制永不主动攻击玩家，并排除宠物、中立生物和可条件敌对的生物；苦力怕、监守者、凋灵和末影龙会触发撤退而不是迎战。生命值低于 `agentCombatMinHealth` 时同样优先撤退/进食；防卫时不会打断正在进行的挖掘、放置或物品使用。
 
 `agentServerSideSurvivalEnabled=true` 时，饱食度低于 `agentAutoEatFoodThreshold=14` 的 Agent 会从服务端真实背包中选择高营养、无有害效果的可食用物，其中包含使用原版 `FOOD` 数据组件的 Mod 食品。背包无食物且饱食度不高于 `agentHuntingFoodThreshold=6` 时，`agentEmergencyHuntingEnabled=true` 允许受控捕猎成年、未命名、未驯服的牛/猪/羊/鸡/兔/哞菇；此行为有单独审计事件，也可完全关闭。
 
@@ -324,6 +324,8 @@ Agent 状态会返回 `last_session_exit`、`last_death_at_ms` 和 `identity_cha
 0.12.0-dev.1 加入 WorldMind 开发预览：世界存档内保存候选设备节点与受限示范轨迹，AstrBot 将示范编译成最多 32 步的白名单技能 DSL。技能必须由管理员确认，并在 `skillSandboxRegion` 内连续成功验证三次后才能正常执行；会改变物品或世界的 L2 技能每次还需要十分钟内有效、绑定请求者和计划哈希的一次性确认。服务器 Mod/注册表指纹变化会把旧技能标记为 `stale`。该版本只完成安全闭环的首个垂直切片，不代表后续世界图谱、复杂设备学习与长期人格路线全部完成。
 
 0.12.0-dev.2 为 NeoForge 动态物品组件会话增加服务端权威物品通道。Mineflayer 仍不解析可能错位的 Mod 槽位包，而是在走到六格内后通过短期 HMAC 请求让服务端 Mod 完成容器摘要、定量存取、熔炉检查、投料和产物收取；结果仅在内存中保留 30 秒，任务持久化不会写入容器内容。普通原版协议仍使用 Mineflayer 原生窗口操作。
+
+0.12.0-dev.3 将同一服务端权威通道扩展到 Agent 自身背包：NeoForge 会话默认从服务端同步快捷栏、主背包、护甲和副手摘要，并可安全选中原版或 Mod 物品、进食、装备较优护甲/武器、为挖掘选择工具以及在放置前切换手持方块。该版本还增加四类有界工作流：成熟作物扫描、逐株收割补种与掉落物回收，范围掉落物收集，持指定物品进行实体交互，以及按保留数量/快捷栏策略批量整理入容器。工作流仍遵守禁区、距离、任务互斥和不可逆确认。动态物品槽包保持不解析，避免为了背包功能重新引入协议错位风险。
 
 ## 命令
 

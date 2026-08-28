@@ -6,13 +6,21 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Container;
+import net.minecraft.world.effect.MobEffectCategory;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.food.FoodProperties;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.CropBlock;
 
 /**
  * Executes inventory operations against the authoritative server registry.
@@ -27,6 +35,15 @@ final class MineAstrAgentInventoryAuthority {
     }
 
     static JsonObject execute(ServerPlayer player, String taskType, JsonObject args) {
+        if ("inventory_inspect".equals(taskType)) return inventoryInspect(player);
+        if ("inventory_select".equals(taskType)) return inventorySelect(player, args);
+        if ("inventory_eat".equals(taskType)) return inventoryEat(player, args);
+        if ("inventory_equip_best".equals(taskType)) return inventoryEquipBest(player);
+        if ("inventory_select_weapon".equals(taskType)) return inventorySelectWeapon(player);
+        if ("inventory_select_tool".equals(taskType)) return inventorySelectTool(player, args);
+        if ("farm_scan".equals(taskType)) return farmScan(player, args);
+        if ("farm_harvest".equals(taskType)) return farmHarvest(player, args);
+
         BlockPos position = position(args);
         BlockEntity blockEntity = player.serverLevel().getBlockEntity(position);
         if (!(blockEntity instanceof Container container)) {
@@ -35,11 +52,219 @@ final class MineAstrAgentInventoryAuthority {
         return switch (taskType) {
             case "container_inspect" -> containerInspect(player, position, blockEntity, container);
             case "container_transfer" -> containerTransfer(player, position, blockEntity, container, args);
+            case "container_deposit" -> containerDeposit(player, position, blockEntity, container, args);
             case "furnace_inspect" -> furnaceInspect(player, position, blockEntity);
             case "furnace_process" -> furnaceProcess(player, position, blockEntity, args);
             case "furnace_collect" -> furnaceCollect(player, position, blockEntity);
             default -> throw new IllegalArgumentException("不支持的服务端物品操作：" + taskType);
         };
+    }
+
+    private static JsonObject inventoryInspect(ServerPlayer player) {
+        JsonObject result = MineAstrTools.buildInventory(player, false);
+        result.addProperty("operation", "inventory_inspect");
+        result.addProperty("authority", "minecraft_server");
+        return result;
+    }
+
+    private static JsonObject inventorySelect(ServerPlayer player, JsonObject args) {
+        String requested = string(args, "item_id", string(args, "item_name", ""));
+        if (requested.isBlank()) throw new IllegalArgumentException("选择背包物品需要 item_id");
+        int sourceSlot = findMainInventorySlot(player.getInventory(), requested);
+        if (sourceSlot < 0) throw new IllegalStateException("背包中没有物品：" + requested);
+        ItemStack selected = selectMainInventorySlot(player, sourceSlot);
+        changedPlayer(player);
+
+        JsonObject result = inventoryResult("inventory_select", player);
+        result.add("selected_item", stackData(selected));
+        result.addProperty("selected_hotbar_slot", player.getInventory().selected);
+        return result;
+    }
+
+    private static JsonObject inventoryEat(ServerPlayer player, JsonObject args) {
+        if (player.isDeadOrDying() || player.isCreative() || player.isSpectator()) {
+            throw new IllegalStateException("当前状态不允许从背包进食");
+        }
+        String requested = string(args, "item_id", string(args, "item_name", ""));
+        int bestSlot = -1;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        Inventory inventory = player.getInventory();
+        for (int slot = 0; slot < inventory.items.size(); slot++) {
+            ItemStack stack = inventory.items.get(slot);
+            FoodProperties food = stack.get(DataComponents.FOOD);
+            if (stack.isEmpty() || food == null || (!requested.isBlank() && !matches(stack, requested))) continue;
+            boolean harmful = hasHarmfulFoodEffect(food);
+            if (harmful && player.getFoodData().getFoodLevel() > 6) continue;
+            double score = food.nutrition() * 4.0 + food.saturation() * 2.0 + (harmful ? 0.0 : 100.0);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSlot = slot;
+            }
+        }
+        if (bestSlot < 0) throw new IllegalStateException(requested.isBlank()
+                ? "背包中没有可安全食用的物品" : "背包中没有可食用物品：" + requested);
+        ItemStack source = inventory.items.get(bestSlot);
+        FoodProperties food = source.get(DataComponents.FOOD);
+        if (food == null || !player.canEat(food.canAlwaysEat())) throw new IllegalStateException("当前无需进食");
+        String consumedId = itemId(source);
+        int foodBefore = player.getFoodData().getFoodLevel();
+        ItemStack remainder = player.eat(player.serverLevel(), source, food);
+        inventory.items.set(bestSlot, remainder);
+        changedPlayer(player);
+
+        JsonObject result = inventoryResult("inventory_eat", player);
+        result.addProperty("consumed_item", consumedId);
+        result.addProperty("food_before", foodBefore);
+        result.addProperty("food_after", player.getFoodData().getFoodLevel());
+        return result;
+    }
+
+    private static JsonObject inventoryEquipBest(ServerPlayer player) {
+        JsonArray equipped = new JsonArray();
+        equipBestArmor(player, "helmet", EquipmentSlot.HEAD, equipped);
+        equipBestArmor(player, "chestplate", EquipmentSlot.CHEST, equipped);
+        equipBestArmor(player, "leggings", EquipmentSlot.LEGS, equipped);
+        equipBestArmor(player, "boots", EquipmentSlot.FEET, equipped);
+
+        Inventory inventory = player.getInventory();
+        int weaponSlot = bestMainInventorySlot(inventory, MineAstrAgentInventoryAuthority::weaponScore);
+        if (weaponSlot >= 0) {
+            ItemStack candidate = inventory.items.get(weaponSlot);
+            if (weaponScore(candidate) > weaponScore(inventory.getSelected())) {
+                ItemStack selected = selectMainInventorySlot(player, weaponSlot);
+                JsonObject entry = stackData(selected);
+                entry.addProperty("destination", "mainhand");
+                equipped.add(entry);
+            }
+        }
+        changedPlayer(player);
+        JsonObject result = inventoryResult("inventory_equip_best", player);
+        result.add("equipped", equipped);
+        return result;
+    }
+
+    private static JsonObject inventorySelectTool(ServerPlayer player, JsonObject args) {
+        BlockPos position = position(args);
+        BlockState state = player.serverLevel().getBlockState(position);
+        Inventory inventory = player.getInventory();
+        int bestSlot = -1;
+        float bestSpeed = inventory.getSelected().isEmpty() ? 1.0F : inventory.getSelected().getDestroySpeed(state);
+        for (int slot = 0; slot < inventory.items.size(); slot++) {
+            ItemStack candidate = inventory.items.get(slot);
+            if (candidate.isEmpty()) continue;
+            float speed = candidate.getDestroySpeed(state);
+            if (speed > bestSpeed) {
+                bestSpeed = speed;
+                bestSlot = slot;
+            }
+        }
+        if (bestSlot >= 0) selectMainInventorySlot(player, bestSlot);
+        changedPlayer(player);
+        JsonObject result = inventoryResult("inventory_select_tool", player);
+        result.addProperty("target_block", BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
+        result.addProperty("destroy_speed", bestSpeed);
+        result.add("selected_item", stackData(inventory.getSelected()));
+        return result;
+    }
+
+    private static JsonObject inventorySelectWeapon(ServerPlayer player) {
+        Inventory inventory = player.getInventory();
+        int weaponSlot = bestMainInventorySlot(inventory, MineAstrAgentInventoryAuthority::weaponScore);
+        if (weaponSlot >= 0 && weaponScore(inventory.items.get(weaponSlot)) > weaponScore(inventory.getSelected())) {
+            selectMainInventorySlot(player, weaponSlot);
+        }
+        changedPlayer(player);
+        JsonObject result = inventoryResult("inventory_select_weapon", player);
+        result.add("selected_item", stackData(inventory.getSelected()));
+        result.addProperty("weapon_score", weaponScore(inventory.getSelected()));
+        return result;
+    }
+
+    private static void equipBestArmor(
+            ServerPlayer player, String suffix, EquipmentSlot destination, JsonArray equipped) {
+        Inventory inventory = player.getInventory();
+        int sourceSlot = bestMainInventorySlot(inventory,
+                stack -> itemId(stack).endsWith("_" + suffix) ? armorScore(stack) : -1);
+        if (sourceSlot < 0) return;
+        ItemStack candidate = inventory.items.get(sourceSlot);
+        ItemStack current = player.getItemBySlot(destination);
+        if (!current.isEmpty() && armorScore(candidate) <= armorScore(current)) return;
+        inventory.items.set(sourceSlot, current);
+        player.setItemSlot(destination, candidate);
+        JsonObject entry = stackData(candidate);
+        entry.addProperty("destination", destination.getName());
+        equipped.add(entry);
+    }
+
+    private static int bestMainInventorySlot(Inventory inventory, java.util.function.ToIntFunction<ItemStack> scorer) {
+        int bestSlot = -1;
+        int bestScore = -1;
+        for (int slot = 0; slot < inventory.items.size(); slot++) {
+            ItemStack stack = inventory.items.get(slot);
+            if (stack.isEmpty()) continue;
+            int score = scorer.applyAsInt(stack);
+            if (score > bestScore) {
+                bestScore = score;
+                bestSlot = slot;
+            }
+        }
+        return bestSlot;
+    }
+
+    private static ItemStack selectMainInventorySlot(ServerPlayer player, int sourceSlot) {
+        Inventory inventory = player.getInventory();
+        if (sourceSlot < 0 || sourceSlot >= inventory.items.size()) {
+            throw new IllegalArgumentException("背包槽位无效");
+        }
+        int selectedSlot = inventory.selected;
+        if (sourceSlot != selectedSlot) {
+            ItemStack source = inventory.items.get(sourceSlot);
+            ItemStack previous = inventory.items.get(selectedSlot);
+            inventory.items.set(sourceSlot, previous);
+            inventory.items.set(selectedSlot, source);
+        }
+        return inventory.items.get(selectedSlot);
+    }
+
+    private static int findMainInventorySlot(Inventory inventory, String requested) {
+        for (int slot = 0; slot < inventory.items.size(); slot++) {
+            if (matches(inventory.items.get(slot), requested)) return slot;
+        }
+        return -1;
+    }
+
+    private static int armorScore(ItemStack stack) {
+        String id = itemId(stack);
+        if (id.contains("netherite_")) return 600;
+        if (id.contains("diamond_")) return 500;
+        if (id.contains("iron_")) return 400;
+        if (id.contains("chainmail_")) return 300;
+        if (id.contains("golden_")) return 200;
+        if (id.contains("leather_")) return 100;
+        return 1;
+    }
+
+    private static int weaponScore(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return 0;
+        String id = itemId(stack);
+        int kind = id.matches(".*_(?:sword|katana|saber|rapier)$") ? 30
+                : id.matches(".*_(?:mace|trident)$") ? 20
+                : id.matches(".*_(?:axe|battleaxe|warhammer)$") ? 10 : 0;
+        if (kind == 0) return 0;
+        return armorScore(stack) * 100 + kind;
+    }
+
+    private static boolean hasHarmfulFoodEffect(FoodProperties food) {
+        return food.effects().stream().anyMatch(possible ->
+                possible.effect().getEffect().value().getCategory() == MobEffectCategory.HARMFUL);
+    }
+
+    private static JsonObject inventoryResult(String operation, ServerPlayer player) {
+        JsonObject result = new JsonObject();
+        result.addProperty("operation", operation);
+        result.addProperty("authority", "minecraft_server");
+        result.addProperty("selected_hotbar_slot", player.getInventory().selected);
+        return result;
     }
 
     private static JsonObject containerInspect(
@@ -78,6 +303,132 @@ final class MineAstrAgentInventoryAuthority {
         result.add("before_items", before);
         result.add("after_items", summarize(container));
         return result;
+    }
+
+    private static JsonObject containerDeposit(
+            ServerPlayer player,
+            BlockPos position,
+            BlockEntity blockEntity,
+            Container container,
+            JsonObject args) {
+        String requested = string(args, "item_id", string(args, "item_name", ""));
+        int keepCount = boundedInt(args, "keep_count", 0, 0, 2304);
+        int maximum = boundedInt(args, "max_items", 2304, 1, 2304);
+        boolean includeHotbar = args.has("include_hotbar") && args.get("include_hotbar").getAsBoolean();
+        Inventory inventory = player.getInventory();
+        Map<String, Integer> movableById = new LinkedHashMap<>();
+        for (ItemStack stack : inventory.items) {
+            if (stack.isEmpty() || (!requested.isBlank() && !matches(stack, requested))) continue;
+            movableById.merge(itemId(stack), stack.getCount(), Integer::sum);
+        }
+        movableById.replaceAll((ignored, total) -> Math.max(0, total - keepCount));
+
+        JsonArray before = summarize(container);
+        Map<String, Integer> movedById = new LinkedHashMap<>();
+        int remaining = maximum;
+        int firstSlot = includeHotbar ? 0 : Inventory.getSelectionSize();
+        for (int slot = firstSlot; slot < inventory.items.size() && remaining > 0; slot++) {
+            if (slot == inventory.selected) continue;
+            ItemStack source = inventory.items.get(slot);
+            if (source.isEmpty() || (!requested.isBlank() && !matches(source, requested))) continue;
+            String id = itemId(source);
+            int allowed = Math.min(remaining, movableById.getOrDefault(id, 0));
+            if (allowed <= 0) continue;
+            int moved = insert(container, source, allowed);
+            if (moved <= 0) continue;
+            source.shrink(moved);
+            remaining -= moved;
+            movableById.put(id, Math.max(0, movableById.getOrDefault(id, 0) - moved));
+            movedById.merge(id, moved, Integer::sum);
+        }
+        if (movedById.isEmpty()) throw new IllegalStateException("没有符合条件的物品可存入容器，或容器空间不足");
+        changed(player, blockEntity, container);
+
+        JsonObject result = baseResult("deposit", player, position, blockEntity);
+        result.addProperty("requested_item", requested);
+        result.addProperty("keep_count", keepCount);
+        result.addProperty("include_hotbar", includeHotbar);
+        result.addProperty("transferred_count", movedById.values().stream().mapToInt(Integer::intValue).sum());
+        JsonArray movedItems = new JsonArray();
+        movedById.forEach((id, count) -> {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("item_id", id);
+            entry.addProperty("count", count);
+            movedItems.add(entry);
+        });
+        result.add("moved_items", movedItems);
+        result.add("before_items", before);
+        result.add("after_items", summarize(container));
+        return result;
+    }
+
+    private static JsonObject farmScan(ServerPlayer player, JsonObject args) {
+        BlockPos center = position(args);
+        int radius = boundedInt(args, "radius", 6, 1, 8);
+        int maximum = boundedInt(args, "max_count", 32, 1, 64);
+        JsonArray crops = new JsonArray();
+        ServerLevel level = player.serverLevel();
+        for (int y = -2; y <= 2 && crops.size() < maximum; y++) {
+            for (int x = -radius; x <= radius && crops.size() < maximum; x++) {
+                for (int z = -radius; z <= radius && crops.size() < maximum; z++) {
+                    BlockPos target = center.offset(x, y, z);
+                    BlockState state = level.getBlockState(target);
+                    if (!isMatureCrop(state)) continue;
+                    CropBlock crop = (CropBlock) state.getBlock();
+                    JsonObject entry = new JsonObject();
+                    entry.addProperty("x", target.getX());
+                    entry.addProperty("y", target.getY());
+                    entry.addProperty("z", target.getZ());
+                    entry.addProperty("block_id", BuiltInRegistries.BLOCK.getKey(crop).toString());
+                    entry.addProperty("age", crop.getAge(state));
+                    entry.addProperty("max_age", crop.getMaxAge());
+                    crops.add(entry);
+                }
+            }
+        }
+        JsonObject result = inventoryResult("farm_scan", player);
+        result.addProperty("radius", radius);
+        result.addProperty("mature_count", crops.size());
+        result.add("crops", crops);
+        return result;
+    }
+
+    private static JsonObject farmHarvest(ServerPlayer player, JsonObject args) {
+        BlockPos target = position(args);
+        ServerLevel level = player.serverLevel();
+        BlockState state = level.getBlockState(target);
+        if (!isMatureCrop(state)) throw new IllegalStateException("目标不是成熟且受支持的作物");
+        CropBlock crop = (CropBlock) state.getBlock();
+        ItemStack seed = crop.getCloneItemStack(level, target, state);
+        if (seed.isEmpty()) throw new IllegalStateException("无法确认该作物的补种物品");
+        String seedId = itemId(seed);
+        int seedSlot = findMainInventorySlot(player.getInventory(), seedId);
+        if (seedSlot < 0) throw new IllegalStateException("背包中缺少补种物品：" + seedId);
+
+        ItemStack seedStack = player.getInventory().items.get(seedSlot);
+        seedStack.shrink(1);
+        BlockEntity blockEntity = level.getBlockEntity(target);
+        Block.dropResources(state, level, target, blockEntity, player, player.getMainHandItem());
+        level.setBlock(target, crop.getStateForAge(0), Block.UPDATE_ALL);
+        changedPlayer(player);
+
+        JsonObject result = inventoryResult("farm_harvest", player);
+        result.addProperty("x", target.getX());
+        result.addProperty("y", target.getY());
+        result.addProperty("z", target.getZ());
+        result.addProperty("block_id", BuiltInRegistries.BLOCK.getKey(crop).toString());
+        result.addProperty("replanted", true);
+        result.addProperty("seed_item", seedId);
+        return result;
+    }
+
+    static boolean isMatureCrop(BlockState state) {
+        return state != null && state.getBlock() instanceof CropBlock crop
+                && isMatureCropAge(true, crop.getAge(state), crop.getMaxAge());
+    }
+
+    static boolean isMatureCropAge(boolean cropBlock, int age, int maximumAge) {
+        return cropBlock && maximumAge >= 0 && age >= maximumAge;
     }
 
     private static JsonObject furnaceInspect(ServerPlayer player, BlockPos position, BlockEntity blockEntity) {
@@ -310,6 +661,12 @@ final class MineAstrAgentInventoryAuthority {
         player.containerMenu.broadcastChanges();
     }
 
+    private static void changedPlayer(ServerPlayer player) {
+        player.getInventory().setChanged();
+        player.inventoryMenu.broadcastChanges();
+        player.containerMenu.broadcastChanges();
+    }
+
     private static BlockPos position(JsonObject args) {
         return new BlockPos(requiredCoordinate(args, "x"), requiredCoordinate(args, "y"), requiredCoordinate(args, "z"));
     }
@@ -330,13 +687,19 @@ final class MineAstrAgentInventoryAuthority {
         return args.has(name) && !args.get(name).isJsonNull() ? args.get(name).getAsString() : fallback;
     }
 
+    private static boolean matches(ItemStack stack, String requestedId) {
+        String requested = requestedId == null ? "" : requestedId.strip().toLowerCase(Locale.ROOT);
+        if (requested.isBlank()) return false;
+        String actual = itemId(stack);
+        if (requested.contains(":")) return actual.equals(requested);
+        int separator = actual.indexOf(':');
+        return actual.equals("minecraft:" + requested)
+                || (separator >= 0 && actual.substring(separator + 1).equals(requested));
+    }
+
     private static String normalizedItemId(String value) {
         String normalized = value == null ? "" : value.strip().toLowerCase(Locale.ROOT);
         return normalized.isBlank() || normalized.contains(":") ? normalized : "minecraft:" + normalized;
-    }
-
-    private static boolean matches(ItemStack stack, String requestedId) {
-        return itemId(stack).equals(requestedId);
     }
 
     private static String itemId(ItemStack stack) {

@@ -78,6 +78,22 @@ test('equips, aims, and attacks a hostile inside melee reach with cooldown', asy
   assert.equal(controller.status().attacks, 2)
 })
 
+test('uses a server-authoritative weapon when NeoForge inventory packets are degraded', async () => {
+  const zombie = entity(2, 'zombie', 2.5)
+  const events = []
+  const { bot, attacks, equips } = fakeBot({ 2: zombie })
+  const controller = createCombatController(bot, {
+    selectWeapon: async () => ({ item_id: 'example:steel_saber' }),
+    emit: event => events.push(event)
+  })
+  assert.equal(await controller.tick(1000), true)
+  assert.equal(attacks.length, 1)
+  assert.equal(equips.length, 0)
+  const attack = events.find(event => event.type === 'combat_attack')
+  assert.equal(attack.weapon, 'example:steel_saber')
+  assert.equal(attack.weapon_authority, 'minecraft_server')
+})
+
 test('retreats from creepers and low-health combat instead of attacking', async () => {
   const dangers = []
   const creeper = entity(2, 'creeper', 4)

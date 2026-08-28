@@ -781,6 +781,7 @@ public final class MineAstrAgentManager implements AutoCloseable {
         awareness.addProperty("updated_at_ms", now);
         awareness.addProperty("health", player.getHealth());
         awareness.addProperty("food", player.getFoodData().getFoodLevel());
+        awareness.add("agent_inventory", MineAstrTools.buildInventory(player, false));
         awareness.add("server_physics", serverPhysicsDiagnostic(player));
         awareness.addProperty("server_side_survival_enabled",
                 MineAstrConfig.AGENT_SERVER_SIDE_SURVIVAL_ENABLED.getAsBoolean());
@@ -875,25 +876,32 @@ public final class MineAstrAgentManager implements AutoCloseable {
             operationId = operation.has("operation_id") ? operation.get("operation_id").getAsString() : "";
             taskType = operation.has("task_type") ? operation.get("task_type").getAsString().toLowerCase(Locale.ROOT) : "";
             if (!operationId.matches("[A-Za-z0-9_.-]{8,80}")) throw new IllegalArgumentException("物品操作 ID 无效");
-            if (!Set.of("container_inspect", "container_transfer", "furnace_inspect",
-                    "furnace_process", "furnace_collect").contains(taskType)) {
+            if (!Set.of("container_inspect", "container_transfer", "container_deposit", "furnace_inspect",
+                    "furnace_process", "furnace_collect", "inventory_inspect", "inventory_select",
+                    "inventory_eat", "inventory_equip_best", "inventory_select_weapon",
+                    "inventory_select_tool", "farm_scan", "farm_harvest").contains(taskType)) {
                 throw new IllegalArgumentException("不支持的服务端物品操作：" + taskType);
             }
             JsonObject args = operation.has("args") && operation.get("args").isJsonObject()
                     ? operation.getAsJsonObject("args") : new JsonObject();
-            int x = requiredCoordinate(args, "x");
-            int y = requiredCoordinate(args, "y");
-            int z = requiredCoordinate(args, "z");
-            String dimension = args.has("dimension") ? args.get("dimension").getAsString() : "minecraft:overworld";
-            if (!dimension.equals(player.serverLevel().dimension().location().toString())) {
-                throw new IllegalStateException("目标容器与 Agent 不在同一维度");
-            }
-            if (insideForbiddenRegion(dimension, x, y, z)) {
-                throw new IllegalStateException("目标坐标位于 Agent 禁区内");
-            }
-            Vec3 center = Vec3.atCenterOf(new BlockPos(x, y, z));
-            if (player.position().distanceToSqr(center) > 36.0D) {
-                throw new IllegalStateException("Agent 距离目标容器超过 6 格");
+            if (Set.of("container_inspect", "container_transfer", "container_deposit", "furnace_inspect",
+                    "furnace_process", "furnace_collect", "inventory_select_tool", "farm_scan",
+                    "farm_harvest").contains(taskType)) {
+                int x = requiredCoordinate(args, "x");
+                int y = requiredCoordinate(args, "y");
+                int z = requiredCoordinate(args, "z");
+                String dimension = args.has("dimension")
+                        ? args.get("dimension").getAsString() : "minecraft:overworld";
+                if (!dimension.equals(player.serverLevel().dimension().location().toString())) {
+                    throw new IllegalStateException("目标方块与 Agent 不在同一维度");
+                }
+                if (insideForbiddenRegion(dimension, x, y, z)) {
+                    throw new IllegalStateException("目标坐标位于 Agent 禁区内");
+                }
+                Vec3 center = Vec3.atCenterOf(new BlockPos(x, y, z));
+                if (player.position().distanceToSqr(center) > 36.0D) {
+                    throw new IllegalStateException("Agent 距离目标方块超过 6 格");
+                }
             }
             JsonObject result = MineAstrAgentInventoryAuthority.execute(player, taskType, args);
             recordAuthorityOperation(operationId, taskType, true, result, "");
@@ -1427,12 +1435,14 @@ public final class MineAstrAgentManager implements AutoCloseable {
         }
         String type = body.has("task_type") ? body.get("task_type").getAsString().toLowerCase(Locale.ROOT) : "";
         if (!Set.of("chat", "crouch_greet", "goto", "goto_waypoint", "follow_player", "look_at",
-                "wait", "eat", "interact_block", "use_item", "container_inspect", "container_transfer",
+                "wait", "eat", "interact_block", "interact_entity", "use_item", "container_inspect",
+                "container_transfer", "container_deposit", "farm_tend", "collect_items",
                 "furnace_inspect", "furnace_process", "equip_best", "sleep", "inspect_entity",
                 "pickup_item", "craft", "place_block", "dig_block").contains(type)) {
             throw new IllegalArgumentException("服务端不允许任务类型：" + type);
         }
-        if (Set.of("container_transfer", "furnace_process", "pickup_item", "craft", "place_block", "dig_block")
+        if (Set.of("container_transfer", "container_deposit", "farm_tend", "collect_items", "interact_entity",
+                "furnace_process", "pickup_item", "craft", "place_block", "dig_block")
                 .contains(type)
                 && (!body.has("confirmed_irreversible") || !body.get("confirmed_irreversible").getAsBoolean())) {
             throw new IllegalStateException("该任务会改变物品或世界状态，需要绑定本次请求的明确确认");
@@ -1443,7 +1453,8 @@ public final class MineAstrAgentManager implements AutoCloseable {
             throw new IllegalArgumentException("Agent 聊天内容超过 256 字符");
         }
         if (Set.of("goto", "look_at", "interact_block", "container_inspect", "container_transfer",
-                "furnace_inspect", "furnace_process", "place_block", "dig_block").contains(type)) {
+                "container_deposit", "farm_tend", "furnace_inspect", "furnace_process", "place_block",
+                "dig_block").contains(type)) {
             int x = requiredCoordinate(args, "x");
             int y = requiredCoordinate(args, "y");
             int z = requiredCoordinate(args, "z");

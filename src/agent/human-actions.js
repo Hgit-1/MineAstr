@@ -8,10 +8,21 @@ const DIRECTIONS = [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 1, 0), ne
 
 async function executeHumanAction(bot, type, args = {}, options = {}) {
   if (!bot?.entity) throw new Error('Bot 尚未进入服务器')
-  if (['equip_best', 'craft', 'place_block'].includes(type) && options.inventoryDegraded) {
-    throw new Error('当前 NeoForge 会话无法可靠解码动态物品；已拒绝装备、合成或指定物品放置')
+  if (type === 'craft' && options.inventoryDegraded) {
+    throw new Error('当前 NeoForge 会话无法可靠解码动态配方与合成槽；已拒绝自动合成')
   }
-  if (type === 'equip_best') return equipBest(bot, options)
+  if (['equip_best', 'place_block'].includes(type) && options.inventoryDegraded
+      && typeof options.serverAuthority !== 'function') {
+    throw new Error('当前 NeoForge 会话无法可靠解码动态物品，且服务端权威背包通道不可用')
+  }
+  if (type === 'equip_best') {
+    if (options.inventoryDegraded) {
+      const result = await options.serverAuthority('inventory_equip_best', {})
+      options.emit?.({ type: 'equipment_updated', equipped: result.equipped || [], authority: 'minecraft_server' })
+      return result
+    }
+    return equipBest(bot, options)
+  }
   if (type === 'inspect_entity') return inspectEntity(bot, args)
   if (type === 'sleep') return sleepInBed(bot, args, options)
   if (type === 'pickup_item') return pickupItem(bot, args, options)
@@ -127,9 +138,15 @@ async function placeBlock(bot, args, options) {
     throw new Error('目标位置不可安全替换')
   }
   const requested = normalizeName(args.item_id || args.item_name)
-  const item = (bot.inventory?.items?.() || []).find(entry => normalizeName(entry.name) === requested
-    || normalizeName(entry.name).split(':').pop() === requested.split(':').pop())
-  if (!item) throw new Error(`背包中没有可放置物品：${requested}`)
+  if (!requested) throw new Error('放置方块需要背包物品 ID')
+  let item = null
+  if (options.inventoryDegraded) {
+    await options.serverAuthority('inventory_select', { item_id: requested })
+  } else {
+    item = (bot.inventory?.items?.() || []).find(entry => normalizeName(entry.name) === requested
+      || normalizeName(entry.name).split(':').pop() === requested.split(':').pop())
+    if (!item) throw new Error(`背包中没有可放置物品：${requested}`)
+  }
   let reference = null
   let face = null
   for (const direction of DIRECTIONS) {
@@ -141,7 +158,7 @@ async function placeBlock(bot, args, options) {
     }
   }
   if (!reference) throw new Error('目标位置周围没有安全支撑面')
-  await bot.equip(item, 'hand')
+  if (item) await bot.equip(item, 'hand')
   await bot.placeBlock(reference, face)
   const after = bot.blockAt(target)
   if (!after || ['air', 'cave_air', 'void_air'].includes(String(after.name || ''))) throw new Error('放置后未观察到方块')
@@ -159,6 +176,12 @@ async function digBlock(bot, args, options) {
   if (options.canBreak && !options.canBreak(block)) throw new Error('服务端策略禁止破坏该方块')
   if (options.awarenessAt?.(target)?.protected || Number(options.awarenessAt?.(target)?.structure_confidence) >= 80) {
     throw new Error('目标方块属于受保护或高置信人工结构')
+  }
+  if (options.inventoryDegraded && typeof options.serverAuthority === 'function') {
+    await options.serverAuthority('inventory_select_tool', {
+      x: Math.floor(target.x), y: Math.floor(target.y), z: Math.floor(target.z),
+      dimension: String(args.dimension || 'minecraft:overworld')
+    })
   }
   if (typeof bot.canDigBlock === 'function' && !bot.canDigBlock(block)) throw new Error('当前距离或工具无法安全挖掘目标')
   await bot.dig(block, true)

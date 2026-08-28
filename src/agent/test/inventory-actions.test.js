@@ -132,3 +132,21 @@ test('routes degraded NeoForge furnace processing and collection through server 
   assert.ok(calls.includes('furnace_process'))
   assert.ok(calls.includes('furnace_collect'))
 })
+
+test('routes batch container deposits through server authority on every protocol', async () => {
+  const bot = fakeBot({})
+  const calls = []
+  const result = await executeInventoryTask(bot, 'container_deposit', {
+    x: 1, y: 64, z: 0, item_id: 'minecraft:wheat', keep_count: 8,
+    include_hotbar: false, max_items: 64
+  }, {
+    navigate: async () => {},
+    serverAuthority: async (type, args) => {
+      calls.push({ type, args })
+      return { operation: 'deposit', authority: 'minecraft_server', transferred_count: 32 }
+    }
+  })
+  assert.equal(result.transferred_count, 32)
+  assert.equal(calls[0].type, 'container_deposit')
+  assert.equal(calls[0].args.keep_count, 8)
+})

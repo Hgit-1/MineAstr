@@ -21,6 +21,7 @@ const { CompanionController } = require('./companion')
 const { executeInventoryTask } = require('./inventory-actions')
 const { HumanBehaviorController } = require('./human-behavior')
 const { executeHumanAction } = require('./human-actions')
+const { executeWorkAction } = require('./work-actions')
 const { version: runtimeVersion } = require('./package.json')
 
 const token = process.env.MINEASTR_AGENT_TOKEN || ''
@@ -473,6 +474,16 @@ function connectBot() {
         attackCooldownMilliseconds: combatAttackCooldownMilliseconds,
         emit,
         isForbidden,
+        selectWeapon: async () => {
+          if (!neoForgeNegotiated || !serverAuthorityEnabled) return null
+          try {
+            const result = await requestServerAuthority('inventory_select_weapon', {})
+            return result?.selected_item || null
+          } catch (error) {
+            lastError = `自动选择武器失败：${safeError(error)}`
+            return null
+          }
+        },
         shouldPause: () => bot !== created || !sessionReady || sessionDisconnecting || eating || retreating || hunting
           || created.isUsingHeldItem || created.pathfinder?.isMining?.() || created.pathfinder?.isBuilding?.()
           || created.pathfinder?.isInteracting?.(),
@@ -681,7 +692,8 @@ function status() {
       negotiated: neoForgeNegotiated,
       component_count: neoForgeComponentCount,
       degraded_mod_data: neoForgeNegotiated,
-      inventory_authority: serverAuthorityEnabled
+      inventory_authority: serverAuthorityEnabled,
+      inventory_source: neoForgeNegotiated && serverAuthorityEnabled ? 'minecraft_server' : 'mineflayer'
     },
     proxy_protocol: useProxyProtocol,
     last_protocol_diagnostic: lastProtocolDiagnostic,
@@ -717,12 +729,19 @@ function status() {
       container_transfer: !neoForgeNegotiated || serverAuthorityEnabled,
       furnace_inspect: !neoForgeNegotiated || serverAuthorityEnabled,
       furnace_process: !neoForgeNegotiated || serverAuthorityEnabled,
-      equip_best: !neoForgeNegotiated,
+      inventory_read: !neoForgeNegotiated || serverAuthorityEnabled,
+      inventory_select: !neoForgeNegotiated || serverAuthorityEnabled,
+      use_item: !neoForgeNegotiated || serverAuthorityEnabled,
+      equip_best: !neoForgeNegotiated || serverAuthorityEnabled,
+      farm_tend: serverAuthorityEnabled,
+      collect_items: true,
+      interact_entity: !neoForgeNegotiated || serverAuthorityEnabled,
+      container_deposit: serverAuthorityEnabled,
       sleep: true,
       inspect_entity: true,
       pickup_item: true,
       craft: !neoForgeNegotiated,
-      place_block: !neoForgeNegotiated,
+      place_block: !neoForgeNegotiated || serverAuthorityEnabled,
       dig_block: navigationAllowDigging,
       inventory_protocol_degraded: neoForgeNegotiated
     }
@@ -750,6 +769,22 @@ function round(value) {
 
 function inventorySummary() {
   if (!bot) return []
+  if (neoForgeNegotiated && serverAuthorityEnabled) {
+    const inventory = serverAwareness?.agent_inventory
+    if (inventory && typeof inventory === 'object') {
+      return ['hotbar', 'inventory', 'armor', 'offhand'].flatMap(section =>
+        (Array.isArray(inventory[section]) ? inventory[section] : []).map(item => ({
+          name: item.id,
+          display_name: item.name,
+          count: item.count,
+          slot: item.slot,
+          slot_index: item.slot_index,
+          section,
+          enchanted: Boolean(item.enchanted),
+          remaining_durability: item.remaining_durability ?? null
+        }))).slice(0, 64)
+    }
+  }
   return bot.inventory.items().slice(0, 64).map(item => ({
     name: item.name,
     display_name: item.displayName,
@@ -909,7 +944,23 @@ async function retreatFromThreat(providedThreat = null, reason = 'threat') {
 }
 
 async function autoEat(force = false) {
-  if (!bot || eating || bot.food == null || (!force && bot.food > 14) || bot.isUsingHeldItem) return false
+  const knownFood = Number.isFinite(Number(serverAwareness?.food))
+    ? Number(serverAwareness.food) : bot?.food
+  if (!bot || eating || knownFood == null || (!force && knownFood > 14) || bot.isUsingHeldItem) return false
+  if (neoForgeNegotiated) {
+    if (!serverAuthorityEnabled) return false
+    eating = true
+    try {
+      await requestServerAuthority('inventory_eat', {})
+      return true
+    } catch (error) {
+      lastError = `自动进食失败：${safeError(error)}`
+      return false
+    } finally {
+      eating = false
+      reconcileSession()
+    }
+  }
   const candidates = bot.inventory.items()
     .map(item => ({ item, food: bot.registry?.foodsByName?.[item.name] }))
     .filter(entry => entry.food && !entry.food.effects?.length)
@@ -1088,7 +1139,7 @@ function startWaitingTask() {
       } else if (type === 'wait') {
         await taskDelay(parseInteger(args.milliseconds, 1000, 100, 30000), runId)
       } else if (type === 'eat') {
-        if (!await autoEat(true)) throw new Error('背包中没有 Mineflayer 可安全识别的食物')
+        if (!await autoEat(true)) throw new Error('背包中没有服务端可安全识别的食物，或当前无需进食')
       } else if (type === 'interact_block') {
         const position = new Vec3(finiteCoordinate(args.x, 'x'), finiteCoordinate(args.y, 'y'), finiteCoordinate(args.z, 'z'))
         assertAllowedTarget(position, args.dimension)
@@ -1097,7 +1148,8 @@ function startWaitingTask() {
         const block = bot.blockAt(position)
         if (!block) throw new Error('目标方块不可见')
         await bot.activateBlock(block)
-      } else if (['container_inspect', 'container_transfer', 'furnace_inspect', 'furnace_process'].includes(type)) {
+      } else if (['container_inspect', 'container_transfer', 'container_deposit',
+        'furnace_inspect', 'furnace_process'].includes(type)) {
         operationResult = await executeInventoryTask(bot, type, args, {
           inventoryDegraded: neoForgeNegotiated,
           serverAuthority: requestServerAuthority,
@@ -1106,9 +1158,20 @@ function startWaitingTask() {
           assertActive: () => assertTaskActive(runId),
           emit
         })
+      } else if (['farm_tend', 'collect_items', 'interact_entity'].includes(type)) {
+        operationResult = await executeWorkAction(bot, type, args, {
+          inventoryDegraded: neoForgeNegotiated,
+          serverAuthority: requestServerAuthority,
+          navigate: (target, navigationArgs) => navigateTask(target, navigationArgs, runId),
+          assertAllowed: assertAllowedTarget,
+          assertActive: () => assertTaskActive(runId),
+          isForbidden,
+          emit
+        })
       } else if (['equip_best', 'sleep', 'inspect_entity', 'pickup_item', 'craft', 'place_block', 'dig_block'].includes(type)) {
         operationResult = await executeHumanAction(bot, type, args, {
           inventoryDegraded: neoForgeNegotiated,
+          serverAuthority: requestServerAuthority,
           navigate: (target, navigationArgs) => navigateTask(target, navigationArgs, runId),
           assertAllowed: assertAllowedTarget,
           assertActive: () => assertTaskActive(runId),
@@ -1118,13 +1181,23 @@ function startWaitingTask() {
         })
       } else if (type === 'use_item') {
         const itemName = String(args.item_name || '').toLowerCase()
-        const shortName = itemName.includes(':') ? itemName.slice(itemName.indexOf(':') + 1) : itemName
-        const item = bot.inventory.items().find(entry => entry.name.toLowerCase() === itemName || entry.name.toLowerCase() === shortName)
-        if (!item) throw new Error(`背包中没有物品：${itemName}`)
-        await bot.equip(item, 'hand')
+        if (!itemName) throw new Error('使用背包物品需要 item_name')
+        let selected = null
+        if (neoForgeNegotiated) {
+          selected = await requestServerAuthority('inventory_select', { item_id: itemName })
+        } else {
+          const shortName = itemName.includes(':') ? itemName.slice(itemName.indexOf(':') + 1) : itemName
+          const item = bot.inventory.items().find(entry => entry.name.toLowerCase() === itemName || entry.name.toLowerCase() === shortName)
+          if (!item) throw new Error(`背包中没有物品：${itemName}`)
+          await bot.equip(item, 'hand')
+        }
         bot.activateItem(Boolean(args.offhand))
         await taskDelay(parseInteger(args.milliseconds, 500, 100, 5000), runId)
         bot.deactivateItem()
+        operationResult = {
+          operation: 'use_item', authority: neoForgeNegotiated ? 'minecraft_server' : 'mineflayer',
+          requested_item: itemName, selected_item: selected?.selected_item || null
+        }
       } else {
         throw new Error(`不支持的任务类型：${type}`)
       }

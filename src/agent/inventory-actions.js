@@ -13,7 +13,7 @@ const FUEL_PRIORITY = ['coal_block', 'coal', 'charcoal', 'blaze_rod', 'dried_kel
 
 async function executeInventoryTask(bot, taskType, args = {}, options = {}) {
   if (!bot?.entity) throw new Error('Bot 尚未进入服务器')
-  if (options.inventoryDegraded) {
+  if (options.inventoryDegraded || taskType === 'container_deposit') {
     return executeAuthoritativeInventoryTask(bot, taskType, args, options)
   }
   const position = coordinate(args)
@@ -22,7 +22,7 @@ async function executeInventoryTask(bot, taskType, args = {}, options = {}) {
   options.assertActive?.()
   const block = bot.blockAt(position)
   if (!block) throw new Error('目标方块不可见')
-  if (taskType === 'container_inspect' || taskType === 'container_transfer') {
+  if (taskType === 'container_inspect' || taskType === 'container_transfer' || taskType === 'container_deposit') {
     return executeContainer(bot, block, taskType, args, options)
   }
   if (taskType === 'furnace_inspect' || taskType === 'furnace_process') {
@@ -45,10 +45,11 @@ async function executeAuthoritativeInventoryTask(bot, taskType, args, options) {
     x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z),
     dimension: String(args.dimension || bot.game?.dimension || 'minecraft:overworld')
   }
-  if (taskType === 'container_inspect' || taskType === 'container_transfer') {
+  if (taskType === 'container_inspect' || taskType === 'container_transfer' || taskType === 'container_deposit') {
     const result = await options.serverAuthority(taskType, authoritativeArgs)
     options.emit?.({
-      type: taskType === 'container_inspect' ? 'container_opened' : 'container_transfer_completed',
+      type: taskType === 'container_inspect' ? 'container_opened'
+        : taskType === 'container_deposit' ? 'container_deposit_completed' : 'container_transfer_completed',
       position: vector(position), authority: 'minecraft_server'
     })
     return result
