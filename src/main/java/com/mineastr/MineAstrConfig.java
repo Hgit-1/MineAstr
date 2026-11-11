@@ -160,6 +160,14 @@ public final class MineAstrConfig {
                     "Agent 使用独立 Node 子进程；缺少兼容 Node 时会安全禁用，不影响其他功能。")
             .define("enableAgent", false);
 
+    public static final ModConfigSpec.BooleanValue ENABLE_SERVER_ENTITY_SPIKE = BUILDER
+            .comment("Phase 0 服务端 FakePlayer 实验，默认关闭；仅在备份后的测试世界启用。不是 AstrBot 执行后端。")
+            .define("enableServerEntitySpike", false);
+
+    public static final ModConfigSpec.ConfigValue<String> SERVER_ENTITY_SPIKE_REGION = BUILDER
+            .comment("实验专用沙盒，格式 dimension,minX,minY,minZ,maxX,maxY,maxZ；空值拒绝实验动作。禁区仍然生效。")
+            .define("serverEntitySpikeRegion", "", value -> value instanceof String text && text.length() <= 256);
+
     public static final ModConfigSpec.ConfigValue<String> AGENT_NODE_EXECUTABLE = BUILDER
             .comment("Node 可执行文件路径；留空或 node 表示从 PATH 查找。要求 Node.js 22 或更高版本。")
             .define("agentNodeExecutable", "node", MineAstrConfig::isNonBlankString);

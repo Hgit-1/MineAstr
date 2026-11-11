@@ -32,6 +32,7 @@ public final class MineAstr {
     private static MineAstrBridge activeBridge;
 
     private final MineAstrBridge bridge;
+    private final MineAstrServerEntitySpike entitySpike = new MineAstrServerEntitySpike();
 
     public MineAstr(IEventBus modEventBus, ModContainer modContainer) {
         this.bridge = new MineAstrBridge();
@@ -63,6 +64,7 @@ public final class MineAstr {
 
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
+        entitySpike.start(event.getServer());
         if (!event.getServer().isDedicatedServer()
                 && FMLEnvironment.dist == Dist.CLIENT
                 && !MineAstrClientConfig.LOCAL_WORLD_SERVER_ENABLED.getAsBoolean()) {
@@ -74,6 +76,7 @@ public final class MineAstr {
 
     @SubscribeEvent
     public void onServerStopping(ServerStoppingEvent event) {
+        entitySpike.close();
         bridge.stop();
     }
 
@@ -85,6 +88,7 @@ public final class MineAstr {
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         MineAstrCommands.register(event.getDispatcher(), bridge);
+        MineAstrEntitySpikeCommands.register(event.getDispatcher(), entitySpike);
     }
 
     @SubscribeEvent
@@ -96,12 +100,14 @@ public final class MineAstr {
 
     @SubscribeEvent
     public void onServerTick(ServerTickEvent.Post event) {
+        entitySpike.tick();
         bridge.tickActivity(event.getServer());
     }
 
     @SubscribeEvent
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
+            entitySpike.announceTo(player);
             bridge.updateAgentPlayerPresence(player, true);
             bridge.forwardPlayerPresence(player, true);
             bridge.onPlayerLogin(player);

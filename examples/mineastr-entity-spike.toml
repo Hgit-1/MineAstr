@@ -1,0 +1,6 @@
+# Merge these values into an isolated test instance's mineastr-common.toml.
+# Replace the example region with your own loaded test arena. Do not copy real tokens into Git.
+enableAgent = false
+enableServerEntitySpike = true
+serverEntitySpikeRegion = "minecraft:overworld,100,60,100,116,70,116"
+agentForbiddenRegions = []
