@@ -18,6 +18,20 @@ base {
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
+def spikeOnly = providers.gradleProperty('serverEntitySpikeOnly').map { it.toBoolean() }.getOrElse(false)
+
+sourceSets {
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += output + compileClasspath + sourceSets.main.runtimeClasspath
+    }
+}
+
+var spikeTemplates = tasks.register('prepareSpikeTemplates', Copy) {
+    from 'src/gameTest/structures'
+    into 'run/spike-tests/gameteststructures'
+}
+
 sourceSets.main.resources {
     srcDir('src/generated/resources')
     srcDir(layout.buildDirectory.dir('generated/agentResources'))
@@ -75,7 +89,18 @@ tasks.register('packageAgentRuntime', Zip) {
 }
 
 tasks.named('processResources').configure {
-    dependsOn tasks.named('packageAgentRuntime')
+    if (spikeOnly) {
+        exclude 'mineastr-agent/**'
+    } else {
+        dependsOn tasks.named('packageAgentRuntime')
+    }
+}
+
+if (spikeOnly) {
+    tasks.named('jar').configure {
+        archiveClassifier = 'entity-spike'
+        exclude 'mineastr-agent/**'
+    }
 }
 
 repositories.clear()
@@ -125,6 +150,13 @@ neoForge {
             programArgument '--nogui'
         }
 
+        gameTestServer {
+            type = 'gameTestServer'
+            gameDirectory = file('run/spike-tests')
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            taskBefore spikeTemplates
+        }
+
         configureEach {
             systemProperty 'forge.logging.markers', 'REGISTRIES'
             logLevel = org.slf4j.event.Level.INFO
@@ -134,6 +166,7 @@ neoForge {
     mods {
         "${mod_id}" {
             sourceSet(sourceSets.main)
+            sourceSet(sourceSets.gameTest)
         }
     }
 }
@@ -192,6 +225,23 @@ publishing {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
+}
+
+tasks.register('packageServerEntitySpike', Zip) {
+    dependsOn tasks.named('jar'), tasks.named('test'), tasks.named('runGameTestServer')
+    archiveFileName = "mineastr-${project.version}-entity-spike.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+    from(tasks.named('jar')) { into 'mods' }
+    from('README.md')
+    from('cover.png')
+    from('LICENSE')
+    from('docs/decisions/0001-server-entity-spike.md') { into 'docs/decisions' }
+    from('examples/mineastr-entity-spike.toml') { into 'examples' }
+    doFirst {
+        if (!spikeOnly) throw new GradleException('Use -PserverEntitySpikeOnly=true for the experimental ZIP')
+    }
 }
 
 idea {

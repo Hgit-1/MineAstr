@@ -1,0 +1,59 @@
+name: Server entity spike tests and ZIP
+
+on:
+  pull_request:
+    branches: [minecraft-mod]
+  push:
+    branches: [feat/issue-4-server-entity-spike]
+
+permissions:
+  contents: read
+
+jobs:
+  spike-zip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Unit tests, live GameTest and experimental ZIP
+        run: bash ./gradlew -PserverEntitySpikeOnly=true test packageServerEntitySpike --console=plain
+      - name: Verify installable ZIP and Node-free JAR
+        run: |
+          python - <<'PY'
+          import hashlib
+          import io
+          import pathlib
+          import zipfile
+          artifact = next(pathlib.Path('build/distributions').glob('*-entity-spike.zip'))
+          with zipfile.ZipFile(artifact) as package:
+              assert package.testzip() is None
+              jars = [name for name in package.namelist() if name.startswith('mods/') and name.endswith('.jar')]
+              assert len(jars) == 1
+              with zipfile.ZipFile(io.BytesIO(package.read(jars[0]))) as jar:
+                  assert jar.testzip() is None
+                  assert 'META-INF/neoforge.mods.toml' in jar.namelist()
+                  assert 'com/mineastr/MineAstrServerEntitySpike.class' in jar.namelist()
+                  assert not any(name.startswith('mineastr-agent/') or 'GameTests' in name for name in jar.namelist())
+          print(artifact.name, hashlib.sha256(artifact.read_bytes()).hexdigest())
+          PY
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: mineastr-server-entity-spike-${{ github.sha }}
+          path: build/distributions/*-entity-spike.zip
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: server-entity-spike-test-evidence-${{ github.sha }}
+          path: |
+            build/test-results/test/*.xml
+            run/spike-tests/logs/latest.log
+          retention-days: 14

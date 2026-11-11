@@ -34,6 +34,10 @@ MineAstr 是一个 NeoForge 1.21.1 双端 Mod，用于把 Minecraft 聊天桥接
 
 NeoForge 的 Mod 列表只读取 `logoFile` 作为图标，并没有单独的“封面图”元数据字段。本仓库提供 `cover.png` 作为发布页/README 封面，同时也把同一张图打包到资源目录 `assets/mineastr/textures/gui/cover.png`。
 
+## Phase 0 服务端实体实验（默认关闭）
+
+本分支提供管理员专用的 `ServerPlayer`/`FakePlayer` 可行性原型，不是 AstrBot 后端迁移完成版。实验 JAR 可使用 `-PserverEntitySpikeOnly=true packageServerEntitySpike` 构建为不含 Node runtime 的 ZIP；普通构建和 MineFlayer 回退保留。安装、沙盒配置、命令、测试证据与未完成的实机验收见 [ADR 0001](docs/decisions/0001-server-entity-spike.md)。不要在生产存档直接启用实验。
+
 ## 构建
 
 请安装 JDK 21，然后运行：
