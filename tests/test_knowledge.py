@@ -386,6 +386,42 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
             recovered.extend(json.loads(line).get("name", "") for line in chunk.splitlines()[3:])
         self.assertEqual(name, "".join(recovered))
 
+    def test_rag_registry_keeps_unusually_long_serializer_key_without_aborting(self):
+        key = '生成的加工条件 "\\' * 800
+        record = {
+            "id": "example:custom_recipe",
+            "serializer_data": {key: {"condition": "配方尾部"}},
+            "result": {"id": "example:output"},
+        }
+        chunks = self.coordinator._rag_registry_chunks("example", "recipes", [record])
+
+        fragments = []
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk), knowledge.RAG_EMBEDDING_CHUNK_CHARS)
+            self.assertIn(record["id"], chunk)
+            self.assertIn(record["result"]["id"], chunk)
+            for line in chunk.splitlines()[3:]:
+                piece = json.loads(line).get("_mineastr_json_fragment")
+                if piece is not None:
+                    fragments.append(piece)
+        self.assertEqual({"serializer_data": record["serializer_data"]}, json.loads("".join(fragments)))
+
+    def test_rag_mod_overview_does_not_repeat_oversized_context_into_extra_chunks(self):
+        snapshot = self.coordinator._snapshots["server-a"]
+        name = "模组名称" * 2000
+        marker = "README 尾部"
+        snapshot["categories"]["mods"] = [{"id": "example", "name": name}]
+        snapshot["enrichment"] = {"example": {"body": "文档" * 4000 + marker}}
+
+        chunks = self.coordinator._rag_documents(snapshot)["mod:example:overview"]
+
+        self.assertLessEqual(len(chunks), 8)
+        self.assertTrue(all(len(chunk) <= knowledge.RAG_EMBEDDING_CHUNK_CHARS for chunk in chunks))
+        self.assertTrue(any(marker in chunk for chunk in chunks))
+        continuations = [chunk for chunk in chunks if chunk.startswith("Mod: ")]
+        self.assertTrue(continuations)
+        self.assertTrue(all("(example)（续）" in chunk for chunk in continuations))
+
     def test_rag_documents_split_long_site_text_without_truncation(self):
         snapshot = self.coordinator._snapshots["server-a"]
         marker = "官网尾部唯一标记"

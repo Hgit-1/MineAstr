@@ -1758,7 +1758,9 @@ class KnowledgeCoordinator:
                         chunks.append(
                             f"## {key}\n来源: {item.get('url')}\n来源信任: {linked_trust}；状态: {linked_status}\n\n{item.get('text')}"
                         )
-            mod_prefix = f"Mod: {mod.get('name') or mod_id} ({mod_id})（续）"
+            mod_name = str(mod.get("name") or mod_id)
+            short_name = mod_name if len(mod_name) <= 300 else f"{mod_name[:299]}…"
+            mod_prefix = f"Mod: {short_name} ({mod_id})（续）"
             documents[f"mod:{mod_id}:overview"] = [
                 piece
                 for chunk in chunks
@@ -1873,9 +1875,11 @@ class KnowledgeCoordinator:
         prefix = str(prefix or "").strip()
         if prefix:
             max_chars = min(max_chars, RAG_EMBEDDING_CHUNK_CHARS)
-            body_limit = max(64, max_chars - len(prefix) - 1)
-        else:
-            body_limit = max_chars
+            prefix_limit = max_chars // 4
+            if len(prefix) > prefix_limit:
+                prefix = f"{prefix[:prefix_limit - 1]}…"
+        body_limit = max_chars - len(prefix) - 1 if prefix else max_chars
+        overlap = min(RAG_EMBEDDING_CHUNK_OVERLAP_CHARS, body_limit // 4)
         if len(text) <= body_limit:
             return [text]
         pieces: list[str] = []
@@ -1892,7 +1896,7 @@ class KnowledgeCoordinator:
                 pieces.append(piece)
             if end >= len(text):
                 break
-            start = max(start + 1, end - RAG_EMBEDDING_CHUNK_OVERLAP_CHARS)
+            start = end - overlap
         if prefix and pieces:
             pieces = [pieces[0]] + [f"{prefix}\n{piece}" for piece in pieces[1:]]
         return pieces
@@ -1906,8 +1910,9 @@ class KnowledgeCoordinator:
         Only a record that is longer than a whole chunk is split, and each part
         repeats the record's identity for lookup.
         """
+        namespace_label = namespace if len(namespace) <= 256 else f"{namespace[:255]}…"
         header = (
-            f"# {namespace} {category}\n"
+            f"# {namespace_label} {category}\n"
             "信任规则：运行时 ID/标签/配方为 authoritative。"
         )
         chunks: list[str] = []
@@ -2064,14 +2069,22 @@ class KnowledgeCoordinator:
                         else:
                             high = middle - 1
                     if low == start:
-                        raise ValueError(f"RAG field {key!r} has no room for content")
+                        raise OverflowError(f"RAG field {key!r} has no room for content")
                     fragments.append(wrapped(raw[start:low]))
                     start = low
             if not fragments:
-                raise ValueError(f"RAG field {key!r} cannot fit its JSON path in {budget} characters")
+                raise OverflowError(f"RAG field {key!r} cannot fit its JSON path in {budget} characters")
             return fragments
 
-        return [(key, text) for text in split(value, render)]
+        try:
+            fragments = split(value, render)
+        except OverflowError:
+            # Some custom recipe serializers emit keys too long to repeat as
+            # a JSON path. Preserve the field as ordered, escaped JSON text.
+            fragments = split(render(value), lambda piece: json.dumps(
+                {"_mineastr_json_fragment": piece}, ensure_ascii=False,
+            ))
+        return [(key, text) for text in fragments]
 
     @staticmethod
     def _stable_rag_value(value: Any) -> Any:
