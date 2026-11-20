@@ -1,0 +1,34 @@
+name: Plugin tests and ZIP
+
+on:
+  pull_request:
+    branches: [astrbot-plugin]
+  push:
+    branches: [fix/issue-2-rag-chunking]
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.11'
+      - name: Build and test the installable archive
+        run: |
+          git archive --format=zip --output=astrbot_plugin_mineastr.zip HEAD
+          python -m zipfile -t astrbot_plugin_mineastr.zip
+          python -m zipfile -e astrbot_plugin_mineastr.zip "$RUNNER_TEMP/plugin-zip-check"
+          cd "$RUNNER_TEMP/plugin-zip-check"
+          python -W error::DeprecationWarning -m unittest discover -s tests
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: astrbot_plugin_mineastr-${{ github.sha }}
+          path: astrbot_plugin_mineastr.zip
+          retention-days: 14
+          if-no-files-found: error
